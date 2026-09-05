@@ -53,6 +53,8 @@
         "externalAction": { "type": "object", "required": ["proposalRef", "approvalRef", "action", "params", "performedAt"], "properties": { "proposalRef": { "type": "string" }, "approvalRef": { "type": "string" }, "action": { "type": "string" }, "target": { "type": "string" }, "params": { "type": "object" }, "performedAt": { "type": "string" }, "result": { "type": "string" } } },
         "approvalCheck": { "type": "object", "required": ["paramsHashMatched", "operationMatched"], "properties": { "paramsHashMatched": { "type": "boolean" }, "operationMatched": { "type": "boolean" }, "detail": { "type": "string" } } },
         "denials": { "type": "array", "items": { "type": "string" } },
+        "toolCalls": { "type": "array", "items": { "type": "object", "required": ["tool", "op", "capability", "ok", "exitCode", "durationMs"], "properties": { "tool": { "type": "string" }, "op": { "type": "string" }, "capability": { "type": "string" }, "params": { "type": "object" }, "argv": { "type": "array", "items": { "type": "string" } }, "ok": { "type": "boolean" }, "exitCode": { "type": "integer" }, "durationMs": { "type": "integer" }, "unavailable": { "type": "string" }, "summary": { "type": "string" }, "outputSha256": { "type": "string" } } } },
+        "proposal": { "$ref": "deployment-proposal.v1.json" },
         "errors": { "type": "array", "items": { "type": "string" } },
         "noChange": { "type": "boolean" }
       }
@@ -65,6 +67,6 @@
     "signature": { "type": "object", "required": ["keyId", "algorithm", "value"], "properties": { "keyId": { "type": "string" }, "algorithm": { "const": "ed25519" }, "value": { "type": "string" } } }
   },
   "$defs": {
-    "cost": { "type": "object", "additionalProperties": false, "required": ["usd", "turns", "tokens"], "properties": { "usd": { "type": "number" }, "turns": { "type": "integer" }, "tokens": { "type": "integer" } } }
+    "cost": { "type": "object", "additionalProperties": false, "required": ["usd", "turns", "tokens"], "properties": { "usd": { "type": "number" }, "turns": { "type": "integer" }, "tokens": { "type": "integer" }, "basis": { "enum": ["none", "harness", "unreported", "mixed"], "description": "Where the figures come from: none (no model was used), harness (reported by the harness), unreported (a harness ran and reported nothing), mixed. A zero without a basis is unknown, not free." } } }
   }
 }

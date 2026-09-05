@@ -155,6 +155,14 @@ func schemaProps(t *testing.T, file string) (map[string]bool, map[string]any) {
 					props[k] = true
 				}
 			}
+			// A $ref to a sibling document pulls that document's
+			// properties in: the Go type nests the referenced type.
+			if ref, ok := x["$ref"].(string); ok && strings.HasSuffix(ref, ".json") && ref != file {
+				sub, _ := schemaProps(t, ref)
+				for k := range sub {
+					props[k] = true
+				}
+			}
 			for _, c := range x {
 				walk(c)
 			}
@@ -200,6 +208,7 @@ func TestGoTypesMatchTheSchemaDocuments(t *testing.T) {
 		{"run-event.v1.json", reflect.TypeOf(RunEvent{}), SchemaRunEvent},
 		{"run-receipt.v1.json", reflect.TypeOf(RunReceipt{}), SchemaRunReceipt},
 		{"protocol-error.v1.json", reflect.TypeOf(ProtocolError{}), SchemaProtocolError},
+		{"deployment-proposal.v1.json", reflect.TypeOf(DeploymentProposal{}), SchemaDeploymentProposal},
 	}
 	for _, c := range cases {
 		props, doc := schemaProps(t, c.file)
@@ -232,7 +241,7 @@ func TestGoTypesMatchTheSchemaDocuments(t *testing.T) {
 }
 
 func TestFixturesValidate(t *testing.T) {
-	for _, dir := range []string{"example.test/helper", "local/helper"} {
+	for _, dir := range []string{"example.test/helper", "local/helper", "example.test/operator"} {
 		b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "packages", dir, "agent.json"))
 		if err != nil {
 			t.Fatal(err)

@@ -47,6 +47,7 @@ type Spec struct {
 	SessionRef   string          // continuation from an earlier attempt
 	OutputSchema []byte
 	Procedure    *protocol.Procedure // set when executing a package procedure
+	Captures     map[string]string   // named groups the procedure's predicate captured from the objective
 	Overlay      []byte              // adapter-specific tuning from the package
 }
 
@@ -81,6 +82,8 @@ type Outcome struct {
 	Errors         []string
 	ExternalAction *protocol.ExternalAction
 	ApprovalCheck  *protocol.ApprovalCheck
+	ToolCalls      []protocol.ToolCall
+	Proposal       *protocol.DeploymentProposal
 }
 
 // Adapter executes attempts.

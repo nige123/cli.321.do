@@ -150,13 +150,17 @@ outside the package root.
 
 A package declares capability requirements (`repo.read`, `repo.write`,
 `shell.run`, `net.fetch`, `files.read`, `files.write`, `model.text`,
-`deploy.invoke`) and enforcement features it requires of a harness, never a
-provider. Provider-specific tuning goes in `harness.overlays.<adapter>`.
+`deploy.read`, `deploy.plan`, `deploy.invoke`) and enforcement features it
+requires of a harness, never a provider. Provider-specific tuning goes in `harness.overlays.<adapter>`.
 
 A package may carry deterministic **procedures**: a predicate over the
 objective and a list of steps that run with no model. A matching procedure
 is chosen before any adapter, runs under the same grants and approval gate,
-and produces the same receipt.
+and produces the same receipt. Named groups in the predicate are captured
+for the procedure's tool steps. A package whose last procedure matches
+everything and blocks with a question is deterministic by construction: no
+adapter is ever selected for it, and an unknown request is an explicit
+unsupported answer, not a model's guess.
 
 ## Authority
 
@@ -233,6 +237,56 @@ runtime received it and `conditionsDigest` the digest of the ordered
 condition list, so the issuer can prove the receipt answers the package it
 issued, condition by condition. Its `receiptDigest` is over its own
 canonical content.
+
+## Tools, deployment planning and the execution boundary
+
+A package's deterministic procedure may reach an external program through
+a **tool step** (`{"kind":"tool","tool":"deploy_engine","op":"plan",
+"params":{...}}`). A tool is bound by explicit configuration, never by a
+command name on PATH, and exposes named operations that each carry their
+own capability: `deploy_engine` offers `status` (`deploy.read`), `plan`
+(`deploy.plan`) and `execute` (`deploy.invoke`). The runtime checks the
+grant per operation, substitutes named captures from the procedure's
+`objectiveRegex` into the declared parameters, validates every value
+against a strict pattern (a `group.name` service, a target word, a commit
+sha of 7 to 40 hex characters), builds an argument vector, runs the
+executable with no shell, bounds the output, redacts anything that looks
+like a credential, and records the call on the receipt (`evidence.toolCalls`).
+An unknown parameter, an unsupported operation or a value that does not
+match its pattern is refused before anything runs.
+
+- `DEPLOY_ENGINE_BIN` names the deployment engine's entry point
+  (web.321.do's `bin/deploy-engine`). Unset, the tool is present but not
+  configured and a procedure that needs it fails saying so. `321 doctor`
+  prints the binding.
+- A `plan` becomes a **deployment-proposal.v1** on the receipt
+  (`evidence.proposal`, and `proposal.json` beside a standalone run's
+  receipt): the engine-owned sections verbatim (exact revision, manifest
+  digest, engine revision, observed state, ordered operations, checks
+  performed and NOT performed, blockers, health, rollback), the package and
+  agent that produced it, and `proposalDigest` over the canonical document.
+  It is evidence of planning, never an approval, and never a claim that
+  anything happened. A blocked plan (an ambiguous target, an unreachable
+  host, an unresolvable revision) is recorded as a blocked proposal with the
+  question.
+- `execute` is **not performed in this build**. The call is recorded as not
+  performed and the run ends blocked with "execution is unavailable in this
+  development slice"; a supplied approval or a `deploy.invoke` grant changes
+  nothing. The boundary that will perform it exists as a checked function
+  (`tool.MatchApproval`, exercised against a recording fake): an approval
+  binds to one proposal's digest and its exact parameters, and execution
+  refuses if the manifest or the deployed revision moved since the plan was
+  observed. Changed parameters mean a new proposal and a renewed approval.
+- A package that can never read or write files (no `repo.*`, `files.*` or
+  `shell.run` capability) is given no workspace, so the repository the
+  terminal happens to be in is never reported as evidence of its run.
+- A receipt's `cost.basis` says where the figures come from: `none` (a
+  deterministic run, no model), `harness`, `unreported` or `mixed`. A zero
+  without a basis is unknown, not free.
+
+The unbranded fixture `testdata/packages/example.test/operator` and the
+recording stand-in `testdata/fakeengine/deploy-engine` are the public tests
+of all of this; the official operator package lives in agents.321.do.
 
 ## Canonical JSON
 

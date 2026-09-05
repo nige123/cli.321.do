@@ -170,13 +170,13 @@ func (c *ClaudeCode) Run(ctx context.Context, spec Spec, ctl Control) (Outcome, 
 	if cmd.ProcessState == nil {
 		return Outcome{}, fmt.Errorf("claude_code: no exit status: %v", runErr)
 	}
-	out := Outcome{Cost: protocol.Cost{}, SessionRef: session}
+	out := Outcome{Cost: protocol.Cost{Basis: protocol.CostUnreported}, SessionRef: session}
 	if env != nil {
 		out.Summary = env.Summary
 		if env.SessionRef != "" {
 			out.SessionRef = env.SessionRef
 		}
-		out.Cost = protocol.Cost{USD: env.CostUSD, Turns: env.Turns}
+		out.Cost = protocol.Cost{USD: env.CostUSD, Turns: env.Turns, Basis: protocol.CostHarness}
 		out.Denials = env.Denials
 		out.Errors = env.Errors
 		out.Conditions = env.Conditions

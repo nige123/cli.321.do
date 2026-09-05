@@ -253,6 +253,14 @@ func ReceiptDigest(r RunReceipt) (string, error) {
 // PackageDigest is the digest of an issued WorkPackage, which a receipt
 // carries so the issuer can prove the runtime saw exactly the package it
 // issued.
+// ProposalDigest is over the canonical proposal with its own digest
+// cleared: the value an approval binds to, and the value a later
+// execution recomputes to prove it is acting on this exact plan.
+func ProposalDigest(p DeploymentProposal) (string, error) {
+	p.ProposalDigest = ""
+	return DigestOf(p)
+}
+
 func PackageDigest(wp WorkPackage) (string, error) {
 	return DigestOf(wp)
 }

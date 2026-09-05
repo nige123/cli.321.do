@@ -12,6 +12,7 @@ import (
 	"cli.321.do/internal/adapter"
 	"cli.321.do/internal/digest"
 	"cli.321.do/internal/protocol"
+	"cli.321.do/internal/tool"
 	"cli.321.do/internal/trust"
 	"cli.321.do/internal/wire"
 )
@@ -235,5 +236,149 @@ func TestShellDoesNotImplyNetworkAndTheGrantMustBeExplicit(t *testing.T) {
 	code, _, errb := runWith("--network", "wide", "helper", "build something")
 	if code != wire.ExitUsage || !strings.Contains(errb, "--network must be") {
 		t.Fatalf("bad network value: %d %s", code, errb)
+	}
+}
+
+// ---------------------------------------------------------------------
+// tool bindings: the unbranded operator fixture through the CLI
+// ---------------------------------------------------------------------
+
+func operatorTrust(t *testing.T) string {
+	t.Helper()
+	dir := fixture(t, "example.test/operator")
+	d, _, _ := digest.Compute(dir)
+	return trustFile(t, &trust.Config{Schema: protocol.SchemaTrustConfig,
+		Publishers: map[string]trust.Publisher{"example.test": {Packages: map[string]trust.Pin{"operator": {Path: dir, Version: "0.1.0", Digest: d, Trust: trust.LevelDevelopment}}}},
+		Aliases:    map[string]string{"op": "example.test/operator"},
+	})
+}
+
+// modelTrapCLI fails the test if any non-procedure adapter is selected.
+type modelTrapCLI struct{ t *testing.T }
+
+func (m modelTrapCLI) Name() string { return "modeltrap" }
+func (m modelTrapCLI) Detect() adapter.Detection {
+	return adapter.Detection{Available: true, Version: "trap"}
+}
+func (m modelTrapCLI) Enforcement() adapter.Enforcement {
+	e := adapter.Enforcement{}
+	for _, f := range protocol.Features() {
+		e[f] = true
+	}
+	return e
+}
+func (m modelTrapCLI) Run(ctx context.Context, spec adapter.Spec, ctl adapter.Control) (adapter.Outcome, error) {
+	m.t.Fatalf("a model adapter ran for %q", spec.Package.Objective)
+	return adapter.Outcome{}, nil
+}
+
+func operatorCLI(t *testing.T, bound bool) (func(args ...string) (int, string, string, string), string) {
+	t.Helper()
+	tp := operatorTrust(t)
+	log := filepath.Join(t.TempDir(), "engine.log")
+	de := &tool.DeployEngine{}
+	if bound {
+		bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+		de = &tool.DeployEngine{Bin: bin, Env: append(os.Environ(), "FAKE_ENGINE_LOG="+log)}
+	}
+	reg := adapter.NewRegistry()
+	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": de}))
+	reg.Register(modelTrapCLI{t})
+	home := t.TempDir()
+	run := func(args ...string) (int, string, string, string) {
+		var out, errb bytes.Buffer
+		code := Main(Env{Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb, Args: args, TrustPath: tp, Home: home, Adapters: reg})
+		return code, out.String(), errb.String(), home
+	}
+	return run, log
+}
+
+func TestOperatorStatusByAliasAndByCanonicalIDUsesNoModel(t *testing.T) {
+	run, log := operatorCLI(t, true)
+	code, out, errb, _ := run("op", "status")
+	if code != 0 {
+		t.Fatalf("alias: %d\n%s\n%s", code, out, errb)
+	}
+	if !strings.Contains(out, "COMPLETED") || !strings.Contains(out, "Cost: none (no model was used)") || !strings.Contains(out, "alpha.web running") {
+		t.Fatalf("transcript: %s", out)
+	}
+	code, out, errb, _ = run("example.test/operator", "status", "alpha.web", "live")
+	if code != 0 || !strings.Contains(out, "Tool: deploy_engine status status alpha.web live --json (ok)") {
+		t.Fatalf("canonical id: %d\n%s\n%s", code, out, errb)
+	}
+	b, _ := os.ReadFile(log)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+	if len(lines) != 2 || lines[0] != "status --json" || lines[1] != "status alpha.web live --json" {
+		t.Fatalf("engine invocations: %q", lines)
+	}
+}
+
+func TestOperatorPlanWritesAProposalAndAmbiguityAsksNonInteractively(t *testing.T) {
+	run, _ := operatorCLI(t, true)
+	code, out, _, home := run("--non-interactive", "op", "plan", "alpha.web", "live", "revision", "0f94b03")
+	if code != 0 || !strings.Contains(out, "Proposal: ") || !strings.Contains(out, "it is a plan, not an approval, and nothing was deployed") {
+		t.Fatalf("plan: %d %s", code, out)
+	}
+	runs, _ := os.ReadDir(filepath.Join(home, "runs"))
+	var p protocol.DeploymentProposal
+	b, err := os.ReadFile(filepath.Join(home, "runs", runs[len(runs)-1].Name(), "proposal.json"))
+	if err != nil {
+		t.Fatal("proposal.json must be written beside the receipt")
+	}
+	if json.Unmarshal(b, &p) != nil || p.Status != "planned" || p.Revision["sha"] != "0f94b03" {
+		t.Fatalf("proposal: %s", b)
+	}
+	if ps := protocol.ValidateDeploymentProposal(&p); len(ps) > 0 {
+		t.Fatalf("proposal invalid: %v", ps)
+	}
+	code, out, _, _ = run("--non-interactive", "op", "plan", "live")
+	if code != wire.ExitBlocked || !strings.Contains(out, "Which service") {
+		t.Fatalf("ambiguous: %d %s", code, out)
+	}
+}
+
+func TestOperatorGoIsPreparedNotExecutedEvenWithAGrant(t *testing.T) {
+	run, log := operatorCLI(t, true)
+	code, out, _, _ := run("--grant", "deploy.invoke", "op", "go", "alpha.web", "live", "revision", "0f94b03")
+	if code != wire.ExitBlocked {
+		t.Fatalf("go: %d %s", code, out)
+	}
+	for _, want := range []string{"BLOCKED", "execution is unavailable in this development slice", "nothing was deployed", "Tool: deploy_engine execute  (not performed)", "Proposal: "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(strings.ToLower(out), "deployed successfully") {
+		t.Fatal("must never read as deployed")
+	}
+	b, _ := os.ReadFile(log)
+	if lines := strings.Split(strings.TrimSpace(string(b)), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "plan ") {
+		t.Fatalf("only plan reached the engine: %q", lines)
+	}
+}
+
+func TestOperatorUnsupportedRequestAndUnboundEngine(t *testing.T) {
+	run, _ := operatorCLI(t, true)
+	code, out, _, _ := run("--non-interactive", "op", "restart", "alpha.web")
+	if code != wire.ExitBlocked || !strings.Contains(out, "Unsupported request") {
+		t.Fatalf("unsupported: %d %s", code, out)
+	}
+	run, _ = operatorCLI(t, false)
+	code, out, _, _ = run("op", "status")
+	if code != wire.ExitFailed || !strings.Contains(out, "DEPLOY_ENGINE_BIN") {
+		t.Fatalf("unbound: %d %s", code, out)
+	}
+}
+
+func TestDoctorListsTheToolBinding(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": &tool.DeployEngine{Bin: "/opt/engine/bin/deploy-engine"}}))
+	var out bytes.Buffer
+	Main(Env{Stdin: strings.NewReader(""), Stdout: &out, Stderr: &out, Args: []string{"doctor"}, TrustPath: "", Home: t.TempDir(), Adapters: reg})
+	if !strings.Contains(out.String(), "deploy_engine: /opt/engine/bin/deploy-engine; operations: status (deploy.read), plan (deploy.plan), execute (deploy.invoke)") {
+		t.Fatalf("doctor: %s", out.String())
 	}
 }

@@ -76,7 +76,7 @@
   },
   "$defs": {
     "safeRelPath": { "type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\]+$", "description": "Relative, forward slashes, no . or .. segments, no absolute prefix, no backslash." },
-    "capability": { "enum": ["repo.read", "repo.write", "shell.run", "net.fetch", "files.read", "files.write", "model.text", "deploy.invoke"] },
+    "capability": { "enum": ["repo.read", "repo.write", "shell.run", "net.fetch", "files.read", "files.write", "model.text", "deploy.invoke", "deploy.read", "deploy.plan"] },
     "feature": { "enum": ["tool_allowlist", "repo_scope", "network_deny", "structured_output", "turn_limit", "spend_limit", "timeout", "event_stream", "live_steer", "pause", "session_continue", "graceful_stop"] },
     "procedure": {
       "type": "object", "additionalProperties": false, "required": ["name", "matches", "steps"],
@@ -91,7 +91,9 @@
     "step": {
       "type": "object", "additionalProperties": false, "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["emit", "write", "assert", "blocked", "external_action", "no_change", "fail", "await_directive", "sleep"] },
+        "kind": { "enum": ["emit", "write", "assert", "blocked", "external_action", "no_change", "fail", "await_directive", "sleep", "tool"] },
+        "tool": { "type": "string", "description": "kind tool: the name of a tool the runtime binds by explicit configuration (deploy_engine)." },
+        "op": { "type": "string", "description": "kind tool: the operation; each carries its own capability requirement." },
         "text": { "type": "string" },
         "path": { "$ref": "#/$defs/safeRelPath" },
         "content": { "type": "string" },

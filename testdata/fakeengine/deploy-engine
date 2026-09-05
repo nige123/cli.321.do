@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# A recording stand-in for the deployment engine's entry point, for tests
+# of the deploy_engine tool binding. It answers `status` and `plan` with
+# deployment-status.v1 / deployment-plan.v1 documents and REFUSES anything
+# else with exit 64 — so a test can prove no other subcommand ever reached
+# the engine. Every argv is appended to $FAKE_ENGINE_LOG, %q-quoted.
+#
+#   FAKE_ENGINE_LOG       where to record invocations
+#   FAKE_ENGINE_SECRET    when set, planted in the plan output to prove
+#                         redaction (as a value under a key named token)
+#   FAKE_ENGINE_DEPLOYED  the deployed revision to report (default fixed)
+#   FAKE_ENGINE_SLEEP     seconds to wait before answering a plan (stop tests)
+set -u
+if [ -n "${FAKE_ENGINE_LOG:-}" ]; then printf '%q ' "$@" >> "$FAKE_ENGINE_LOG"; printf '\n' >> "$FAKE_ENGINE_LOG"; fi
+cmd=${1:-}
+shift || true
+json=0; args=(); revision=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json=1;;
+    --revision) revision="${2:-}"; shift;;
+    --*) echo "$cmd: unknown option $1" >&2; exit 1;;
+    *) args+=("$1");;
+  esac
+  shift
+done
+deployed=${FAKE_ENGINE_DEPLOYED:-1111111111111111111111111111111111111111}
+case "$cmd" in
+  status)
+    svc=${args[0]:-}; target=${args[1]:-dev}
+    case "$svc" in dev|live) target=$svc; svc="";; esac
+    rows='{"name":"alpha.web","target":"'$target'","transport":"local","ubic":"running (pid 101)","pid":101,"port":39800,"portOk":true,"running":true,"worker":false,"url":"https://alpha.example/"},{"name":"beta.web","target":"'$target'","transport":"local","ubic":"off","pid":null,"port":39801,"portOk":null,"running":false,"worker":false,"url":"https://beta.example/"}'
+    if [ -n "$svc" ]; then
+      case "$svc" in
+        alpha.web) rows='{"name":"alpha.web","target":"'$target'","transport":"local","ubic":"running (pid 101)","pid":101,"port":39800,"portOk":true,"running":true,"worker":false,"url":"https://alpha.example/"}';;
+        *) rows='';;
+      esac
+    fi
+    printf '{"schema":"deployment-status.v1","readOnly":true,"observedAt":"2026-09-05T12:00:00Z","services":[%s]}\n' "$rows"
+    exit 0;;
+  plan)
+    svc=${args[0]:-}; target=${args[1]:-}
+    if [ -z "$svc" ]; then
+      printf '{"schema":"deployment-plan.v1","status":"blocked","readOnly":true,"observedAt":"2026-09-05T12:00:00Z","question":"Which service? Name it exactly (group.name).","candidates":["alpha.web","beta.web"],"commands":[]}\n'; exit 2
+    fi
+    case "$svc" in alpha.web|beta.web) ;; *)
+      printf '{"schema":"deployment-plan.v1","status":"blocked","readOnly":true,"observedAt":"2026-09-05T12:00:00Z","question":"No service is named exactly '"'"'%s'"'"'.","candidates":[],"commands":[]}\n' "$svc"; exit 2;; esac
+    if [ -z "$target" ]; then
+      printf '{"schema":"deployment-plan.v1","status":"blocked","readOnly":true,"observedAt":"2026-09-05T12:00:00Z","question":"Which target for %s? One of: dev, live.","candidates":["dev","live"],"commands":[]}\n' "$svc"; exit 2
+    fi
+    case "$target" in dev|live) ;; *)
+      printf '{"schema":"deployment-plan.v1","status":"blocked","readOnly":true,"observedAt":"2026-09-05T12:00:00Z","question":"%s has no target '"'"'%s'"'"'. Its targets: dev, live.","candidates":["dev","live"],"commands":[]}\n' "$svc" "$target"; exit 2;; esac
+    if [ -n "${FAKE_ENGINE_SLEEP:-}" ]; then sleep "$FAKE_ENGINE_SLEEP"; fi
+    sha=${revision:-2222222222222222222222222222222222222222}
+    source=$([ -n "$revision" ] && echo requested || echo "origin/master")
+    secret=""
+    if [ -n "${FAKE_ENGINE_SECRET:-}" ]; then secret=',"token":"'"$FAKE_ENGINE_SECRET"'","note":"api_key='"$FAKE_ENGINE_SECRET"'"'; fi
+    cat <<JSON
+{"schema":"deployment-plan.v1","operation":"deploy","status":"planned","readOnly":true,"observedAt":"2026-09-05T12:00:00Z",
+ "service":{"name":"$svc","target":"$target","repo":"/srv/$svc","branch":"master","host":"$svc.example","port":39800,"runner":"hypnotoad","health":"/health","workers":[]},
+ "targetHost":{"transport":"ssh:ubuntu@$svc.example","ssh":"ubuntu@$svc.example"},
+ "repository":{"origin":"git@example.test:$svc.git","localHead":"$deployed","path":"/srv/$svc"},
+ "revision":{"sha":"$sha","source":"$source","detail":"fixture"},
+ "manifest":{"present":true,"path":"/srv/$svc/321.yml","digest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","bytes":100},
+ "engine":{"name":"fake deployment engine","revision":"4444444444444444444444444444444444444444","entry":"$0"$secret},
+ "observed":{"transport":"ssh","reachable":true,"deployedRevision":"$deployed","repoPresent":true,"ubicFileInstalled":true,"hotSwapCapable":true,"hasMigrations":false,"ubicStatus":"running"},
+ "checks":[{"name":"reachable","performed":true,"ok":true,"detail":"probe"},{"name":"tests","performed":false,"ok":null,"detail":"not run"}],
+ "unperformed":["tests","apt_deps"],
+ "blockers":[],
+ "operations":[{"order":1,"step":"apt_deps","mutates":true,"description":"..."},{"order":2,"step":"git_pull","mutates":true,"description":"..."},{"order":3,"step":"hot_deploy","mutates":true,"description":"..."},{"order":4,"step":"health_gate","mutates":false,"description":"..."}],
+ "health":{"path":"/health","url":"https://$svc.example/health","gate":"2xx"},
+ "rollback":{"supported":true,"toRevision":"$deployed","notUndone":["database migrations"]},
+ "commands":[{"where":"local","command":"cd /srv/$svc && git ls-remote origin refs/heads/master"}]}
+JSON
+    exit 0;;
+  *)
+    echo "fake deploy-engine: refused subcommand '$cmd' (only status and plan answer here)" >&2
+    exit 64;;
+esac

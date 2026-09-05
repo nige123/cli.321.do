@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"cli.321.do/internal/protocol"
+	"cli.321.do/internal/tool"
 )
 
 // ProcedureAdapter executes a package's deterministic procedure without a
@@ -25,10 +26,40 @@ import (
 type ProcedureAdapter struct {
 	AdapterName string
 	Script      []protocol.ProcedureStep // fake mode when set
+	// Tools are the externally bound programs a `tool` step may reach,
+	// each by explicit configuration. Nil means no tool is bound.
+	Tools tool.Registry
 }
 
 // NewProcedure returns the built-in procedure executor.
 func NewProcedure() *ProcedureAdapter { return &ProcedureAdapter{AdapterName: "procedure"} }
+
+// NewProcedureWithTools returns the procedure executor with tool bindings.
+func NewProcedureWithTools(tools tool.Registry) *ProcedureAdapter {
+	return &ProcedureAdapter{AdapterName: "procedure", Tools: tools}
+}
+
+// Bindings describes the bound tools for `321 doctor`.
+func (p *ProcedureAdapter) Bindings() []string {
+	var out []string
+	for _, name := range p.Tools.Names() {
+		t := p.Tools[name]
+		state := "bound"
+		if de, ok := t.(*tool.DeployEngine); ok {
+			if de.Bound() {
+				state = de.Bin
+			} else {
+				state = "not configured (set DEPLOY_ENGINE_BIN to the engine's explicit entry point)"
+			}
+		}
+		var ops []string
+		for _, o := range t.Ops() {
+			ops = append(ops, o.Name+" ("+o.Capability+")")
+		}
+		out = append(out, fmt.Sprintf("%s: %s; operations: %s", name, state, strings.Join(ops, ", ")))
+	}
+	return out
+}
 
 // NewFake returns the deterministic fake adapter with an optional script.
 func NewFake(script []protocol.ProcedureStep) *ProcedureAdapter {
@@ -170,6 +201,14 @@ func (p *ProcedureAdapter) Run(ctx context.Context, spec Spec, ctl Control) (Out
 			out.EndReason = "failed"
 			out.Errors = append(out.Errors, step.Text)
 			return finish(out, conds, touched, turns), nil
+		case "tool":
+			r := p.runTool(ctx, spec, ctl, step, &out)
+			if r.done {
+				if r.stopped {
+					return stopped(out, conds, touched, turns), nil
+				}
+				return finish(out, conds, touched, turns), nil
+			}
 		case "external_action":
 			if ctl.Approval == nil {
 				out.Status = protocol.StatusFailed
@@ -316,6 +355,7 @@ func insideWorkspace(ws, rel string) (string, error) {
 func finish(out Outcome, conds []protocol.ConditionProof, touched bool, turns int) Outcome {
 	out.Conditions = conds
 	out.Cost.Turns = turns
+	out.Cost.Basis = protocol.CostNone // deterministic: no model was used
 	if !touched && out.Status == protocol.StatusCompleted && out.ExternalAction == nil && allMet(conds) && len(conds) == 0 {
 		// Nothing asserted, nothing written: still a completion, but say so.
 		out.Summary = strings.TrimSpace(out.Summary + " (no conditions were declared)")
@@ -324,6 +364,7 @@ func finish(out Outcome, conds []protocol.ConditionProof, touched bool, turns in
 }
 
 func stopped(out Outcome, conds []protocol.ConditionProof, touched bool, turns int) Outcome {
+	out.Cost.Basis = protocol.CostNone
 	out.Status = protocol.StatusStopped
 	out.EndReason = "cancelled"
 	out.Summary = "stopped before the procedure finished"
