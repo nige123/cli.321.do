@@ -269,14 +269,21 @@ match its pattern is refused before anything runs.
   anything happened. A blocked plan (an ambiguous target, an unreachable
   host, an unresolvable revision) is recorded as a blocked proposal with the
   question.
-- `execute` is **not performed in this build**. The call is recorded as not
-  performed and the run ends blocked with "execution is unavailable in this
-  development slice"; a supplied approval or a `deploy.invoke` grant changes
-  nothing. The boundary that will perform it exists as a checked function
-  (`tool.MatchApproval`, exercised against a recording fake): an approval
-  binds to one proposal's digest and its exact parameters, and execution
-  refuses if the manifest or the deployed revision moved since the plan was
-  observed. Changed parameters mean a new proposal and a renewed approval.
+- `execute` is performed only by a bound **executor**, and no production
+  binding of this build has one: the call is recorded as not performed and
+  the run ends blocked with "execution is unavailable in this development
+  slice"; a supplied approval or a `deploy.invoke` grant changes nothing.
+  Where an executor is bound (the tests bind a recording fake), the
+  **execution boundary** applies: the package must carry an `approval`
+  whose `proposal` is the approved deployment proposal verbatim (its digest
+  equal to `params.proposalDigest`), `deploy.invoke` must be granted, a
+  fresh plan of the same target must immediately precede the execute step,
+  and `tool.MatchApproval` must hold against that fresh observation: same
+  service and target, the approved parameters' hash, the approved revision
+  still resolving, the manifest digest and the deployed revision unchanged
+  since the approved plan. Any of these failing is `approval_mismatch` with
+  the reason on the receipt and nothing executed. Changed parameters mean a
+  new proposal and a renewed approval.
 - A package that can never read or write files (no `repo.*`, `files.*` or
   `shell.run` capability) is given no workspace, so the repository the
   terminal happens to be in is never reported as evidence of its run.

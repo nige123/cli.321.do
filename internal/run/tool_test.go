@@ -328,3 +328,135 @@ func TestAReplacementProposalNamesItsPredecessorAndLeavesItHistorical(t *testing
 		t.Fatal("the superseded receipt and proposal are untouched")
 	}
 }
+
+// The execution boundary with a RECORDING executor bound: the shape the
+// real boundary will have, exercised without deploying anything.
+
+func boundRegistry(t *testing.T, env ...string) (*adapter.Registry, string, *tool.RecordingExecutor) {
+	t.Helper()
+	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	log := filepath.Join(t.TempDir(), "engine.log")
+	ex := &tool.RecordingExecutor{}
+	de := &tool.DeployEngine{Bin: bin, Env: append(append(os.Environ(), "FAKE_ENGINE_LOG="+log), env...), Timeout: 30 * time.Second, Exec: ex}
+	r := adapter.NewRegistry()
+	r.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": de}))
+	r.Register(modelTrap{t})
+	return r, log, ex
+}
+
+// approvedPlan runs a plan and returns the proposal a person would approve
+// and the approval bound to it.
+func approvedPlan(t *testing.T, reg *adapter.Registry, agent *trust.Loaded) (*protocol.DeploymentProposal, *protocol.Approval) {
+	t.Helper()
+	r := (&Runner{Adapters: reg}).Run(context.Background(), opPkg(agent, "plan alpha.web live revision 0f94b03"), agent, Options{})
+	if r.Status != protocol.StatusCompleted || r.Evidence.Proposal == nil {
+		t.Fatalf("plan: %s", r.Status)
+	}
+	p := r.Evidence.Proposal
+	params := tool.ApprovalParams(p)
+	h, _ := protocol.ParamsHash(params)
+	return p, &protocol.Approval{ProposalRef: "entry:1", ApprovalRef: "reaction:1", ApprovedBy: "user:1", Action: "deploy",
+		Target: p.Service + "@" + p.Target, Params: params, ParamsHash: h, Proposal: p}
+}
+
+func TestAnApprovedGoIsExecutedByTheBoundExecutorAfterAFreshMatchingPlan(t *testing.T) {
+	agent := operator(t)
+	reg, log, ex := boundRegistry(t)
+	approved, approval := approvedPlan(t, reg, agent)
+	wp := opPkg(agent, "go alpha.web live revision 0f94b03", protocol.CapDeployRead, protocol.CapDeployPlan, protocol.CapDeployInvoke)
+	wp.Approval = approval
+	if ps := protocol.ValidateWorkPackage(wp); len(ps) > 0 {
+		t.Fatalf("package with an embedded proposal must validate: %v", ps)
+	}
+	r := (&Runner{Adapters: reg}).Run(context.Background(), wp, agent, Options{})
+	checkReceipt(t, r)
+	if r.Status != protocol.StatusCompleted {
+		t.Fatalf("%s: %v %s", r.Status, r.Evidence.Errors, r.BlockedOn)
+	}
+	if len(ex.Calls) != 1 || !strings.HasPrefix(ex.Calls[0], approved.ProposalID) {
+		t.Fatalf("executed exactly once for the approved proposal: %v", ex.Calls)
+	}
+	if r.Evidence.ExternalAction == nil || r.Evidence.ExternalAction.Target != "alpha.web@live" || r.Evidence.ExternalAction.ApprovalRef != "reaction:1" {
+		t.Fatalf("external action: %+v", r.Evidence.ExternalAction)
+	}
+	if r.Evidence.ApprovalCheck == nil || !r.Evidence.ApprovalCheck.OperationMatched || !r.Evidence.ApprovalCheck.ParamsHashMatched {
+		t.Fatalf("approval check: %+v", r.Evidence.ApprovalCheck)
+	}
+	// The fresh plan is recorded too, and it is a different proposal.
+	if r.Evidence.Proposal == nil || r.Evidence.Proposal.ProposalID == approved.ProposalID {
+		t.Fatal("the fresh plan is its own proposal")
+	}
+	if got := engineLog(log); len(got) != 2 || !strings.HasPrefix(got[1], "plan ") {
+		t.Fatalf("the engine saw only plans; execution went to the executor: %q", got)
+	}
+}
+
+func TestExecutionRefusesWhenTheStateMovedSinceApproval(t *testing.T) {
+	agent := operator(t)
+	reg, _, _ := boundRegistry(t)
+	_, approval := approvedPlan(t, reg, agent)
+	// The deployed revision on the target moved after the person approved.
+	reg2, _, ex := boundRegistry(t, "FAKE_ENGINE_DEPLOYED="+strings.Repeat("9", 40))
+	wp := opPkg(agent, "go alpha.web live revision 0f94b03", protocol.CapDeployRead, protocol.CapDeployPlan, protocol.CapDeployInvoke)
+	wp.Approval = approval
+	r := (&Runner{Adapters: reg2}).Run(context.Background(), wp, agent, Options{})
+	if r.Status != protocol.StatusFailed || !strings.Contains(strings.Join(r.Evidence.Errors, " "), "deployed revision has changed") {
+		t.Fatalf("%s: %v", r.Status, r.Evidence.Errors)
+	}
+	if len(ex.Calls) != 0 {
+		t.Fatalf("the executor must not be called: %v", ex.Calls)
+	}
+	if r.Evidence.ApprovalCheck == nil || r.Evidence.ApprovalCheck.OperationMatched {
+		t.Fatalf("the check is recorded as failed: %+v", r.Evidence.ApprovalCheck)
+	}
+}
+
+func TestExecutionRefusesAnApprovalForAnotherRevisionOrTarget(t *testing.T) {
+	agent := operator(t)
+	reg, _, ex := boundRegistry(t)
+	_, approval := approvedPlan(t, reg, agent)
+	for _, objective := range []string{"go alpha.web live revision 1234567", "go alpha.web dev revision 0f94b03", "go beta.web live revision 0f94b03"} {
+		wp := opPkg(agent, objective, protocol.CapDeployRead, protocol.CapDeployPlan, protocol.CapDeployInvoke)
+		wp.Approval = approval
+		r := (&Runner{Adapters: reg}).Run(context.Background(), wp, agent, Options{})
+		if r.Status != protocol.StatusFailed || r.EndedAt == "" {
+			t.Errorf("%q: %s %v", objective, r.Status, r.Evidence.Errors)
+		}
+	}
+	if len(ex.Calls) != 0 {
+		t.Fatalf("nothing may execute: %v", ex.Calls)
+	}
+}
+
+func TestExecutionNeedsAnApprovalAndTheInvokeGrant(t *testing.T) {
+	agent := operator(t)
+	reg, _, ex := boundRegistry(t)
+	r := (&Runner{Adapters: reg}).Run(context.Background(), opPkg(agent, "go alpha.web live revision 0f94b03", protocol.CapDeployRead, protocol.CapDeployPlan, protocol.CapDeployInvoke), agent, Options{})
+	if r.Status != protocol.StatusBlocked || !strings.Contains(r.BlockedOn, "needs a person's approval") {
+		t.Fatalf("no approval: %s %q", r.Status, r.BlockedOn)
+	}
+	_, approval := approvedPlan(t, reg, agent)
+	wp := opPkg(agent, "go alpha.web live revision 0f94b03")
+	wp.Approval = approval
+	r = (&Runner{Adapters: reg}).Run(context.Background(), wp, agent, Options{})
+	if r.Status != protocol.StatusFailed || !strings.Contains(strings.Join(r.Evidence.Errors, " "), "deploy.invoke") {
+		t.Fatalf("no grant: %s %v", r.Status, r.Evidence.Errors)
+	}
+	if len(ex.Calls) != 0 {
+		t.Fatalf("nothing may execute: %v", ex.Calls)
+	}
+}
+
+func TestATamperedEmbeddedProposalIsRefusedAtValidation(t *testing.T) {
+	agent := operator(t)
+	reg, _, _ := boundRegistry(t)
+	_, approval := approvedPlan(t, reg, agent)
+	tampered := *approval.Proposal
+	tampered.Revision = map[string]any{"sha": strings.Repeat("9", 40), "source": "requested"}
+	approval.Proposal = &tampered
+	wp := opPkg(agent, "go alpha.web live revision 0f94b03", protocol.CapDeployRead, protocol.CapDeployPlan, protocol.CapDeployInvoke)
+	wp.Approval = approval
+	if ps := protocol.ValidateWorkPackage(wp); len(ps) == 0 {
+		t.Fatal("an embedded proposal whose digest no longer matches must not validate")
+	}
+}

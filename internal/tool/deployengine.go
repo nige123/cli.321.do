@@ -39,7 +39,13 @@ type DeployEngine struct {
 	MaxOutput int
 	// Env replaces the process environment when non-nil (tests).
 	Env []string
+	// Exec performs an approved deployment. Nil, as in every production
+	// binding of this build, means execute is reported unavailable.
+	Exec Executor
 }
+
+// Executor exposes the configured executor, if any.
+func (d *DeployEngine) Executor() Executor { return d.Exec }
 
 const (
 	DefaultTimeout   = 2 * time.Minute
@@ -61,8 +67,15 @@ func (d *DeployEngine) Ops() []Op {
 	return []Op{
 		{Name: "status", Capability: protocol.CapDeployRead},
 		{Name: "plan", Capability: protocol.CapDeployPlan},
-		{Name: "execute", Capability: protocol.CapDeployInvoke, Mutates: true, Unavailable: ExecutionUnavailable},
+		{Name: "execute", Capability: protocol.CapDeployInvoke, Mutates: true, Unavailable: d.executeUnavailable()},
 	}
+}
+
+func (d *DeployEngine) executeUnavailable() string {
+	if d.Exec == nil {
+		return ExecutionUnavailable
+	}
+	return ""
 }
 
 // Bound reports whether an executable is configured.

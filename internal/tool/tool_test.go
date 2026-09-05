@@ -185,7 +185,7 @@ func TestTheFutureBoundaryMatchesTheExactProposalAndCurrentState(t *testing.T) {
 	a := approvalFor(p)
 	now := CurrentState{ManifestDigest: p.Manifest["digest"].(string), DeployedRevision: strings.Repeat("1", 40), RevisionExists: true}
 	ex := &RecordingExecutor{}
-	if err := Gate(p, a, now, ex); err != nil {
+	if _, err := Gate(p, a, now, ex); err != nil {
 		t.Fatalf("a matching approval against unchanged state must pass: %v", err)
 	}
 	if len(ex.Calls) != 1 {
@@ -195,7 +195,7 @@ func TestTheFutureBoundaryMatchesTheExactProposalAndCurrentState(t *testing.T) {
 	refuse := func(name string, p2 *protocol.DeploymentProposal, a2 *protocol.Approval, st CurrentState) {
 		t.Helper()
 		ex := &RecordingExecutor{}
-		if err := Gate(p2, a2, st, ex); err == nil {
+		if _, err := Gate(p2, a2, st, ex); err == nil {
 			t.Errorf("%s: must be refused", name)
 		}
 		if len(ex.Calls) != 0 {
