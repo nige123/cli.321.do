@@ -86,10 +86,12 @@ func MatchApproval(p *protocol.DeploymentProposal, a *protocol.Approval, now Cur
 	return nil
 }
 
-// Executor is what a real boundary would call after MatchApproval. The
-// only implementation in this build records; it never deploys.
+// Executor is what the boundary calls after MatchApproval holds. It
+// returns a short account of what it did. The only implementation in this
+// build records; it never deploys.
 type Executor interface {
-	Execute(p *protocol.DeploymentProposal, a *protocol.Approval) error
+	Name() string
+	Execute(p *protocol.DeploymentProposal, a *protocol.Approval) (string, error)
 }
 
 // RecordingExecutor records what it was asked to execute.
@@ -98,18 +100,40 @@ type RecordingExecutor struct {
 	Calls []string
 }
 
-func (r *RecordingExecutor) Execute(p *protocol.DeploymentProposal, a *protocol.Approval) error {
+func (r *RecordingExecutor) Name() string { return "recording" }
+
+func (r *RecordingExecutor) Execute(p *protocol.DeploymentProposal, a *protocol.Approval) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.Calls = append(r.Calls, p.ProposalID+" under "+a.ApprovalRef)
-	return nil
+	return "recorded by the recording executor; nothing was deployed", nil
 }
 
-// Gate runs the check and, only if it holds, the executor. It is the
-// shape of the future boundary and is exercised by tests alone.
-func Gate(p *protocol.DeploymentProposal, a *protocol.Approval, now CurrentState, ex Executor) error {
+// Gate runs the check and, only if it holds, the executor.
+func Gate(p *protocol.DeploymentProposal, a *protocol.Approval, now CurrentState, ex Executor) (string, error) {
 	if err := MatchApproval(p, a, now); err != nil {
-		return err
+		return "", err
 	}
 	return ex.Execute(p, a)
+}
+
+// StateFrom reads the current state off a FRESH plan of the same target,
+// taken immediately before execution, for comparison with the approved
+// proposal.
+func StateFrom(fresh, approved *protocol.DeploymentProposal) CurrentState {
+	if fresh == nil {
+		return CurrentState{}
+	}
+	md, _ := fresh.Manifest["digest"].(string)
+	dep, _ := fresh.Observed["deployedRevision"].(string)
+	freshSha, _ := fresh.Revision["sha"].(string)
+	approvedSha := ""
+	if approved != nil {
+		approvedSha, _ = approved.Revision["sha"].(string)
+	}
+	return CurrentState{
+		ManifestDigest:   md,
+		DeployedRevision: dep,
+		RevisionExists:   fresh.Status == "planned" && freshSha != "" && freshSha == approvedSha,
+	}
 }

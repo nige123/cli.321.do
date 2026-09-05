@@ -279,3 +279,21 @@ func TestManifestValidationRefusesEscapesAndContradictions(t *testing.T) {
 		t.Errorf("publisher must equal the id's domain: %v", ps)
 	}
 }
+
+// The params hash a 123 issuer computes for a deployment approval must be
+// the hash this runtime computes; the vector below was produced by
+// api.123.do's Do::API::Work::Canonical over the same params.
+func TestDeploymentApprovalParamsHashVectorMatchesThePerlIssuer(t *testing.T) {
+	params := map[string]any{
+		"proposalId":     "01PROPOSALFIXTURE0000000001",
+		"proposalDigest": "sha256:" + strings.Repeat("a", 64),
+		"service":        "alpha.web",
+		"target":         "live",
+		"revision":       "0f94b03cf776c9b4ca9fe028d6879557f8d06bb3",
+		"manifestDigest": "sha256:" + strings.Repeat("3", 64),
+	}
+	h, err := ParamsHash(params)
+	if err != nil || h != "sha256:60a5b36aea7f740cd0dcf05fec141e632b0ab7faa8517a9d58e1d102a9ed40a0" {
+		t.Fatalf("cross-language params hash: %v %s", err, h)
+	}
+}

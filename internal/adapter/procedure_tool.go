@@ -72,6 +72,17 @@ func (p *ProcedureAdapter) runTool(ctx context.Context, spec Spec, ctl Control, 
 		return fail("denied", fmt.Sprintf("%s %s needs %s, which is not granted", step.Tool, step.Op, op.Capability))
 	}
 
+	// THE EXECUTION BOUNDARY. A mutating operation with an executor bound
+	// is performed only under an approval that names exactly this plan,
+	// checked against a fresh observation taken by the preceding plan
+	// step. The runtime never re-derives the plan itself: the approved
+	// proposal is what the person saw; the fresh one is what is true now.
+	if op.Mutates {
+		if ex, ok := t.(tool.Executing); ok && ex.Executor() != nil {
+			return p.runBoundary(spec, ctl, step, op, ex.Executor(), out)
+		}
+	}
+
 	params := map[string]string{}
 	for k, v := range step.Params {
 		str, _ := v.(string)
@@ -230,4 +241,76 @@ func buildProposal(spec Spec, data map[string]any) *protocol.DeploymentProposal 
 	}
 	p.ProposalDigest, _ = protocol.ProposalDigest(*p)
 	return p
+}
+
+func (p *ProcedureAdapter) runBoundary(spec Spec, ctl Control, step protocol.ProcedureStep, op tool.Op, ex tool.Executor, out *Outcome) toolStepResult {
+	call := protocol.ToolCall{Tool: step.Tool, Op: step.Op, Capability: op.Capability, Ok: false, ExitCode: -1}
+	record := func() { out.ToolCalls = append(out.ToolCalls, call) }
+	approval := spec.Package.Approval
+	if approval == nil || approval.Proposal == nil {
+		call.Unavailable = "no approval bound to a proposal is attached to this package"
+		record()
+		out.Status = protocol.StatusBlocked
+		out.EndReason = "approval_required"
+		out.BlockedOn = "executing needs a person's approval bound to a deployment proposal; none is attached to this package"
+		if out.Proposal != nil {
+			out.BlockedOn += fmt.Sprintf(" (a fresh plan was prepared: proposal %s, digest %s)", out.Proposal.ProposalID, out.Proposal.ProposalDigest)
+		}
+		out.Summary = "prepared, not executed: no approval"
+		return toolStepResult{done: true}
+	}
+	approved := approval.Proposal
+	fresh := out.Proposal
+	if fresh == nil {
+		call.Unavailable = "no fresh plan preceded the execution"
+		record()
+		out.Status = protocol.StatusFailed
+		out.EndReason = "no_fresh_plan"
+		out.Errors = append(out.Errors, "execution needs a fresh plan of the same target immediately before it")
+		return toolStepResult{done: true}
+	}
+	check := &protocol.ApprovalCheck{}
+	if h, err := protocol.ParamsHash(approval.Params); err == nil {
+		check.ParamsHashMatched = h == approval.ParamsHash
+	}
+	var err error
+	if fresh.Service != approved.Service || fresh.Target != approved.Target {
+		err = fmt.Errorf("the fresh plan is for %s@%s, the approval for %s@%s", fresh.Service, fresh.Target, approved.Service, approved.Target)
+	}
+	var result string
+	if err == nil {
+		result, err = tool.Gate(approved, approval, tool.StateFrom(fresh, approved), ex)
+	}
+	if err != nil {
+		check.OperationMatched = false
+		check.Detail = err.Error()
+		out.ApprovalCheck = check
+		out.Denials = append(out.Denials, "execute "+approved.Service+"@"+approved.Target)
+		call.Unavailable = "refused: " + err.Error()
+		record()
+		out.Status = protocol.StatusFailed
+		out.EndReason = "approval_mismatch"
+		out.Errors = append(out.Errors, "approval: "+err.Error())
+		out.Summary = "not executed: " + err.Error()
+		return toolStepResult{done: true}
+	}
+	check.OperationMatched = true
+	check.Detail = "the fresh plan matches the approved proposal " + approved.ProposalID + " and the approval " + approval.ApprovalRef
+	out.ApprovalCheck = check
+	call.Ok = true
+	call.ExitCode = 0
+	call.Summary = result
+	record()
+	out.ExternalAction = &protocol.ExternalAction{
+		ProposalRef: approval.ProposalRef,
+		ApprovalRef: approval.ApprovalRef,
+		Action:      "deploy",
+		Target:      approved.Service + "@" + approved.Target,
+		Params:      approval.Params,
+		PerformedAt: protocol.Now(),
+		Result:      result + " (executor: " + ex.Name() + ")",
+	}
+	ctl.Emit(protocol.EventToolResult, map[string]any{"tool": step.Tool, "op": step.Op, "ok": true, "executor": ex.Name(), "result": result})
+	out.Summary = "executed under approval " + approval.ApprovalRef + ": " + result
+	return toolStepResult{}
 }

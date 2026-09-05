@@ -88,6 +88,12 @@ invariants:
     - A receipt's cost carries its basis: none when no model was used, harness
       when the harness reported it, unreported when a harness ran and reported
       nothing. A zero without a basis is unknown, not free.
+    - An approval of a deployment travels on the package as approval.proposal,
+      the approved proposal verbatim with its digest named in the approved
+      parameters. Where an executor is bound, execution is preceded by a fresh
+      plan of the same target and refused unless the approved parameters, the
+      manifest digest and the deployed revision all still hold; changed
+      parameters need a new proposal and a renewed approval.
 
 constraints:
     - Go standard library only for the runtime; the five public protocols and

@@ -80,7 +80,8 @@
         "action": { "type": "string" },
         "target": { "type": "string" },
         "params": { "type": "object" },
-        "paramsHash": { "$ref": "#/$defs/digest", "description": "sha256 over the canonical JSON of params (keys sorted, no whitespace)." }
+        "paramsHash": { "$ref": "#/$defs/digest", "description": "sha256 over the canonical JSON of params (keys sorted, no whitespace)." },
+        "proposal": { "$ref": "deployment-proposal.v1.json", "description": "The approved deployment proposal, verbatim, so execution can compare a fresh plan with exactly what was approved. Its proposalDigest must equal params.proposalDigest." }
       }
     },
     "outputSchema": { "type": "string", "description": "A file inside the agent package; defaults to the package's outputSchemas.default." }

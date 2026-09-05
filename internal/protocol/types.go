@@ -390,6 +390,10 @@ type Approval struct {
 	Target      string         `json:"target,omitempty"`
 	Params      map[string]any `json:"params"`
 	ParamsHash  string         `json:"paramsHash"`
+	// Proposal is the approved deployment proposal, carried verbatim so
+	// the execution boundary can compare a fresh plan against exactly
+	// what the person approved. Its digest must equal params.proposalDigest.
+	Proposal *DeploymentProposal `json:"proposal,omitempty"`
 }
 
 // ---------------------------------------------------------------------

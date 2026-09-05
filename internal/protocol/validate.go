@@ -330,6 +330,14 @@ func ValidateWorkPackage(w *WorkPackage) Problems {
 				c.add("approval.paramsHash", "does not match the canonical hash of approval.params")
 			}
 		}
+		if p := a.Proposal; p != nil {
+			for _, pr := range ValidateDeploymentProposal(p) {
+				c.add("approval.proposal."+pr.Path, "%s", pr.Message)
+			}
+			if want, _ := a.Params["proposalDigest"].(string); want != "" && want != p.ProposalDigest {
+				c.add("approval.proposal.proposalDigest", "is not the digest the approval's params name")
+			}
+		}
 	}
 	return c.ps
 }

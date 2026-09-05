@@ -93,3 +93,9 @@ func OpOf(t Tool, name string) (Op, bool) {
 	}
 	return Op{}, false
 }
+
+// Executing is a tool whose execute operation can be performed by a
+// configured Executor. Without one, execute is reported unavailable.
+type Executing interface {
+	Executor() Executor
+}
