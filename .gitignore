@@ -1,0 +1,4 @@
+/321
+/dist/
+*.test
+/.claude/settings.local.json

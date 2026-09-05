@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://321.do/schemas/work-package.v1.json",
+  "title": "work-package.v1",
+  "description": "The immutable contract for one piece of work, issued by a work system or built locally by the 321 CLI. A material change is a new package linked by supersedesPackageId, never an edit. Correlation references are opaque to the runtime and echoed verbatim on the receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "packageId", "issuer", "issuedAt", "agent", "placement", "workspace", "objective", "completion", "capabilities"],
+  "properties": {
+    "schema": { "const": "work-package.v1" },
+    "packageId": { "$ref": "#/$defs/ulid" },
+    "issuer": { "$ref": "#/$defs/issuer" },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "idempotencyKey": { "type": "string" },
+    "supersedesPackageId": { "$ref": "#/$defs/ulid" },
+    "correlation": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "refs": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "type": "string" }, "id": { "type": "string" } } } } }
+    },
+    "agent": { "$ref": "#/$defs/agentRef" },
+    "placement": { "enum": ["client", "server", "either"] },
+    "workspace": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "ownership"],
+      "properties": {
+        "kind": { "enum": ["git", "none"] },
+        "path": { "type": "string" },
+        "branch": { "type": "string" },
+        "ownership": { "enum": ["caller", "runtime"], "description": "caller: the caller commits and lands; the runtime only edits. runtime ownership is reserved and refused in this release." }
+      }
+    },
+    "objective": { "type": "string", "minLength": 1 },
+    "instructions": { "type": "string" },
+    "context": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "lines": { "type": "array", "items": { "type": "string" } },
+        "attachments": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string" }, "sha256": { "type": "string" }, "uri": { "type": "string" } } } }
+      }
+    },
+    "completion": {
+      "type": "object", "additionalProperties": false, "required": ["conditions"],
+      "properties": {
+        "conditions": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Ordered. The receipt's conditions align to these by index and the order is never changed." },
+        "expectedEvidence": { "type": "array", "items": { "type": "string" } },
+        "landing": { "enum": ["commit", "none"], "description": "What proves the work landed. Interpreted by the issuer's judge, not by the runtime." }
+      }
+    },
+    "capabilities": {
+      "type": "object", "additionalProperties": false, "required": ["granted", "limits"],
+      "properties": {
+        "granted": { "type": "array", "items": { "enum": ["repo.read", "repo.write", "shell.run", "net.fetch", "files.read", "files.write", "model.text", "deploy.invoke"] } },
+        "limits": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "maxUsd": { "type": "number", "minimum": 0 },
+            "maxTurns": { "type": "integer", "minimum": 0 },
+            "timeout": { "type": "string", "description": "Go duration for the whole run, all attempts." },
+            "network": { "enum": ["none", "provider_only", "open"], "description": "Agent-controlled network access. provider_only (the default) still lets the harness reach its own model provider." }
+          }
+        }
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "description": "The issuer's prose authority block, carried verbatim into the prompt. Prose is not a security boundary; the grants are.",
+      "properties": {
+        "may": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["capability"], "properties": { "capability": { "type": "string" }, "scope": { "type": "string" } } } },
+        "mayNot": { "type": "array", "items": { "type": "string" } },
+        "approvalRequired": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "approval": {
+      "type": "object", "additionalProperties": false, "required": ["proposalRef", "approvalRef", "approvedBy", "action", "params", "paramsHash"],
+      "description": "Binds this package to exactly one approved action. The runtime recomputes paramsHash from params and compares the operation it is about to perform with action, target and params before performing it.",
+      "properties": {
+        "proposalRef": { "type": "string" },
+        "approvalRef": { "type": "string" },
+        "approvedBy": { "type": "string" },
+        "action": { "type": "string" },
+        "target": { "type": "string" },
+        "params": { "type": "object" },
+        "paramsHash": { "$ref": "#/$defs/digest", "description": "sha256 over the canonical JSON of params (keys sorted, no whitespace)." }
+      }
+    },
+    "outputSchema": { "type": "string", "description": "A file inside the agent package; defaults to the package's outputSchemas.default." }
+  },
+  "$defs": {
+    "ulid": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "issuer": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "type": "string", "description": "local for standalone use, otherwise the issuing system's name." }, "id": { "type": "string" }, "url": { "type": "string" } } },
+    "agentRef": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string" }, "version": { "type": "string" }, "digest": { "$ref": "#/$defs/digest" } } }
+  }
+}

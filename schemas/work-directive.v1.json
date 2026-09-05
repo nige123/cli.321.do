@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://321.do/schemas/work-directive.v1.json",
+  "title": "work-directive.v1",
+  "description": "One ordered in-flight instruction for a running package. clarify and steer stay within the current contract and are applied in seq order. pause, resume and stop are controls. stop is applied as soon as it is authenticated even if earlier sequence numbers are missing; the gap is recorded. Anything that changes objective, conditions, authority, workspace, grants, limits or approved parameters is not a directive but a replacement package.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "directiveId", "packageId", "seq", "issuer", "issuedAt", "kind", "digest"],
+  "properties": {
+    "schema": { "const": "work-directive.v1" },
+    "directiveId": { "type": "string", "minLength": 1 },
+    "packageId": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "runRef": { "type": "string", "description": "Optional. When present it must name the run this directive is for." },
+    "seq": { "type": "integer", "minimum": 1 },
+    "issuer": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "type": "string" }, "id": { "type": "string" }, "url": { "type": "string" } } },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "kind": { "enum": ["clarify", "steer", "pause", "resume", "stop"] },
+    "payload": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string", "description": "Required for clarify and steer." },
+        "answerTo": { "type": "string", "description": "For clarify: what question this answers." },
+        "reason": { "type": "string" }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256 over the canonical JSON of this directive with digest set to the empty string." }
+  }
+}
