@@ -259,6 +259,13 @@ match its pattern is refused before anything runs.
   (web.321.do's `bin/deploy-engine`). Unset, the tool is present but not
   configured and a procedure that needs it fails saying so. `321 doctor`
   prints the binding.
+- `DEPLOY_ENGINE_EXECUTE` names, as a comma-separated list, the targets on
+  which an APPROVED deployment may be executed through the engine's own
+  `go <service> <target>`. Unset, execute is unavailable, which is the
+  state of every production binding. A target not listed is refused before
+  the engine is invoked; the engine's own words decide success (a failed
+  gate, an aborted deploy or a rollback is a failure whatever the exit
+  code). This is the executor the boundary below calls.
 - A `plan` becomes a **deployment-proposal.v1** on the receipt
   (`evidence.proposal`, and `proposal.json` beside a standalone run's
   receipt): the engine-owned sections verbatim (exact revision, manifest

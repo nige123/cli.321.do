@@ -239,3 +239,34 @@ func TestTheFutureBoundaryMatchesTheExactProposalAndCurrentState(t *testing.T) {
 	pt.ProposalDigest = "sha256:" + strings.Repeat("0", 64)
 	refuse("tampered digest", &pt, a, now)
 }
+
+func TestTheEngineExecutorRunsGoOnlyOnAllowedTargets(t *testing.T) {
+	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	log := filepath.Join(t.TempDir(), "engine.log")
+	env := append(os.Environ(), "FAKE_ENGINE_LOG="+log, "FAKE_ENGINE_ALLOW_GO=1")
+	ex := &EngineExecutor{Bin: bin, AllowedTargets: []string{"dev"}, Env: env, Timeout: 20 * time.Second}
+	p := proposalFixture(t)
+	a := approvalFor(p)
+	// live is not allowed: refused before the engine is invoked
+	if _, err := ex.Execute(p, a); err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("live must be refused: %v", err)
+	}
+	if _, statErr := os.Stat(log); statErr == nil {
+		t.Fatal("the engine must not be invoked for a disallowed target")
+	}
+	pd := *p
+	pd.Target = "dev"
+	pd.ProposalDigest, _ = protocol.ProposalDigest(pd)
+	res, err := ex.Execute(&pd, approvalFor(&pd))
+	if err != nil || !strings.Contains(res, "completed") {
+		t.Fatalf("dev: %v %s", err, res)
+	}
+	if inv := invocations(log); len(inv) != 1 || strings.TrimSpace(inv[0]) != "go alpha.web dev" {
+		t.Fatalf("argv: %q", inv)
+	}
+	// the engine reports a failed gate in words, exit 0: that is a failure
+	ex.Env = append(env, "FAKE_ENGINE_GO_FAILS=1")
+	if _, err := ex.Execute(&pd, approvalFor(&pd)); err == nil || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("a rolled-back deploy must be reported as a failure: %v", err)
+	}
+}

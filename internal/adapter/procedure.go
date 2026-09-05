@@ -51,6 +51,11 @@ func (p *ProcedureAdapter) Bindings() []string {
 			} else {
 				state = "not configured (set DEPLOY_ENGINE_BIN to the engine's explicit entry point)"
 			}
+			if ee, ok := de.Exec.(*tool.EngineExecutor); ok {
+				state += "; execute ENABLED on " + strings.Join(ee.AllowedTargets, ", ") + " (DEPLOY_ENGINE_EXECUTE)"
+			} else if de.Exec == nil {
+				state += "; execute unavailable"
+			}
 		}
 		var ops []string
 		for _, o := range t.Ops() {

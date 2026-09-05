@@ -304,3 +304,76 @@ func short(sha string) string {
 	}
 	return sha
 }
+
+// EngineExecutor performs an approved deployment by calling the engine's
+// own `go <service> <target>` through the same explicit entry point. It is
+// bound only when DEPLOY_ENGINE_EXECUTE names the targets it may act on;
+// a target not named is refused before anything runs. The engine keeps
+// every deployment mechanic; this only invokes it and reports its words.
+type EngineExecutor struct {
+	Bin            string
+	AllowedTargets []string
+	Timeout        time.Duration
+	Env            []string
+}
+
+func (e *EngineExecutor) Name() string { return "deploy-engine go" }
+
+// Allowed says whether execution may reach target at all.
+func (e *EngineExecutor) Allowed(target string) bool {
+	for _, t := range e.AllowedTargets {
+		if t == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *EngineExecutor) Execute(p *protocol.DeploymentProposal, a *protocol.Approval) (string, error) {
+	if !e.Allowed(p.Target) {
+		return "", fmt.Errorf("execution on target %q is not enabled here (DEPLOY_ENGINE_EXECUTE lists: %s)", p.Target, strings.Join(e.AllowedTargets, ", "))
+	}
+	if !serviceRe.MatchString(p.Service) || !targetRe.MatchString(p.Target) {
+		return "", fmt.Errorf("the approved proposal names an invalid service or target")
+	}
+	if e.Bin == "" {
+		return "", errors.New("no engine executable is configured")
+	}
+	timeout := e.Timeout
+	if timeout <= 0 {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	argv := []string{"go", p.Service, p.Target}
+	cmd := exec.CommandContext(ctx, e.Bin, argv...)
+	if e.Env != nil {
+		cmd.Env = e.Env
+	} else {
+		cmd.Env = os.Environ()
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &limited{w: &out, max: 64 * 1024}
+	cmd.Stderr = cmd.Stdout
+	err := cmd.Run()
+	text := Redact(strings.TrimSpace(out.String()))
+	tail := text
+	if len(tail) > 2000 {
+		tail = "…" + tail[len(tail)-2000:]
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("engine go did not finish within %s: %s", timeout, tail)
+	}
+	if err != nil {
+		return "", fmt.Errorf("engine go failed: %v: %s", err, tail)
+	}
+	// The engine's go reports a failed gate, an aborted deploy or a
+	// rollback in words and exits 0; read them rather than the exit code.
+	lower := strings.ToLower(text)
+	for _, bad := range []string{"deploy aborted", "rolled back", "[fail]", "did not recover", "can't reach"} {
+		if strings.Contains(lower, bad) {
+			return "", fmt.Errorf("engine go did not succeed: %s", tail)
+		}
+	}
+	return "engine go " + p.Service + " " + p.Target + " completed: " + tail, nil
+}
