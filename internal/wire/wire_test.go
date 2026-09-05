@@ -299,3 +299,32 @@ func TestAnUnloadableAgentYieldsADeniedReceiptNamingThePackage(t *testing.T) {
 		t.Fatalf("exit %d last %v", code, last)
 	}
 }
+
+func TestContinueFromAReceiptFile(t *testing.T) {
+	wp := pkg(t, "ask me")
+	pb, _ := json.Marshal(wp)
+	first := filepath.Join(t.TempDir(), "r1.json")
+	blocked := []protocol.ProcedureStep{{Kind: "blocked", Question: "which file?"}}
+	code, _, _ := serve(t, Options{PackageSource: "-", Adapter: "fake", ReceiptPath: first}, bytes.NewReader(append(pb, '\n')), blocked)
+	if code != ExitBlocked {
+		t.Fatalf("first run exit %d", code)
+	}
+	var in bytes.Buffer
+	in.Write(pb)
+	in.WriteByte('\n')
+	in.Write(directive(wp.PackageID, 1, protocol.DirectiveClarify, "calc.go"))
+	script := []protocol.ProcedureStep{{Kind: "await_directive"}, {Kind: "assert", Condition: 1, Met: true, Proof: "answered"}}
+	code, objs, _ := serve(t, Options{PackageSource: "-", Adapter: "fake", ContinueFrom: first}, &in, script)
+	if code != ExitCompleted {
+		t.Fatalf("continuation exit %d", code)
+	}
+	last := objs[len(objs)-1]
+	cont, _ := last["continues"].(map[string]any)
+	if cont == nil || cont["attempts"] != float64(1) {
+		t.Fatalf("continuation link missing: %v", last["continues"])
+	}
+	code, objs, _ = serve(t, Options{PackageSource: "-", ContinueFrom: filepath.Join(t.TempDir(), "missing.json")}, bytes.NewReader(append(pb, '\n')), nil)
+	if code != ExitMalformed || objs[0]["code"] != "continue_unreadable" {
+		t.Fatalf("an unreadable continuation is a protocol error: %d %v", code, objs[0])
+	}
+}

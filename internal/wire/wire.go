@@ -93,6 +93,7 @@ type Options struct {
 	RunID         string
 	HistoryDir    string
 	Adapter       string
+	ContinueFrom  string // path of the terminal receipt this run continues
 
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -187,6 +188,14 @@ func Serve(ctx context.Context, opts Options) int {
 		HistoryDir: opts.HistoryDir,
 		Adapter:    opts.Adapter,
 	}
+	if opts.ContinueFrom != "" {
+		prev, err := readReceipt(opts.ContinueFrom)
+		if err != nil {
+			out.frame(&protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "continue_unreadable", Message: err.Error()})
+			return ExitMalformed
+		}
+		runOpts.Continue = prev
+	}
 	if opts.Trust != nil {
 		runOpts.Policy = opts.Trust.Policy
 	}
@@ -211,6 +220,21 @@ func Serve(ctx context.Context, opts Options) int {
 	}
 	out.frame(receipt)
 	return ExitFor(receipt.Status)
+}
+
+func readReceipt(path string) (*protocol.RunReceipt, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var r protocol.RunReceipt
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, fmt.Errorf("%s: %v", path, err)
+	}
+	if ps := protocol.ValidateRunReceipt(&r); len(ps) > 0 {
+		return nil, fmt.Errorf("%s: %v", path, ps)
+	}
+	return &r, nil
 }
 
 func loadAgent(opts Options, wp *protocol.WorkPackage) (*trust.Loaded, error) {

@@ -1,0 +1,1 @@
+{"digest":"","directiveId":"d-1","issuedAt":"2026-09-05T10:00:00Z","issuer":{"id":"user:7","kind":"human"},"kind":"steer","packageId":"01J9ZZZZZZZZZZZZZZZZZZZZZ1","payload":{"text":"use the existing helper — don’t add a new one"},"schema":"work-directive.v1","seq":1}

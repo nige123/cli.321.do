@@ -8,7 +8,7 @@
   "required": ["schema", "code", "message"],
   "properties": {
     "schema": { "const": "protocol-error.v1" },
-    "code": { "enum": ["no_package", "read_failed", "package_unreadable", "malformed_json", "not_a_work_package", "malformed_package", "unidentified_package", "malformed_directive", "unexpected_frame"] },
+    "code": { "enum": ["no_package", "read_failed", "package_unreadable", "malformed_json", "not_a_work_package", "malformed_package", "unidentified_package", "malformed_directive", "unexpected_frame", "continue_unreadable"] },
     "message": { "type": "string" },
     "line": { "type": "integer" }
   }

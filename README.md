@@ -176,6 +176,13 @@ denied with the reasons. There is no fallback to a less restricted run.
 harness's own connection to its model provider: `provider_only` (the
 default) allows the latter only.
 
+Network authority is separate from shell authority. `shell.run` never
+implies network access: the agent's network mode comes only from an
+explicit grant (`--network open` at the terminal, `limits.network` in an
+issued package, or local policy). With a shell granted and no open network,
+an adapter that cannot deny the network to that shell is refused. The
+default is `provider_only`.
+
 An approved external action is checked before it happens: the runtime
 recomputes `paramsHash` from `approval.params` and compares the operation it
 is about to perform, action, target and params, with the approval. A hash
@@ -208,12 +215,36 @@ approved parameters is not a directive: it is a new immutable package with
 `supersedesPackageId`. The old run is stopped with that reason; the receipt
 records it.
 
+A run that ended `blocked` can be continued once its question is answered:
+`321 run --continue <old receipt>` with the SAME package and a `clarify`
+directive. The contract is unchanged; attempt numbering, cumulative cost and
+the harness session carry forward (the session only on the same adapter);
+the old receipt is untouched and the new one links it under `continues`. A
+receipt from a different package, or one whose digest no longer matches,
+cannot be continued.
+
 The receipt (`schemas/run-receipt.v1.json`) describes the runtime outcome at
 the moment it ended: package and agent digests, adapter and session refs,
 every attempt, every directive's disposition, the instruction history by
 reference and digest, conditions aligned by index to the package's
 completion conditions, evidence, cumulative cost, and stop or denial
-details. Its `receiptDigest` is over its own canonical content.
+details. Its `packageDigest` is the digest of the package exactly as the
+runtime received it and `conditionsDigest` the digest of the ordered
+condition list, so the issuer can prove the receipt answers the package it
+issued, condition by condition. Its `receiptDigest` is over its own
+canonical content.
+
+## Canonical JSON
+
+Every digest and every cross-language hash uses one canonical form, stated
+in full in `internal/protocol/canonical.go` and pinned by the fixtures under
+`testdata/canonical/`: object members sorted by UTF-8 byte order, no
+whitespace, strings raw UTF-8 except `\"`, `\\`, `\b \f \n \r \t` and
+`\u00xx` for other control characters, integer literals as digits with `-0`
+as `0`, other numbers as the shortest round-tripping double in ES6
+`Number.prototype.toString` form, and no trailing newline. The Perl consumer
+in api.123.do is tested against the same fixture files. `testdata/protocol/`
+holds shared positive and negative validation fixtures for both sides.
 
 The runtime edits a caller-owned workspace and never commits. A commit is
 the caller's act; the caller records it beside the receipt and links the two

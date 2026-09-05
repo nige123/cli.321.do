@@ -447,6 +447,16 @@ type RunReceipt struct {
 	Issuer              Issuer      `json:"issuer"`
 	Correlation         Correlation `json:"correlation,omitempty"`
 
+	// PackageDigest is the digest of the canonical WorkPackage exactly as
+	// the runtime received it; ConditionsDigest is the digest of its
+	// ordered completion conditions. Together they let the issuer prove
+	// the receipt answers the package it issued, condition by condition.
+	PackageDigest    string `json:"packageDigest"`
+	ConditionsDigest string `json:"conditionsDigest"`
+	// Continues links a continuation run to the terminal receipt it
+	// continues from, when a blocked run was answered later.
+	Continues *Continuation `json:"continues,omitempty"`
+
 	Agent    AgentRef    `json:"agent"`
 	Harness  HarnessInfo `json:"harness"`
 	Attempts []Attempt   `json:"attempts"`
@@ -470,6 +480,14 @@ type RunReceipt struct {
 
 	ReceiptDigest string     `json:"receiptDigest"`
 	Signature     *Signature `json:"signature,omitempty"`
+}
+
+// Continuation links a run to the terminal receipt it continues.
+type Continuation struct {
+	RunID         string `json:"runId"`
+	ReceiptID     string `json:"receiptId"`
+	ReceiptDigest string `json:"receiptDigest"`
+	Attempts      int    `json:"attempts"` // attempts already spent before this run
 }
 
 // HarnessInfo names what executed the work.

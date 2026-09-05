@@ -1,0 +1,1 @@
+{"zero": 0, "negzero": -0, "int": 42, "negint": -7, "bigint": 9007199254740993, "onepointzero": 1.0, "half": 0.5, "tenth": 0.1, "sum": 0.30000000000000004, "large": 1e21, "large-minus": 1e20, "small": 1e-7, "small-boundary": 0.000001, "below-boundary": 0.0000001, "exp-int": 1E2, "neg-frac": -2.5e-3, "long": 123456.789, "usd": 0.6, "cost": 1.2, "negzero-float": -0.0}

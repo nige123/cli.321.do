@@ -93,6 +93,26 @@ func (d *directiveState) start(ctx context.Context, cancelRun context.CancelFunc
 	}()
 }
 
+// drainNow takes every directive the caller has already delivered, so
+// instructions handed over with the package apply at the first attempt
+// rather than interrupting it a moment later.
+func (d *directiveState) drainNow() {
+	if d.s.opts.Directives == nil {
+		return
+	}
+	for {
+		select {
+		case dir, ok := <-d.s.opts.Directives:
+			if !ok {
+				return
+			}
+			d.receive(dir)
+		default:
+			return
+		}
+	}
+}
+
 func (d *directiveState) receive(dir protocol.WorkDirective) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -195,5 +196,44 @@ func TestRunSubcommandParsesItsOptions(t *testing.T) {
 	code, _, errb := runCLI(t, "", "run", "--nope")
 	if code != wire.ExitUsage || !strings.Contains(errb, "unknown option") {
 		t.Fatalf("%d %s", code, errb)
+	}
+}
+
+type noNetStub struct{}
+
+func (noNetStub) Name() string { return "stubllm" }
+func (noNetStub) Detect() adapter.Detection {
+	return adapter.Detection{Available: true, Version: "t"}
+}
+func (noNetStub) Enforcement() adapter.Enforcement {
+	return adapter.Enforcement{protocol.FeatToolAllowlist: true, protocol.FeatStructuredOutput: true, protocol.FeatTurnLimit: true, protocol.FeatSpendLimit: true, protocol.FeatGracefulStop: true}
+}
+func (noNetStub) Run(ctx context.Context, spec adapter.Spec, ctl adapter.Control) (adapter.Outcome, error) {
+	return adapter.Outcome{Status: protocol.StatusCompleted, Summary: "stub", Conditions: []protocol.ConditionProof{{Met: true, Proof: "stub"}}}, nil
+}
+
+func TestShellDoesNotImplyNetworkAndTheGrantMustBeExplicit(t *testing.T) {
+	tp := devTrust(t)
+	reg := adapter.NewRegistry()
+	reg.RegisterHidden(adapter.NewProcedure())
+	reg.Register(noNetStub{})
+	runWith := func(args ...string) (int, string, string) {
+		var out, errb bytes.Buffer
+		code := Main(Env{Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb, Args: args, TrustPath: tp, Home: t.TempDir(), Adapters: reg})
+		return code, out.String(), errb.String()
+	}
+	// helper lists shell.run as optional; granting it without a network
+	// grant leaves a shell that could reach the network unrestricted.
+	code, out, _ := runWith("--grant", "shell.run", "helper", "build something")
+	if code != wire.ExitDenied || !strings.Contains(out, "network_deny") {
+		t.Fatalf("expected denial naming network_deny: %d %s", code, out)
+	}
+	code, out, _ = runWith("--grant", "shell.run", "--network", "open", "helper", "build something")
+	if code != 0 {
+		t.Fatalf("an explicit open network grant should run: %d %s", code, out)
+	}
+	code, _, errb := runWith("--network", "wide", "helper", "build something")
+	if code != wire.ExitUsage || !strings.Contains(errb, "--network must be") {
+		t.Fatalf("bad network value: %d %s", code, errb)
 	}
 }

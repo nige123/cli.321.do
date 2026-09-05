@@ -5,7 +5,7 @@
   "description": "The immutable report of one run of one package. It describes the runtime outcome and the evidence available at the moment the runtime ended. It never contains a commit: committing is the caller's act, recorded by the caller and linked to this receipt by receiptDigest. Conditions align by index to the package's completion conditions and are never reordered.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "receiptId", "packageId", "runId", "issuer", "agent", "harness", "attempts", "directives", "instructionHistory", "events", "startedAt", "endedAt", "status", "conditions", "evidence", "cost", "receiptDigest"],
+  "required": ["schema", "receiptId", "packageId", "runId", "issuer", "packageDigest", "conditionsDigest", "agent", "harness", "attempts", "directives", "instructionHistory", "events", "startedAt", "endedAt", "status", "conditions", "evidence", "cost", "receiptDigest"],
   "properties": {
     "schema": { "const": "run-receipt.v1" },
     "receiptId": { "type": "string" },
@@ -14,6 +14,9 @@
     "runId": { "type": "string", "description": "The runtime's identifier for this execution. Distinct from packageId (the contract), attempt numbers (harness invocations within the run), receiptId (this report) and harness session references (provider continuation handles)." },
     "issuer": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "type": "string" }, "id": { "type": "string" }, "url": { "type": "string" } } },
     "correlation": { "type": "object", "additionalProperties": false, "properties": { "refs": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "type": "string" }, "id": { "type": "string" } } } } }, "description": "The issuer's own references, echoed verbatim from the package." },
+    "packageDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the canonical WorkPackage exactly as received. The issuer compares it with the digest of the package it issued." },
+    "conditionsDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "Digest of the canonical ordered completion.conditions array, proving the by-index mapping is against the same list." },
+    "continues": { "type": "object", "additionalProperties": false, "required": ["runId", "receiptId", "receiptDigest", "attempts"], "description": "Present on a continuation run: the terminal receipt this run continues from, and how many attempts it had already spent. Budgets are cumulative across the chain.", "properties": { "runId": { "type": "string" }, "receiptId": { "type": "string" }, "receiptDigest": { "type": "string" }, "attempts": { "type": "integer" } } },
     "agent": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "version": { "type": "string" }, "digest": { "type": "string" } } },
     "harness": {
       "type": "object", "additionalProperties": false, "required": ["adapter"],

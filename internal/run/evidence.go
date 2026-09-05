@@ -15,6 +15,7 @@ type historyLine struct {
 	Kind         string                  `json:"kind"`
 	Package      *protocol.WorkPackage   `json:"package,omitempty"`
 	Directive    *protocol.WorkDirective `json:"directive,omitempty"`
+	Continues    *protocol.Continuation  `json:"continues,omitempty"`
 	Disposition  string                  `json:"disposition,omitempty"`
 	Attempt      int                     `json:"attempt,omitempty"`
 	Instructions []string                `json:"instructions,omitempty"`
