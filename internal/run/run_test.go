@@ -584,7 +584,9 @@ func TestStopWhilePausedEndsTheRun(t *testing.T) {
 func TestAResumeWhenNotPausedIsRejected(t *testing.T) {
 	agent := helper(t)
 	wp := pkgFor(agent, "x", "done")
-	script := []protocol.ProcedureStep{{Kind: "await_directive"}, {Kind: "assert", Condition: 1, Met: true, Proof: "ok"}}
+	// A resume that is rejected never reaches the adapter, so the script
+	// must not wait for it.
+	script := []protocol.ProcedureStep{{Kind: "sleep", Duration: "10ms"}, {Kind: "assert", Condition: 1, Met: true, Proof: "ok"}}
 	ch := make(chan protocol.WorkDirective, 8)
 	ch <- directive(wp.PackageID, 1, protocol.DirectiveResume, "")
 	r := (&Runner{Adapters: fakeRegistry(script)}).Run(context.Background(), wp, agent, Options{Adapter: "fake", Directives: ch})
@@ -850,5 +852,100 @@ func TestPromptCarriesTheContractButClaimsNoAuthority(t *testing.T) {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------
+// continuation and receipt digests
+// ---------------------------------------------------------------------
+
+func TestTheReceiptNamesThePackageAndConditionsItAnswers(t *testing.T) {
+	agent := helper(t)
+	wp := pkgFor(agent, "note: quick", "a", "b")
+	r := (&Runner{Adapters: fakeRegistry(nil)}).Run(context.Background(), wp, agent, Options{})
+	pd, _ := protocol.PackageDigest(*wp)
+	cd, _ := protocol.ConditionsDigest(wp.Completion.Conditions)
+	if r.PackageDigest != pd || r.ConditionsDigest != cd {
+		t.Fatalf("receipt digests %s %s, want %s %s", r.PackageDigest, r.ConditionsDigest, pd, cd)
+	}
+	other := pkgFor(agent, "note: quick", "b", "a")
+	od, _ := protocol.ConditionsDigest(other.Completion.Conditions)
+	if od == cd {
+		t.Fatal("reordered conditions must not share a digest")
+	}
+}
+
+func TestAContinuationCarriesCostAttemptsAndSessionAndLinksTheOldReceipt(t *testing.T) {
+	agent := helper(t)
+	first := newStub(true)
+	first.status = protocol.StatusBlocked
+	first.cost = protocol.Cost{USD: 0.4, Turns: 2}
+	wp := pkgFor(agent, "build it", "built")
+	wp.Capabilities.Limits = protocol.Limits{MaxUSD: 1.0, Network: protocol.NetworkOpen}
+	r1 := (&Runner{Adapters: stubRegistry(first)}).Run(context.Background(), wp, agent, Options{})
+	checkReceipt(t, r1)
+	if r1.Status != protocol.StatusBlocked || len(r1.Attempts) != 1 {
+		t.Fatalf("first run should be blocked after one attempt: %s", r1.Status)
+	}
+
+	second := newStub(true)
+	second.cost = protocol.Cost{USD: 0.3, Turns: 1}
+	ch := make(chan protocol.WorkDirective, 4)
+	ch <- directive(wp.PackageID, 1, protocol.DirectiveClarify, "change calc.go")
+	r2 := (&Runner{Adapters: stubRegistry(second)}).Run(context.Background(), wp, agent, Options{Directives: ch, Continue: r1})
+	checkReceipt(t, r2)
+	if r2.Status != protocol.StatusCompleted {
+		t.Fatalf("continuation should complete: %s %s", r2.Status, r2.Summary)
+	}
+	if r2.Continues == nil || r2.Continues.RunID != r1.RunID || r2.Continues.ReceiptDigest != r1.ReceiptDigest || r2.Continues.Attempts != 1 {
+		t.Fatalf("continuation link wrong: %+v", r2.Continues)
+	}
+	if len(r2.Attempts) != 1 || r2.Attempts[0].N != 2 {
+		t.Fatalf("attempt numbering must continue: %+v", r2.Attempts)
+	}
+	spec := second.attempts()[0]
+	if spec.SessionRef != "sess-1" || len(spec.Instructions) != 1 || spec.Instructions[0] != "change calc.go" {
+		t.Fatalf("the continuation must resume the session with the answer: %+v", spec)
+	}
+	if spec.Limits.MaxUSD < 0.59 || spec.Limits.MaxUSD > 0.61 {
+		t.Fatalf("remaining budget must reflect the earlier run: %v", spec.Limits.MaxUSD)
+	}
+	if r2.Cost.USD < 0.69 || r2.Cost.USD > 0.71 || r2.Cost.Turns != 3 {
+		t.Fatalf("cost must be cumulative across the chain: %+v", r2.Cost)
+	}
+	if r2.PackageDigest != r1.PackageDigest {
+		t.Fatal("same package, same digest")
+	}
+	if d, _ := protocol.ReceiptDigest(*r1); d != r1.ReceiptDigest {
+		t.Fatal("the old receipt must be untouched")
+	}
+	// A receipt from a different package or a tampered one cannot be continued.
+	other := pkgFor(agent, "other")
+	other.Capabilities.Limits.Network = protocol.NetworkOpen
+	r3 := (&Runner{Adapters: stubRegistry(newStub(true))}).Run(context.Background(), other, agent, Options{Continue: r1})
+	if r3.Status != protocol.StatusDenied || !strings.Contains(r3.Denied.Reason, "different package") {
+		t.Fatalf("expected denial: %+v", r3.Denied)
+	}
+	tampered := *r1
+	tampered.Summary = "edited"
+	r4 := (&Runner{Adapters: stubRegistry(newStub(true))}).Run(context.Background(), wp, agent, Options{Continue: &tampered})
+	if r4.Status != protocol.StatusDenied || !strings.Contains(r4.Denied.Reason, "digest") {
+		t.Fatalf("a tampered receipt cannot be continued: %+v", r4.Denied)
+	}
+}
+
+func TestAContinuationOnADifferentAdapterDoesNotResumeTheSession(t *testing.T) {
+	agent := helper(t)
+	first := newStub(true)
+	first.status = protocol.StatusBlocked
+	wp := pkgFor(agent, "build it", "built")
+	wp.Capabilities.Limits.Network = protocol.NetworkOpen
+	r1 := (&Runner{Adapters: stubRegistry(first)}).Run(context.Background(), wp, agent, Options{})
+	r1.Harness.Adapter = "other-harness"
+	r1.ReceiptDigest, _ = protocol.ReceiptDigest(*r1)
+	second := newStub(true)
+	(&Runner{Adapters: stubRegistry(second)}).Run(context.Background(), wp, agent, Options{Continue: r1})
+	if second.attempts()[0].SessionRef != "" {
+		t.Fatal("a session from another harness must not be resumed")
 	}
 }

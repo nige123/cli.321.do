@@ -47,7 +47,13 @@ type Options struct {
 	HistoryDir string
 	Policy     trust.Policy
 	Adapter    string // restrict selection to one adapter name
-	Now        func() string
+	// Continue is the terminal receipt of an earlier run of the SAME
+	// package that this run continues, typically a blocked run whose
+	// question has now been answered by a clarify directive. The contract
+	// is unchanged; cost and attempt numbering carry forward; the old
+	// receipt is untouched and linked from the new one.
+	Continue *protocol.RunReceipt
+	Now      func() string
 	// ListChangedFiles reports workspace changes for the receipt. The
 	// default shells out to git for a git workspace.
 	ListChangedFiles func(workspace string) []string
@@ -137,11 +143,13 @@ type session struct {
 	adapter   adapter.Adapter
 	procedure *protocol.Procedure
 
-	mu       sync.Mutex
-	eventSeq int
-	spent    protocol.Cost
-	history  []historyLine
-	closed   bool
+	mu          sync.Mutex
+	eventSeq    int
+	spent       protocol.Cost
+	history     []historyLine
+	closed      bool
+	attemptBase int    // attempts spent by the runs this one continues
+	seedSession string // session to resume from the continued run
 
 	dir *directiveState
 }
@@ -179,7 +187,21 @@ func newSession(r *Runner, wp *protocol.WorkPackage, agent *trust.Loaded, opts O
 		StartedAt:           s.now(),
 		Conditions:          []protocol.ConditionProof{},
 	}
+	s.receipt.PackageDigest, _ = protocol.PackageDigest(*wp)
+	s.receipt.ConditionsDigest, _ = protocol.ConditionsDigest(wp.Completion.Conditions)
 	s.history = append(s.history, historyLine{Kind: "package", Package: wp})
+	if prev := opts.Continue; prev != nil {
+		s.attemptBase = len(prev.Attempts)
+		if prev.Continues != nil {
+			s.attemptBase += prev.Continues.Attempts
+		}
+		s.spent = prev.Cost
+		s.receipt.Continues = &protocol.Continuation{RunID: prev.RunID, ReceiptID: prev.ReceiptID, ReceiptDigest: prev.ReceiptDigest, Attempts: s.attemptBase}
+		if n := len(prev.Attempts); n > 0 {
+			s.seedSession = prev.Attempts[n-1].SessionRef
+		}
+		s.history = append(s.history, historyLine{Kind: "continues", Continues: s.receipt.Continues})
+	}
 	s.dir = newDirectiveState(s)
 	return s
 }
@@ -204,7 +226,7 @@ func (s *session) emit(kind string, payload map[string]any) {
 		EventID:   protocol.NewULID(),
 		PackageID: s.wp.PackageID,
 		RunID:     s.receipt.RunID,
-		Attempt:   len(s.receipt.Attempts) + 1,
+		Attempt:   s.attemptBase + len(s.receipt.Attempts) + 1,
 		Seq:       s.eventSeq,
 		At:        s.now(),
 		Kind:      kind,
@@ -252,6 +274,25 @@ func (s *session) check() (string, []string) {
 	}
 	if s.wp.Workspace.Kind == "git" && s.wp.Workspace.Ownership != "caller" {
 		return "runtime-owned workspaces are not supported in this release", nil
+	}
+	if prev := s.opts.Continue; prev != nil {
+		if prev.PackageID != s.wp.PackageID {
+			return "the continued receipt is for a different package", []string{"receipt " + prev.PackageID + ", package " + s.wp.PackageID}
+		}
+		if prev.PackageDigest != "" && prev.PackageDigest != s.receipt.PackageDigest {
+			return "the continued receipt saw a different package document", []string{"receipt " + prev.PackageDigest + ", now " + s.receipt.PackageDigest}
+		}
+		if prev.Agent.Digest != "" && prev.Agent.Digest != s.agent.Digest {
+			return "the continued receipt ran a different agent package", []string{"receipt " + prev.Agent.Digest + ", loaded " + s.agent.Digest}
+		}
+		if d, err := protocol.ReceiptDigest(*prev); err != nil || d != prev.ReceiptDigest {
+			return "the continued receipt does not match its own digest", nil
+		}
+		switch prev.Status {
+		case protocol.StatusBlocked, protocol.StatusStopped, protocol.StatusCompleted, protocol.StatusNoChange:
+		default:
+			return "only a blocked, stopped or completed run can be continued", []string{"previous status " + prev.Status}
+		}
 	}
 	return "", nil
 }
@@ -383,9 +424,13 @@ func (s *session) drive(parent context.Context) *protocol.RunReceipt {
 		}
 	}
 	s.dir.start(runCtx, cancelRun)
+	s.dir.drainNow()
 	live := s.adapter.Enforcement()
 
 	var last adapter.Outcome
+	if s.seedSession != "" && s.opts.Continue != nil && s.opts.Continue.Harness.Adapter == s.adapter.Name() && live.Enforces(protocol.FeatSessionContinue) {
+		last.SessionRef = s.seedSession
+	}
 	for {
 		if s.dir.stopRequested() {
 			s.receipt.Status = protocol.StatusStopped
@@ -397,7 +442,7 @@ func (s *session) drive(parent context.Context) *protocol.RunReceipt {
 			s.receipt.Evidence.Errors = append(s.receipt.Evidence.Errors, reason)
 			break
 		}
-		n := len(s.receipt.Attempts) + 1
+		n := s.attemptBase + len(s.receipt.Attempts) + 1
 		attemptCtx, cancelAttempt := context.WithCancel(runCtx)
 		s.dir.attemptStarted(cancelAttempt, live)
 		instructions, applying := s.dir.takeInstructions()
@@ -427,7 +472,7 @@ func (s *session) drive(parent context.Context) *protocol.RunReceipt {
 		s.appendHistory(historyLine{Kind: "attempt", Attempt: n, Instructions: instructions, SessionRef: out.SessionRef, EndReason: out.EndReason})
 		s.emit(protocol.EventAttemptEnded, map[string]any{"attempt": n, "status": out.Status, "endReason": out.EndReason, "boundary": boundary})
 		last = out
-		if out.SessionRef == "" && n > 1 && spec.SessionRef != "" {
+		if out.SessionRef == "" && spec.SessionRef != "" {
 			last.SessionRef = spec.SessionRef
 		}
 

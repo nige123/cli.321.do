@@ -388,6 +388,19 @@ func ValidateRunReceipt(r *RunReceipt) Problems {
 		c.add("agent.digest", "must be sha256:<hex>")
 	}
 	c.require("harness.adapter", r.Harness.Adapter)
+	if c.require("packageDigest", r.PackageDigest) && !IsDigest(r.PackageDigest) {
+		c.add("packageDigest", "must be sha256:<hex>")
+	}
+	if c.require("conditionsDigest", r.ConditionsDigest) && !IsDigest(r.ConditionsDigest) {
+		c.add("conditionsDigest", "must be sha256:<hex>")
+	}
+	if cn := r.Continues; cn != nil {
+		c.require("continues.runId", cn.RunID)
+		c.require("continues.receiptId", cn.ReceiptID)
+		if c.require("continues.receiptDigest", cn.ReceiptDigest) && !IsDigest(cn.ReceiptDigest) {
+			c.add("continues.receiptDigest", "must be sha256:<hex>")
+		}
+	}
 	c.timestamp("startedAt", r.StartedAt, true)
 	c.timestamp("endedAt", r.EndedAt, true)
 	c.oneOf("status", r.Status, StatusCompleted, StatusNoChange, StatusBlocked, StatusFailed, StatusStopped, StatusDenied)

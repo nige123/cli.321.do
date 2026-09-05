@@ -1,0 +1,1 @@
+{"quote": "say \"hi\"", "backslash": "a\\b", "slash": "a\/b", "controls": "tab\tnl\ncr\rbs\bff\f", "other-control": "\u0001\u001f", "unicode": "caf\u00e9 \u65e5\u672c \ud83d\ude00", "line-sep": "\u2028 \u2029", "empty": "", "raw-e-acute": "é", "del": "\u007f"}

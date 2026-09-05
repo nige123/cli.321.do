@@ -1,0 +1,1 @@
+{"document":{"schema":"work-directive.v1","directiveId":"","packageId":"01J9ZZZZZZZZZZZZZZZZZZZZZ1","seq":0,"issuer":{"kind":"","id":""},"issuedAt":"2026-09-05T10:00:00Z","kind":"nudge","payload":{},"digest":""},"expect":["directiveId","seq","issuer.kind","kind","digest"]}

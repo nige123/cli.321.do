@@ -191,13 +191,16 @@ func buildPackage(cfg *trust.Config, agent *trust.Loaded, g global, request, wor
 		placement = protocol.PlacementClient
 	}
 	limits := cfg.Policy.Limits
-	if limits.Network == "" {
-		// A person at a terminal granting shell.run has granted the network
-		// the shell can reach; say so rather than pretend otherwise.
-		for _, c := range grants {
-			if c == protocol.CapShellRun || c == protocol.CapNetFetch {
-				limits.Network = protocol.NetworkOpen
-			}
+	// Network authority is separate and explicit: shell.run does not imply
+	// it. The person states it with --network, or local policy does;
+	// otherwise the default provider_only stands and an adapter that cannot
+	// deny the network to a granted shell is refused.
+	if g.network != "" {
+		switch g.network {
+		case protocol.NetworkNone, protocol.NetworkProviderOnly, protocol.NetworkOpen:
+			limits.Network = g.network
+		default:
+			return nil, fmt.Errorf("--network must be none, provider_only or open")
 		}
 	}
 	user := os.Getenv("USER")

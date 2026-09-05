@@ -1,0 +1,1 @@
+{"schema": "work-directive.v1", "directiveId": "d-1", "packageId": "01J9ZZZZZZZZZZZZZZZZZZZZZ1", "seq": 1, "issuer": {"kind": "human", "id": "user:7"}, "issuedAt": "2026-09-05T10:00:00Z", "kind": "steer", "payload": {"text": "use the existing helper — don’t add a new one"}, "digest": ""}

@@ -93,6 +93,7 @@ type global struct {
 	packageDir     string
 	placement      string
 	adapter        string
+	network        string
 	attach         []string
 	done           []string
 	grant          []string
@@ -136,6 +137,8 @@ func parseGlobal(args []string) (global, []string, error) {
 			g.placement, err = need()
 		case "--adapter":
 			g.adapter, err = need()
+		case "--network":
+			g.network, err = need()
 		case "--attach":
 			var v string
 			v, err = need()
@@ -235,6 +238,8 @@ func cmdRun(env Env, g global, args []string) int {
 			opts.HistoryDir, err = need()
 		case "--adapter":
 			opts.Adapter, err = need()
+		case "--continue":
+			opts.ContinueFrom, err = need()
 		default:
 			err = fmt.Errorf("unknown option %s for run", name)
 		}
@@ -265,6 +270,10 @@ Options before the agent:
   --done <condition>      a completion condition, in order (repeatable)
   --grant <capability>    grant an optional capability within local policy (repeatable)
   --placement client|server|either
+  --network none|provider_only|open
+                          the agent's own network access (default: local policy, else provider_only).
+                          shell.run does not imply network: with a shell granted and no open
+                          network, no adapter that cannot deny the network will be selected
   --adapter <name>        insist on one adapter
   --non-interactive       never read steering from the terminal
   --json                  print events as JSON lines instead of a transcript
@@ -273,6 +282,8 @@ Options before the agent:
 Machine invocation:
   321 run --package <file|-> [--workspace <dir>] [--receipt <file>] [--events <file>]
           [--run-id <id>] [--history-dir <dir>] [--adapter <name>] [--package-dir <dir>]
+          [--continue <receipt.json>]   continue a blocked run of the SAME package: cost and
+                                        attempts carry forward, the old receipt is linked
       stdin:  the work package (when --package -), then work directives, one JSON object per line
       stdout: run events, then exactly one run receipt; a protocol error when no package can be identified
 

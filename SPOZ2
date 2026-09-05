@@ -25,6 +25,10 @@ behaviours:
       the issuer's correlation references.
     - Stop takes effect even when earlier directive sequence numbers are
       missing; clarify and steer stay ordered and are never silently dropped.
+    - A run that ended blocked can be continued once its question is answered:
+      the same immutable package, a clarify directive, cost and attempt
+      numbering carried forward, the old receipt preserved and linked from the
+      new one.
 
 invariants:
     - The runtime never understands or mutates Track, Step, Entry or Action.
@@ -56,6 +60,13 @@ invariants:
       stays on the configured harness.
     - Loading a package never executes package content, never follows a path
       outside the package root, and never installs anything.
+    - Network authority is separate from shell authority: shell.run never
+      implies network access. The agent's network mode comes only from an
+      explicit grant, and a required network restriction that the selected
+      adapter cannot enforce denies the run.
+    - A receipt carries the digest of the package exactly as received and the
+      digest of its ordered conditions, so an issuer can prove which package and
+      which condition list a receipt answers.
 
 constraints:
     - Go standard library only for the runtime; the five public protocols and
@@ -63,6 +74,10 @@ constraints:
       content.
     - Configuration is JSON under ~/.321 (trust and policy), because the runtime
       has no YAML dependency.
+    - One canonical JSON form for every digest, stated in
+      internal/protocol/canonical.go and pinned by testdata/canonical: bytewise
+      key order, no whitespace, minimal escaping, ES6 number rendering. A second
+      implementation must reproduce the fixture bytes.
 
 decisions:
     - 2026-09-05: The publisher namespace for official agents is 321.do; the
