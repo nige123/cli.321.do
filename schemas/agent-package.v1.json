@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://321.do/schemas/agent-package.v1.json",
+  "title": "agent-package.v1",
+  "description": "The manifest (agent.json) at the root of an agent package directory. Identity is <publisher-domain>/<name>; version and digest are separate. A manifest's publisher domain is a claim; trust comes from the loading runtime's pinned configuration and, where present, a verifying signature. The DIGEST and SIGNATURE files sit beside this manifest and are excluded from the digest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "name", "displayName", "version", "publisher", "licence", "identity", "prompts", "capabilities", "harness", "placement", "outputSchemas"],
+  "properties": {
+    "schema": { "const": "agent-package.v1" },
+    "id": { "type": "string", "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+|local)/[a-z0-9]{2,32}$", "description": "Canonical identity: publisher domain or the pseudo-domain local, a slash, the agent name." },
+    "name": { "type": "string", "pattern": "^[a-z0-9]{2,32}$", "description": "The name part of id. The runtime is format-neutral about digits; naming policy belongs to the systems that seat packages." },
+    "displayName": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$" },
+    "publisher": {
+      "type": "object", "additionalProperties": false, "required": ["domain"],
+      "properties": {
+        "domain": { "type": "string", "description": "Must equal the domain part of id; empty for local packages." },
+        "url": { "type": "string" }
+      }
+    },
+    "owner": {
+      "type": "object", "additionalProperties": false,
+      "description": "Legal-owner metadata. Proves nothing by itself.",
+      "properties": { "legalName": { "type": "string" }, "url": { "type": "string" } }
+    },
+    "licence": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "spdx": { "type": "string" }, "url": { "type": "string" } },
+      "anyOf": [ { "required": ["spdx"] }, { "required": ["url"] } ]
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "source": { "type": "string" }, "builtAt": { "type": "string", "format": "date-time" }, "builtBy": { "type": "string" } }
+    },
+    "identity": {
+      "type": "object", "additionalProperties": false, "required": ["role"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "personality": { "type": "string" },
+        "tone": { "type": "string" },
+        "decisionStyle": { "type": "string" }
+      }
+    },
+    "prompts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/safeRelPath" } },
+    "skills": { "type": "array", "items": { "$ref": "#/$defs/safeRelPath" } },
+    "procedures": { "type": "array", "items": { "$ref": "#/$defs/procedure" } },
+    "capabilities": {
+      "type": "object", "additionalProperties": false, "required": ["required"],
+      "properties": {
+        "required": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+        "optional": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+        "denied": { "type": "array", "items": { "$ref": "#/$defs/capability" } }
+      }
+    },
+    "harness": {
+      "type": "object", "additionalProperties": false, "required": ["requires"],
+      "description": "Enforcement features the package requires, never a provider name. overlays maps an adapter name to a tuning file inside the package.",
+      "properties": {
+        "requires": { "type": "array", "items": { "$ref": "#/$defs/feature" } },
+        "overlays": { "type": "object", "additionalProperties": { "$ref": "#/$defs/safeRelPath" } }
+      }
+    },
+    "placement": {
+      "type": "object", "additionalProperties": false, "required": ["allowed"],
+      "properties": { "allowed": { "type": "array", "minItems": 1, "items": { "enum": ["client", "server"] } } }
+    },
+    "outputSchemas": {
+      "type": "object", "additionalProperties": false, "required": ["default"],
+      "properties": {
+        "default": { "$ref": "#/$defs/safeRelPath" },
+        "byProcedure": { "type": "object", "additionalProperties": { "$ref": "#/$defs/safeRelPath" } }
+      }
+    },
+    "evaluations": { "type": "array", "items": { "$ref": "#/$defs/safeRelPath" } }
+  },
+  "$defs": {
+    "safeRelPath": { "type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\]+$", "description": "Relative, forward slashes, no . or .. segments, no absolute prefix, no backslash." },
+    "capability": { "enum": ["repo.read", "repo.write", "shell.run", "net.fetch", "files.read", "files.write", "model.text", "deploy.invoke"] },
+    "feature": { "enum": ["tool_allowlist", "repo_scope", "network_deny", "structured_output", "turn_limit", "spend_limit", "timeout", "event_stream", "live_steer", "pause", "session_continue", "graceful_stop"] },
+    "procedure": {
+      "type": "object", "additionalProperties": false, "required": ["name", "matches", "steps"],
+      "description": "A deterministic path through a fully specified operation. Runs without a model under the same authority checks and into the same receipt.",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "matches": { "type": "object", "additionalProperties": false, "required": ["objectiveRegex"], "properties": { "objectiveRegex": { "type": "string" } } },
+        "requires": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } }
+      }
+    },
+    "step": {
+      "type": "object", "additionalProperties": false, "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["emit", "write", "assert", "blocked", "external_action", "no_change", "fail", "await_directive", "sleep"] },
+        "text": { "type": "string" },
+        "path": { "$ref": "#/$defs/safeRelPath" },
+        "content": { "type": "string" },
+        "condition": { "type": "integer", "minimum": 1, "description": "1-based index into the work package's completion conditions." },
+        "met": { "type": "boolean" },
+        "proof": { "type": "string" },
+        "question": { "type": "string" },
+        "action": { "type": "string" },
+        "target": { "type": "string" },
+        "params": { "type": "object" },
+        "duration": { "type": "string", "description": "Go duration, e.g. 50ms." }
+      }
+    }
+  }
+}

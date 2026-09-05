@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://321.do/schemas/protocol-error.v1.json",
+  "title": "protocol-error.v1",
+  "description": "The one frame that is not a run event: the runtime's input could not be understood. When it concerns the initial package no receipt exists and the process exits 65. When it concerns a later directive line the run continues and this frame names the line.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "code", "message"],
+  "properties": {
+    "schema": { "const": "protocol-error.v1" },
+    "code": { "enum": ["no_package", "read_failed", "package_unreadable", "malformed_json", "not_a_work_package", "malformed_package", "unidentified_package", "malformed_directive", "unexpected_frame"] },
+    "message": { "type": "string" },
+    "line": { "type": "integer" }
+  }
+}

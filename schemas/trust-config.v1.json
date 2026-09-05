@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://321.do/schemas/trust-config.v1.json",
+  "title": "trust-config.v1",
+  "description": "Administrator-managed trust at ~/.321/trust.json. Publishers are pinned by domain with their signing keys and their packages by path, version and digest. A publisher pin defaults to verified (signature required); \"trust\": \"development\" loads an unsigned package by digest and labels it as administrator-pinned, never as verified. local packages carry local/<name> identities and no publisher. Aliases are explicit and are never replaced silently.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema"],
+  "properties": {
+    "schema": { "const": "trust-config.v1" },
+    "publishers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "keys": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["keyId", "publicKey"], "properties": { "keyId": { "type": "string" }, "publicKey": { "type": "string", "description": "base64 ed25519 public key" }, "since": { "type": "string" }, "note": { "type": "string" } } } },
+          "packages": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": false, "required": ["path", "version", "digest"], "properties": { "path": { "type": "string" }, "version": { "type": "string" }, "digest": { "type": "string" }, "trust": { "enum": ["verified", "development"] } } } }
+        }
+      }
+    },
+    "local": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": false, "required": ["path"], "properties": { "path": { "type": "string" } } } },
+    "aliases": { "type": "object", "additionalProperties": { "type": "string" } },
+    "policy": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "capabilityCeiling": { "type": "array", "items": { "type": "string" } },
+        "limits": { "type": "object", "additionalProperties": false, "properties": { "maxUsd": { "type": "number" }, "maxTurns": { "type": "integer" }, "timeout": { "type": "string" }, "network": { "enum": ["none", "provider_only", "open"] } } },
+        "adapters": { "type": "object", "additionalProperties": false, "properties": { "preferred": { "type": "array", "items": { "type": "string" } }, "denied": { "type": "array", "items": { "type": "string" } } } }
+      }
+    }
+  }
+}

@@ -1,0 +1,75 @@
+SPOZ2 0.1
+
+# What is this project supposed to do?
+# Humans and AI tools should treat this file as the authoritative
+# expression of intent.  Edit it directly or use `spoz2 add ...`.
+
+gist:
+    321 is a free, harness-agnostic agent runtime and its command-line front
+    door. It accepts a neutral WorkPackage, resolves and loads an AgentPackage,
+    selects a capable installed harness adapter or a deterministic procedure,
+    enforces capability grants and exact approvals, executes with ordered
+    in-flight directives, and emits run events and an immutable receipt. It is
+    the same runtime whether a person types '321 <agent> <request>' at a
+    terminal or a work system delegates a package to it.
+
+behaviours:
+    - A person runs '321 <agent> <request>' or '321 <publisher-domain>/<agent>
+      <request>' and the request becomes a WorkPackage under local policy,
+      executed through the same path a delegated package takes.
+    - A machine caller runs '321 run' with one WorkPackage and any number of
+      ordered WorkDirectives over NDJSON, and reads RunEvents, directive
+      acknowledgements and exactly one terminal RunReceipt back.
+    - Standalone use needs no 123 account, database or network service; a
+      delegated package is owned by its issuer and the runtime never interprets
+      the issuer's correlation references.
+    - Stop takes effect even when earlier directive sequence numbers are
+      missing; clarify and steer stay ordered and are never silently dropped.
+
+invariants:
+    - The runtime never understands or mutates Track, Step, Entry or Action.
+      Correlation references are opaque and echoed verbatim.
+    - Agent identity is publisher domain plus agent name. Version and content
+      digest are separate fields, never part of the identity. A manifest's
+      domain is a claim; official or verified status comes only from
+      administrator-pinned trust configuration and, where present, a verifying
+      signature.
+    - Official and user agent packages use identical runtime interfaces. No
+      official agent name is hard-coded in the runtime; short names are explicit
+      aliases in trust configuration and an alias is never silently replaced.
+    - Effective authority is the intersection of the caller's grants, local
+      policy and the package's own restrictions. Neither agent text, prompt text
+      nor a steering directive grants authority, and a capability is granted
+      only when the selected adapter actually enforces it.
+    - A package requiring a restriction no adapter can enforce is denied. There
+      is no fallback to less restricted execution.
+    - An approved external action is checked against the approved proposal
+      itself, not only its parameter hash, before it is performed.
+    - A WorkPackage is immutable once issued. Material change is a replacement
+      package linked by supersedesPackageId; the receipt records received,
+      applied and rejected directives and never rewrites old conditions to fit
+      new evidence.
+    - The runtime edits a caller-owned workspace and never commits, pushes or
+      lands. The receipt describes the runtime outcome at the moment it ends,
+      and a later commit is the caller's evidence linked by receipt digest.
+    - Budgets are cumulative across attempts within a run, and continuation
+      stays on the configured harness.
+    - Loading a package never executes package content, never follows a path
+      outside the package root, and never installs anything.
+
+constraints:
+    - Go standard library only for the runtime; the five public protocols and
+      the fixtures under testdata are Apache-2.0 and carry no official agent
+      content.
+    - Configuration is JSON under ~/.321 (trust and policy), because the runtime
+      has no YAML dependency.
+
+decisions:
+    - 2026-09-05: The publisher namespace for official agents is 321.do; the
+      legal owner is Nige Ltd; 123.do is the commercial work system that
+      consumes packages. One agent has one canonical identity.
+    - 2026-09-05: Package downloading, installation commands, online publisher
+      enrolment and a registry service are deferred. Slice 0 loads only
+      administrator-configured packages.
+
+references:

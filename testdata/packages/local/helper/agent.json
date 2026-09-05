@@ -1,0 +1,24 @@
+{
+  "schema": "agent-package.v1",
+  "id": "local/helper",
+  "name": "helper",
+  "displayName": "Local Helper",
+  "version": "0.1.0",
+  "publisher": { "domain": "" },
+  "licence": { "spdx": "Apache-2.0" },
+  "identity": { "role": "an unsigned local helper with no publisher" },
+  "prompts": ["prompts/identity.md"],
+  "procedures": [
+    {
+      "name": "note",
+      "matches": { "objectiveRegex": "^note: " },
+      "steps": [
+        { "kind": "assert", "condition": 1, "met": true, "proof": "the local note procedure ran" }
+      ]
+    }
+  ],
+  "capabilities": { "required": [], "optional": ["repo.read"], "denied": [] },
+  "harness": { "requires": ["structured_output"] },
+  "placement": { "allowed": ["client"] },
+  "outputSchemas": { "default": "schemas/outcome.json" }
+}

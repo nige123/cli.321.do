@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://321.do/schemas/run-event.v1.json",
+  "title": "run-event.v1",
+  "description": "One line of progress from a run, including directive acknowledgements. directive_received means durably queued; directive_applied means in effect; directive_rejected names why it never will be; directive_duplicate means it was already seen. Progress-class events (progress, tool_call, tool_result, cost) may be coalesced when the reader does not drain; acknowledgements and lifecycle events are never dropped.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "eventId", "packageId", "runId", "attempt", "seq", "at", "kind"],
+  "properties": {
+    "schema": { "const": "run-event.v1" },
+    "eventId": { "type": "string" },
+    "packageId": { "type": "string" },
+    "runId": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "seq": { "type": "integer", "minimum": 1 },
+    "at": { "type": "string", "format": "date-time" },
+    "kind": { "enum": ["started", "adapter_selected", "procedure_selected", "attempt_started", "attempt_ended", "tool_call", "tool_result", "progress", "directive_received", "directive_applied", "directive_rejected", "directive_duplicate", "paused", "resumed", "stopping", "cost", "denied"] },
+    "payload": { "type": "object" }
+  }
+}

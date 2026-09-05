@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://321.do/schemas/run-receipt.v1.json",
+  "title": "run-receipt.v1",
+  "description": "The immutable report of one run of one package. It describes the runtime outcome and the evidence available at the moment the runtime ended. It never contains a commit: committing is the caller's act, recorded by the caller and linked to this receipt by receiptDigest. Conditions align by index to the package's completion conditions and are never reordered.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "receiptId", "packageId", "runId", "issuer", "agent", "harness", "attempts", "directives", "instructionHistory", "events", "startedAt", "endedAt", "status", "conditions", "evidence", "cost", "receiptDigest"],
+  "properties": {
+    "schema": { "const": "run-receipt.v1" },
+    "receiptId": { "type": "string" },
+    "packageId": { "type": "string" },
+    "supersedesPackageId": { "type": "string" },
+    "runId": { "type": "string", "description": "The runtime's identifier for this execution. Distinct from packageId (the contract), attempt numbers (harness invocations within the run), receiptId (this report) and harness session references (provider continuation handles)." },
+    "issuer": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "type": "string" }, "id": { "type": "string" }, "url": { "type": "string" } } },
+    "correlation": { "type": "object", "additionalProperties": false, "properties": { "refs": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "type": "string" }, "id": { "type": "string" } } } } }, "description": "The issuer's own references, echoed verbatim from the package." },
+    "agent": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "version": { "type": "string" }, "digest": { "type": "string" } } },
+    "harness": {
+      "type": "object", "additionalProperties": false, "required": ["adapter"],
+      "properties": { "adapter": { "type": "string" }, "version": { "type": "string" }, "procedure": { "type": "string" }, "sessionRefs": { "type": "array", "items": { "type": "string" } } }
+    },
+    "attempts": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": false, "required": ["n", "adapter", "startedAt", "endedAt", "endReason", "cost"],
+        "properties": { "n": { "type": "integer" }, "adapter": { "type": "string" }, "startedAt": { "type": "string" }, "endedAt": { "type": "string" }, "endReason": { "type": "string" }, "sessionRef": { "type": "string" }, "cost": { "$ref": "#/$defs/cost" } } }
+    },
+    "directives": {
+      "type": "object", "additionalProperties": false, "required": ["received", "applied", "rejected"],
+      "properties": {
+        "received": { "type": "array", "items": { "type": "string" } },
+        "applied": { "type": "array", "items": { "type": "string" } },
+        "rejected": { "type": "array", "items": { "type": "object", "required": ["directiveId", "reason"], "properties": { "directiveId": { "type": "string" }, "reason": { "type": "string" } } } },
+        "duplicates": { "type": "array", "items": { "type": "string" } },
+        "gaps": { "type": "array", "items": { "type": "object", "required": ["directiveId", "expectedSeq", "receivedSeq"], "properties": { "directiveId": { "type": "string" }, "expectedSeq": { "type": "integer" }, "receivedSeq": { "type": "integer" } } }, "description": "A stop applied although an earlier sequence number never arrived." }
+      }
+    },
+    "instructionHistory": { "type": "object", "additionalProperties": false, "required": ["digest"], "properties": { "uri": { "type": "string" }, "digest": { "type": "string" } }, "description": "The durable NDJSON of the package and every applied directive and attempt, by reference and digest." },
+    "events": { "type": "object", "additionalProperties": false, "required": ["emitted", "coalesced"], "properties": { "emitted": { "type": "integer" }, "coalesced": { "type": "integer" } } },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "endedAt": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["completed", "no_change", "blocked", "failed", "stopped", "denied"] },
+    "summary": { "type": "string" },
+    "blockedOn": { "type": "string" },
+    "conditions": { "type": "array", "items": { "type": "object", "required": ["met"], "properties": { "met": { "type": "boolean" }, "proof": { "type": "string" } } } },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "filesChanged": { "type": "array", "items": { "type": "string" } },
+        "artifacts": { "type": "array", "items": { "type": "object", "required": ["name", "sha256"], "properties": { "name": { "type": "string" }, "sha256": { "type": "string" }, "uri": { "type": "string" } } } },
+        "externalAction": { "type": "object", "required": ["proposalRef", "approvalRef", "action", "params", "performedAt"], "properties": { "proposalRef": { "type": "string" }, "approvalRef": { "type": "string" }, "action": { "type": "string" }, "target": { "type": "string" }, "params": { "type": "object" }, "performedAt": { "type": "string" }, "result": { "type": "string" } } },
+        "approvalCheck": { "type": "object", "required": ["paramsHashMatched", "operationMatched"], "properties": { "paramsHashMatched": { "type": "boolean" }, "operationMatched": { "type": "boolean" }, "detail": { "type": "string" } } },
+        "denials": { "type": "array", "items": { "type": "string" } },
+        "errors": { "type": "array", "items": { "type": "string" } },
+        "noChange": { "type": "boolean" }
+      }
+    },
+    "cost": { "$ref": "#/$defs/cost", "description": "Cumulative across every attempt." },
+    "stop": { "type": "object", "required": ["issuer", "at"], "properties": { "issuer": { "type": "object", "properties": { "kind": { "type": "string" }, "id": { "type": "string" }, "url": { "type": "string" } } }, "at": { "type": "string" }, "reason": { "type": "string" }, "directiveId": { "type": "string" } } },
+    "denied": { "type": "object", "required": ["reason"], "properties": { "reason": { "type": "string" }, "details": { "type": "array", "items": { "type": "string" } } } },
+    "uncertain": { "type": "array", "items": { "type": "string" }, "description": "Effects the runtime cannot confirm or undo, stated honestly." },
+    "receiptDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256 over the canonical JSON of this receipt with receiptDigest empty and signature absent." },
+    "signature": { "type": "object", "required": ["keyId", "algorithm", "value"], "properties": { "keyId": { "type": "string" }, "algorithm": { "const": "ed25519" }, "value": { "type": "string" } } }
+  },
+  "$defs": {
+    "cost": { "type": "object", "additionalProperties": false, "required": ["usd", "turns", "tokens"], "properties": { "usd": { "type": "number" }, "turns": { "type": "integer" }, "tokens": { "type": "integer" } } }
+  }
+}

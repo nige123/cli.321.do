@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary"],
+  "properties": {
+    "status": {"type": "string", "enum": ["changed", "no_change", "blocked"]},
+    "summary": {"type": "string", "description": "One or two sentences on what you did."},
+    "blocked_on": {"type": "string", "description": "When status is blocked, the single question you need answered."},
+    "conditions": {"type": "array",
+      "description": "One element per done condition, in the order they were given.",
+      "items": {"type": "object", "required": ["met"],
+        "properties": {"met": {"type": "boolean"}, "proof": {"type": "string"}}}}
+  }
+}
