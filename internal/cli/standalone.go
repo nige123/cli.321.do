@@ -73,9 +73,8 @@ func cmdAgent(env Env, g global, name string, words []string) int {
 		fmt.Fprintln(env.Stderr, "321:", err)
 		return wire.ExitInternal
 	}
-	if b, err := json.MarshalIndent(wp, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(runDir, "work-package.json"), append(b, '\n'), 0o600)
-	}
+	rawPackage, _ := json.Marshal(wp)
+	_ = os.WriteFile(filepath.Join(runDir, "work-package.json"), append(rawPackage, '\n'), 0o600)
 
 	fmt.Fprintf(env.Stderr, "321: %s (%s)\n", agent.Manifest.DisplayName, agent.Label)
 	for _, w := range agent.Warnings {
@@ -120,6 +119,7 @@ func cmdAgent(env Env, g global, name string, words []string) int {
 		HistoryDir: runDir,
 		Policy:     cfg.Policy,
 		Adapter:    g.adapter,
+		PackageRaw: rawPackage,
 	})
 	cancel()
 	if b, err := json.MarshalIndent(receipt, "", "  "); err == nil {

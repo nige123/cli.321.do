@@ -53,7 +53,12 @@ type Options struct {
 	// is unchanged; cost and attempt numbering carry forward; the old
 	// receipt is untouched and linked from the new one.
 	Continue *protocol.RunReceipt
-	Now      func() string
+	// PackageRaw is the package exactly as received (the wire frame, the
+	// file, or the bytes the CLI itself wrote). The receipt's packageDigest
+	// is computed over these bytes canonicalised, never over a re-marshalled
+	// struct, so the issuer can compare it with the digest of what it sent.
+	PackageRaw []byte
+	Now        func() string
 	// ListChangedFiles reports workspace changes for the receipt. The
 	// default shells out to git for a git workspace.
 	ListChangedFiles func(workspace string) []string
@@ -187,7 +192,14 @@ func newSession(r *Runner, wp *protocol.WorkPackage, agent *trust.Loaded, opts O
 		StartedAt:           s.now(),
 		Conditions:          []protocol.ConditionProof{},
 	}
-	s.receipt.PackageDigest, _ = protocol.PackageDigest(*wp)
+	if len(opts.PackageRaw) > 0 {
+		if canon, err := protocol.CanonicalizeJSON(opts.PackageRaw); err == nil {
+			s.receipt.PackageDigest = protocol.DigestBytes(canon)
+		}
+	}
+	if s.receipt.PackageDigest == "" {
+		s.receipt.PackageDigest, _ = protocol.PackageDigest(*wp)
+	}
 	s.receipt.ConditionsDigest, _ = protocol.ConditionsDigest(wp.Completion.Conditions)
 	s.history = append(s.history, historyLine{Kind: "package", Package: wp})
 	if prev := opts.Continue; prev != nil {
