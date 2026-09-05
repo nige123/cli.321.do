@@ -108,7 +108,7 @@ type Options struct {
 // LoadPackage reads the WorkPackage from the configured source. With "-"
 // it consumes the first frame of stdin and returns the scanner positioned
 // at the next.
-func LoadPackage(opts Options) (*protocol.WorkPackage, *bufio.Scanner, *protocol.ProtocolError) {
+func LoadPackage(opts Options) (*protocol.WorkPackage, []byte, *bufio.Scanner, *protocol.ProtocolError) {
 	scanner := bufio.NewScanner(opts.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), MaxFrame)
 	var raw []byte
@@ -124,14 +124,14 @@ func LoadPackage(opts Options) (*protocol.WorkPackage, *bufio.Scanner, *protocol
 		}
 		if raw == nil {
 			if err := scanner.Err(); err != nil {
-				return nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "read_failed", Message: err.Error(), Line: line}
+				return nil, nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "read_failed", Message: err.Error(), Line: line}
 			}
-			return nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "no_package", Message: "stdin closed before a work package arrived"}
+			return nil, nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "no_package", Message: "stdin closed before a work package arrived"}
 		}
 	} else {
 		b, err := os.ReadFile(opts.PackageSource)
 		if err != nil {
-			return nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "package_unreadable", Message: err.Error()}
+			return nil, nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "package_unreadable", Message: err.Error()}
 		}
 		raw = b
 	}
@@ -139,19 +139,19 @@ func LoadPackage(opts Options) (*protocol.WorkPackage, *bufio.Scanner, *protocol
 		Schema string `json:"schema"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
-		return nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "malformed_json", Message: err.Error(), Line: line}
+		return nil, nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "malformed_json", Message: err.Error(), Line: line}
 	}
 	if probe.Schema != protocol.SchemaWorkPackage {
-		return nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "not_a_work_package", Message: fmt.Sprintf("expected schema %q, got %q", protocol.SchemaWorkPackage, probe.Schema), Line: line}
+		return nil, nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "not_a_work_package", Message: fmt.Sprintf("expected schema %q, got %q", protocol.SchemaWorkPackage, probe.Schema), Line: line}
 	}
 	var wp protocol.WorkPackage
 	if err := json.Unmarshal(raw, &wp); err != nil {
-		return nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "malformed_package", Message: err.Error(), Line: line}
+		return nil, nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "malformed_package", Message: err.Error(), Line: line}
 	}
 	if wp.PackageID == "" {
-		return nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "unidentified_package", Message: "the work package has no packageId", Line: line}
+		return nil, nil, scanner, &protocol.ProtocolError{Schema: protocol.SchemaProtocolError, Code: "unidentified_package", Message: "the work package has no packageId", Line: line}
 	}
-	return &wp, scanner, nil
+	return &wp, raw, scanner, nil
 }
 
 // Serve runs one package to a receipt and returns the exit code.
@@ -159,11 +159,14 @@ func Serve(ctx context.Context, opts Options) int {
 	out := newWriter(opts.Stdout, opts.EventsPath)
 	defer out.close()
 
-	wp, scanner, perr := LoadPackage(opts)
+	wp, raw, scanner, perr := LoadPackage(opts)
 	if perr != nil {
 		out.frame(perr)
 		return ExitMalformed
 	}
+	// The workspace path is the caller's to supply and is NOT part of the
+	// issued document: the digest is taken over the bytes as received,
+	// before the path is filled in.
 	if opts.Workspace != "" && wp.Workspace.Path == "" {
 		wp.Workspace.Path = opts.Workspace
 	}
@@ -187,6 +190,7 @@ func Serve(ctx context.Context, opts Options) int {
 		RunID:      opts.RunID,
 		HistoryDir: opts.HistoryDir,
 		Adapter:    opts.Adapter,
+		PackageRaw: raw,
 	}
 	if opts.ContinueFrom != "" {
 		prev, err := readReceipt(opts.ContinueFrom)

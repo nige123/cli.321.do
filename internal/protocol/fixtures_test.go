@@ -111,7 +111,10 @@ func TestFixtureDigestsAreReal(t *testing.T) {
 	raw, _ = os.ReadFile(fixtureDir(t, "protocol", "valid", "work-package-minimal.json"))
 	var wp WorkPackage
 	json.Unmarshal(raw, &wp)
-	if pd, _ := PackageDigest(wp); pd != r.PackageDigest {
+	// The package digest is over the bytes as received, canonicalised, not
+	// over a re-marshalled struct: that is what an issuer can reproduce.
+	canon, _ := CanonicalizeJSON(raw)
+	if pd := DigestBytes(canon); pd != r.PackageDigest {
 		t.Fatalf("receipt fixture packageDigest is %s, should be %s", r.PackageDigest, pd)
 	}
 	if cd, _ := ConditionsDigest(wp.Completion.Conditions); cd != r.ConditionsDigest {
