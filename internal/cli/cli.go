@@ -83,7 +83,9 @@ func DefaultRegistry(stderr io.Writer) *adapter.Registry {
 	r := adapter.NewRegistry()
 	r.RegisterHidden(adapter.NewProcedure())
 	r.RegisterHidden(adapter.NewFake(nil))
-	r.Register(&adapter.ClaudeCode{Stderr: stderr, Transcript: stderr})
+	// X321_CLAUDE_BINARY names the harness executable for an isolated
+	// test environment (a controllable stand-in) without touching PATH.
+	r.Register(&adapter.ClaudeCode{Binary: os.Getenv("X321_CLAUDE_BINARY"), Stderr: stderr, Transcript: stderr})
 	return r
 }
 

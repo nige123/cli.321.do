@@ -44,7 +44,7 @@ import (
 //	pause        the process cannot be suspended safely; the runner ends
 //	             the attempt and resumes the session instead
 type ClaudeCode struct {
-	Binary     string        // "" means "claude"
+	Binary     string        // "" means "claude"; the CLI sets it from X321_CLAUDE_BINARY
 	KillWait   time.Duration // grace after SIGTERM; default 15s
 	Stderr     io.Writer     // where the harness's stderr is teed; nil discards
 	Transcript io.Writer     // readable transcript of the stream; nil discards
@@ -165,15 +165,17 @@ func (c *ClaudeCode) Run(ctx context.Context, spec Spec, ctl Control) (Outcome, 
 	if transcript == nil {
 		transcript = io.Discard
 	}
-	env := consumeStream(stdout, transcript, ctl)
+	env, session := consumeStream(stdout, transcript, ctl)
 	runErr := cmd.Wait()
 	if cmd.ProcessState == nil {
 		return Outcome{}, fmt.Errorf("claude_code: no exit status: %v", runErr)
 	}
-	out := Outcome{Cost: protocol.Cost{}}
+	out := Outcome{Cost: protocol.Cost{}, SessionRef: session}
 	if env != nil {
 		out.Summary = env.Summary
-		out.SessionRef = env.SessionRef
+		if env.SessionRef != "" {
+			out.SessionRef = env.SessionRef
+		}
 		out.Cost = protocol.Cost{USD: env.CostUSD, Turns: env.Turns}
 		out.Denials = env.Denials
 		out.Errors = env.Errors
@@ -321,8 +323,10 @@ func denialNames(raw []json.RawMessage) []string {
 const maxStreamLine = 8 * 1024 * 1024
 
 type streamEvent struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	SessionID string `json:"session_id"`
+	Message   struct {
 		Content []struct {
 			Type  string          `json:"type"`
 			Text  string          `json:"text"`
@@ -335,10 +339,15 @@ type streamEvent struct {
 // consumeStream reads the harness's event stream, writing a readable
 // transcript, emitting tool events, and returning the result envelope or
 // nil when the stream carried none.
-func consumeStream(r io.Reader, transcript io.Writer, ctl Control) *Summary {
+//
+// The session id is also read off the stream's first `system/init` event,
+// so an attempt the runner interrupts (a steer or pause boundary, which
+// SIGTERMs the process before any result object) can still be resumed.
+func consumeStream(r io.Reader, transcript io.Writer, ctl Control) (*Summary, string) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamLine)
 	var env *Summary
+	var session string
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -354,6 +363,10 @@ func consumeStream(r io.Reader, transcript io.Writer, ctl Control) *Summary {
 			continue
 		}
 		switch ev.Type {
+		case "system":
+			if ev.Subtype == "init" && ev.SessionID != "" {
+				session = ev.SessionID
+			}
 		case "rate_limit_event":
 			io.WriteString(transcript, "  · rate limited, waiting\n")
 		case "assistant":
@@ -379,7 +392,7 @@ func consumeStream(r io.Reader, transcript io.Writer, ctl Control) *Summary {
 			}
 		}
 	}
-	return env
+	return env, session
 }
 
 func toolTarget(input json.RawMessage) string {

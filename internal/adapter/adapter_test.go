@@ -150,6 +150,7 @@ func TestEnvelopeParsingPortedFromTheTUI(t *testing.T) {
 
 func TestStreamConsumerRendersTranscriptEmitsToolEventsAndHidesPlumbing(t *testing.T) {
 	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"init-session"}`,
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"Looking"},{"type":"tool_use","name":"Read","input":{"file_path":"/a/b/main.go"}}]}}`,
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"StructuredOutput","input":{}}]}}`,
 		`{"type":"rate_limit_event"}`,
@@ -157,9 +158,12 @@ func TestStreamConsumerRendersTranscriptEmitsToolEventsAndHidesPlumbing(t *testi
 	}, "\n")
 	var transcript bytes.Buffer
 	var kinds []string
-	env := consumeStream(strings.NewReader(stream), &transcript, Control{Emit: func(k string, p map[string]any) { kinds = append(kinds, k) }})
+	env, session := consumeStream(strings.NewReader(stream), &transcript, Control{Emit: func(k string, p map[string]any) { kinds = append(kinds, k) }})
 	if env == nil || env.SessionRef != "z" {
 		t.Fatal("envelope not returned")
+	}
+	if session != "init-session" {
+		t.Fatalf("the init event's session id must be read so an interrupted attempt can resume: %q", session)
 	}
 	out := transcript.String()
 	if !strings.Contains(out, "Read main.go") || !strings.Contains(out, "Looking") || !strings.Contains(out, "rate limited") {
@@ -171,7 +175,7 @@ func TestStreamConsumerRendersTranscriptEmitsToolEventsAndHidesPlumbing(t *testi
 	if strings.Join(kinds, ",") != "progress,tool_call" {
 		t.Fatalf("events: %v", kinds)
 	}
-	if env := consumeStream(strings.NewReader(`{"type":"assistant"}`), &bytes.Buffer{}, Control{}); env != nil {
+	if env, _ := consumeStream(strings.NewReader(`{"type":"assistant"}`), &bytes.Buffer{}, Control{}); env != nil {
 		t.Fatal("no result means no envelope")
 	}
 }

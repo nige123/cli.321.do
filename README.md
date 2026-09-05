@@ -287,7 +287,23 @@ continuation handle.
   grants), structured output, turn and spend limits, timeout, event stream,
   session continuation (`--resume`) and graceful stop. Does **not** enforce
   repository scope or network denial when a shell is granted, and cannot
-  steer or pause live; the runtime handles those at attempt boundaries.
+  steer or pause live.
+  - **Denial, not a weaker run.** A package that needs what the adapter
+    cannot enforce — `shell.run` granted with `limits.network` `none` or
+    `provider_only` (the default) — is denied before the harness is
+    spawned, and the receipt says why. The only envelope this adapter can
+    run B1LL in is therefore an explicit `network: open` in a trusted
+    environment; nothing widens that silently.
+  - **Steer and pause are boundaries.** A `steer`/`clarify` ends the current
+    attempt (SIGTERM, graceful) and the next attempt resumes the harness
+    session with the instruction in its prompt; `pause` ends the attempt and
+    `resume` starts the next one the same way. A directive is acknowledged
+    `applied` only when the attempt that carries it has started — never on
+    receipt. The session id is read off the stream's `system/init` event, so
+    an attempt interrupted before its result object can still be resumed.
+  - `X321_CLAUDE_BINARY` names the harness executable for an isolated test
+    environment without touching PATH; `testdata/fakeclaude/claude` is a
+    controllable stand-in (`internal/run/claudecode_lifecycle_test.go`).
 - `procedure`: the built-in executor for package procedures. Enforces
   everything by construction because it only performs the operations its
   steps name, each checked against the grants, the workspace boundary and
