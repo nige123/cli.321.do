@@ -57,6 +57,12 @@ func cmdAgent(env Env, g global, name string, words []string) int {
 	}
 
 	workspace, kind := resolveWorkspace(g.workspace)
+	if !touchesWorkspace(agent.Manifest) {
+		// A package that can never read or write files gets no workspace:
+		// whatever repository the terminal happens to be in is not
+		// evidence of anything the run did.
+		workspace, kind = "", "none"
+	}
 	wp, err := buildPackage(cfg, agent, g, request, workspace, kind)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "321:", err)
@@ -125,6 +131,11 @@ func cmdAgent(env Env, g global, name string, words []string) int {
 	if b, err := json.MarshalIndent(receipt, "", "  "); err == nil {
 		_ = os.WriteFile(filepath.Join(runDir, "receipt.json"), append(b, '\n'), 0o600)
 	}
+	if receipt.Evidence.Proposal != nil {
+		if b, err := json.MarshalIndent(receipt.Evidence.Proposal, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(runDir, "proposal.json"), append(b, '\n'), 0o600)
+		}
+	}
 	if g.jsonOut {
 		enc := json.NewEncoder(env.Stdout)
 		enc.SetEscapeHTML(false)
@@ -133,6 +144,18 @@ func cmdAgent(env Env, g global, name string, words []string) int {
 		renderReceipt(env.Stdout, receipt, runDir)
 	}
 	return wire.ExitFor(receipt.Status)
+}
+
+// touchesWorkspace says whether a package could read or write files at
+// all: only then does the enclosing repository become its workspace.
+func touchesWorkspace(m *protocol.AgentManifest) bool {
+	for _, c := range append(append([]string{}, m.Capabilities.Required...), m.Capabilities.Optional...) {
+		switch c {
+		case protocol.CapRepoRead, protocol.CapRepoWrite, protocol.CapFilesRead, protocol.CapFilesWrite, protocol.CapShellRun:
+			return true
+		}
+	}
+	return false
 }
 
 // resolveWorkspace picks the git repository enclosing dir, or none.
@@ -291,7 +314,15 @@ func renderEvent(w io.Writer, e protocol.RunEvent) {
 			fmt.Fprintln(w, "  » instruction applied:", t)
 		}
 	case protocol.EventToolCall:
-		fmt.Fprintf(w, "  · %v %v\n", e.Payload["tool"], e.Payload["target"])
+		if op, ok := e.Payload["op"]; ok {
+			fmt.Fprintf(w, "  · tool %v %v %v\n", e.Payload["tool"], op, e.Payload["params"])
+		} else {
+			fmt.Fprintf(w, "  · %v %v\n", e.Payload["tool"], e.Payload["target"])
+		}
+	case protocol.EventToolResult:
+		if op, ok := e.Payload["op"]; ok {
+			fmt.Fprintf(w, "  · tool %v %v: ok=%v exit=%v\n", e.Payload["tool"], op, e.Payload["ok"], e.Payload["exitCode"])
+		}
 	case protocol.EventAdapterSelected:
 		fmt.Fprintf(w, "  · adapter %v\n", e.Payload["adapter"])
 	case protocol.EventProcedureSelected:
@@ -323,6 +354,17 @@ func renderEvent(w io.Writer, e protocol.RunEvent) {
 func renderReceipt(w io.Writer, r *protocol.RunReceipt, runDir string) {
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s: %s\n", strings.ToUpper(r.Status), r.Summary)
+	if r.Status == protocol.StatusFailed || r.Status == protocol.StatusDenied {
+		for _, e := range r.Evidence.Errors {
+			fmt.Fprintf(w, "  ! %s\n", e)
+		}
+		if r.Denied != nil {
+			fmt.Fprintf(w, "  ! %s\n", r.Denied.Reason)
+			for _, d := range r.Denied.Details {
+				fmt.Fprintf(w, "    %s\n", d)
+			}
+		}
+	}
 	if r.BlockedOn != "" {
 		fmt.Fprintf(w, "Needs an answer: %s\n", r.BlockedOn)
 	}
@@ -336,8 +378,33 @@ func renderReceipt(w io.Writer, r *protocol.RunReceipt, runDir string) {
 	if len(r.Evidence.FilesChanged) > 0 {
 		fmt.Fprintf(w, "Changed: %s\n", strings.Join(r.Evidence.FilesChanged, ", "))
 	}
-	if r.Cost.USD > 0 || r.Cost.Turns > 0 {
-		fmt.Fprintf(w, "Cost: $%.2f, %d turns, %d attempt(s)\n", r.Cost.USD, r.Cost.Turns, len(r.Attempts))
+	for _, c := range r.Evidence.ToolCalls {
+		state := "ok"
+		switch {
+		case c.Unavailable != "":
+			state = "not performed"
+		case !c.Ok:
+			state = fmt.Sprintf("exit %d", c.ExitCode)
+		}
+		fmt.Fprintf(w, "Tool: %s %s %s (%s)\n", c.Tool, c.Op, strings.Join(c.Argv, " "), state)
+	}
+	if p := r.Evidence.Proposal; p != nil {
+		fmt.Fprintf(w, "Proposal: %s %s (%s) %s\n", p.ProposalID, p.Status, p.Operation, p.ProposalDigest)
+		if p.Status == "planned" {
+			sha, _ := p.Revision["sha"].(string)
+			fmt.Fprintf(w, "  %s -> %s at %s; not run: %s\n", p.Service, p.Target, sha, strings.Join(p.Unperformed, ", "))
+		}
+		fmt.Fprintf(w, "  written to %s; it is a plan, not an approval, and nothing was deployed\n", filepath.Join(runDir, "proposal.json"))
+	}
+	switch r.Cost.Basis {
+	case protocol.CostNone:
+		fmt.Fprintf(w, "Cost: none (no model was used)\n")
+	case protocol.CostHarness:
+		fmt.Fprintf(w, "Cost: $%.2f, %d turns, %d attempt(s), as the harness reported\n", r.Cost.USD, r.Cost.Turns, len(r.Attempts))
+	case protocol.CostUnreported:
+		fmt.Fprintf(w, "Cost: unknown (a harness ran and reported none), %d attempt(s)\n", len(r.Attempts))
+	default:
+		fmt.Fprintf(w, "Cost: $%.2f, %d turns, %d attempt(s) (%s)\n", r.Cost.USD, r.Cost.Turns, len(r.Attempts), r.Cost.Basis)
 	}
 	fmt.Fprintf(w, "Receipt: %s\n", filepath.Join(runDir, "receipt.json"))
 }

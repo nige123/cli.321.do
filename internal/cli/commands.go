@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cli.321.do/internal/adapter"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -204,6 +205,18 @@ func cmdDoctor(env Env) int {
 		fmt.Fprintf(env.Stdout, "      enforces:     %s\n", strings.Join(yes, ", "))
 		if len(no) > 0 {
 			fmt.Fprintf(env.Stdout, "      not enforced: %s\n", strings.Join(no, ", "))
+		}
+	}
+	if p, ok := env.Adapters.Get("procedure"); ok {
+		if pa, ok := p.(*adapter.ProcedureAdapter); ok {
+			fmt.Fprintln(env.Stdout, "tools bound to procedures (by explicit path):")
+			b := pa.Bindings()
+			if len(b) == 0 {
+				fmt.Fprintln(env.Stdout, "  none")
+			}
+			for _, line := range b {
+				fmt.Fprintln(env.Stdout, "  "+line)
+			}
 		}
 	}
 	cfg, err := env.trust()

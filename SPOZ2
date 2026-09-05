@@ -29,6 +29,17 @@ behaviours:
       the same immutable package, a clarify directive, cost and attempt
       numbering carried forward, the old receipt preserved and linked from the
       new one.
+    - A package's deterministic procedure may call an externally bound tool
+      (deploy_engine, bound by DEPLOY_ENGINE_BIN, never by a PATH lookup)
+      through named operations that each carry their own capability: status
+      needs deploy.read, plan needs deploy.plan, execute needs deploy.invoke.
+      Parameters are validated against strict patterns and passed as an argument
+      vector with no shell.
+    - A plan operation yields an immutable deployment-proposal.v1 on the
+      receipt: exact revision, manifest and engine digests, operations in order,
+      checks performed and not performed, blockers, rollback limits, and a
+      digest over the canonical document. It is evidence of planning, never an
+      approval.
 
 invariants:
     - The runtime never understands or mutates Track, Step, Entry or Action.
@@ -67,6 +78,16 @@ invariants:
     - A receipt carries the digest of the package exactly as received and the
       digest of its ordered conditions, so an issuer can prove which package and
       which condition list a receipt answers.
+    - Execution of a deployment is not performed by this runtime until the
+      execution boundary is enabled; until then every execute operation is
+      recorded as not performed and the run ends blocked, whatever approval or
+      grant the package carries. When enabled, the boundary validates the exact
+      proposal digest, the approved parameters and the current manifest and
+      deployed revision immediately before acting, and changed parameters
+      require a renewed approval.
+    - A receipt's cost carries its basis: none when no model was used, harness
+      when the harness reported it, unreported when a harness ran and reported
+      nothing. A zero without a basis is unknown, not free.
 
 constraints:
     - Go standard library only for the runtime; the five public protocols and
@@ -86,5 +107,10 @@ decisions:
     - 2026-09-05: Package downloading, installation commands, online publisher
       enrolment and a registry service are deferred. Slice 0 loads only
       administrator-configured packages.
+    - 2026-09-05: deploy.read and deploy.plan join the capability vocabulary as
+      the read-only halves of deployment authority, and the tool step kind joins
+      procedures, so the 1DA slice runs status and planning deterministically
+      through the existing Perl deployment engine with no model and no new
+      deployment logic in Go.
 
 references:

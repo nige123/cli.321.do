@@ -17,6 +17,7 @@ import (
 
 	"cli.321.do/internal/adapter"
 	"cli.321.do/internal/run"
+	"cli.321.do/internal/tool"
 	"cli.321.do/internal/trust"
 	"cli.321.do/internal/wire"
 )
@@ -81,12 +82,25 @@ func Main(env Env) int {
 // the fake (hidden, selectable only by name) and Claude Code.
 func DefaultRegistry(stderr io.Writer) *adapter.Registry {
 	r := adapter.NewRegistry()
-	r.RegisterHidden(adapter.NewProcedure())
+	r.RegisterHidden(adapter.NewProcedureWithTools(DefaultTools()))
 	r.RegisterHidden(adapter.NewFake(nil))
 	// X321_CLAUDE_BINARY names the harness executable for an isolated
 	// test environment (a controllable stand-in) without touching PATH.
 	r.Register(&adapter.ClaudeCode{Binary: os.Getenv("X321_CLAUDE_BINARY"), Stderr: stderr, Transcript: stderr})
 	return r
+}
+
+// DefaultTools binds the externally configured tools a procedure may
+// reach. Each binding is an explicit path from the environment; nothing
+// is looked up by command name on PATH.
+//
+//	DEPLOY_ENGINE_BIN   the deployment engine's entry point
+//	                    (web.321.do/bin/deploy-engine); unset means the
+//	                    deploy_engine tool is present but not configured
+func DefaultTools() tool.Registry {
+	return tool.Registry{
+		"deploy_engine": &tool.DeployEngine{Bin: os.Getenv("DEPLOY_ENGINE_BIN")},
+	}
 }
 
 type global struct {
@@ -294,7 +308,12 @@ Inspection:
   321 packages validate <dir>   check a package directory against agent-package.v1
   321 packages digest <dir> [--write]
   321 trust show | check
-  321 doctor                    installed adapters and what each actually enforces
+  321 doctor                    installed adapters and what each actually enforces, and bound tools
+
+Tool bindings (procedures only, by explicit path, never by PATH lookup):
+  DEPLOY_ENGINE_BIN             the deployment engine entry point a package's deploy_engine
+                                tool steps may call: status (deploy.read) and plan (deploy.plan);
+                                execute (deploy.invoke) is not performed in this build
   321 version | help
 
 Exit codes: 0 completed or no change, 2 blocked, 3 stopped, 4 failed, 5 denied,

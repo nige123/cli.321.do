@@ -217,11 +217,19 @@ func ValidateAgentManifest(m *AgentManifest) Problems {
 	return c.ps
 }
 
-var stepKinds = []string{"emit", "write", "assert", "blocked", "external_action", "no_change", "fail", "await_directive", "sleep"}
+var stepKinds = []string{"emit", "write", "assert", "blocked", "external_action", "no_change", "fail", "await_directive", "sleep", "tool"}
 
 func validateStep(c *collector, path string, s ProcedureStep) {
 	c.oneOf(path+".kind", s.Kind, stepKinds...)
 	switch s.Kind {
+	case "tool":
+		c.require(path+".tool", s.Tool)
+		c.require(path+".op", s.Op)
+		for k, v := range s.Params {
+			if _, ok := v.(string); !ok {
+				c.add(path+".params."+k, "tool parameters are strings (a literal, or a {{capture}} from the objective)")
+			}
+		}
 	case "write":
 		if !safeRelPath(s.Path) {
 			c.add(path+".path", "must be a safe relative path inside the workspace")
@@ -420,6 +428,41 @@ func ValidateRunReceipt(r *RunReceipt) Problems {
 		if want, err := ReceiptDigest(*r); err == nil && want != r.ReceiptDigest {
 			c.add("receiptDigest", "does not match the receipt's content")
 		}
+	}
+	return c.ps
+}
+
+// ValidateDeploymentProposal checks a deployment-proposal.v1 document for
+// shape and for its own digest.
+func ValidateDeploymentProposal(p *DeploymentProposal) Problems {
+	c := &collector{}
+	c.schema("schema", p.Schema, SchemaDeploymentProposal)
+	if c.require("proposalId", p.ProposalID) && !IsULID(p.ProposalID) {
+		c.add("proposalId", "must be a ULID")
+	}
+	c.require("packageId", p.PackageID)
+	c.require("agent.id", p.Agent.ID)
+	c.require("operation", p.Operation)
+	c.oneOf("status", p.Status, "planned", "blocked")
+	c.require("observedAt", p.ObservedAt)
+	if p.Status == "planned" {
+		c.require("service", p.Service)
+		c.require("target", p.Target)
+		if sha, _ := p.Revision["sha"].(string); sha == "" {
+			c.add("revision.sha", "a planned proposal binds an exact revision")
+		}
+		if d, _ := p.Manifest["digest"].(string); d == "" {
+			c.add("manifest.digest", "a planned proposal binds the manifest digest")
+		}
+	}
+	if p.Unperformed == nil {
+		c.add("unperformed", "is required (an empty list means every check was performed)")
+	}
+	if p.Blockers == nil {
+		c.add("blockers", "is required")
+	}
+	if d, err := ProposalDigest(*p); err != nil || d != p.ProposalDigest {
+		c.add("proposalDigest", "does not match the proposal's content")
 	}
 	return c.ps
 }

@@ -12,13 +12,14 @@ package protocol
 // Schema identifiers. Every frame on the wire and every document on disk
 // carries one so a reader can refuse what it does not understand.
 const (
-	SchemaAgentPackage  = "agent-package.v1"
-	SchemaWorkPackage   = "work-package.v1"
-	SchemaWorkDirective = "work-directive.v1"
-	SchemaRunEvent      = "run-event.v1"
-	SchemaRunReceipt    = "run-receipt.v1"
-	SchemaProtocolError = "protocol-error.v1"
-	SchemaTrustConfig   = "trust-config.v1"
+	SchemaAgentPackage       = "agent-package.v1"
+	SchemaWorkPackage        = "work-package.v1"
+	SchemaWorkDirective      = "work-directive.v1"
+	SchemaRunEvent           = "run-event.v1"
+	SchemaRunReceipt         = "run-receipt.v1"
+	SchemaProtocolError      = "protocol-error.v1"
+	SchemaDeploymentProposal = "deployment-proposal.v1"
+	SchemaTrustConfig        = "trust-config.v1"
 )
 
 // Capability vocabulary. Packages declare what they need in these terms;
@@ -35,6 +36,12 @@ const (
 	CapFilesWrite   = "files.write"
 	CapModelText    = "model.text"
 	CapDeployInvoke = "deploy.invoke"
+	// deploy.read and deploy.plan are the read-only halves of deployment
+	// authority: observing managed services, and preparing a plan for a
+	// deployment. Neither performs one; only deploy.invoke does, and a
+	// tool binding decides per operation which of the three it needs.
+	CapDeployRead = "deploy.read"
+	CapDeployPlan = "deploy.plan"
 )
 
 // Capabilities lists the whole vocabulary in declaration order.
@@ -42,6 +49,7 @@ func Capabilities() []string {
 	return []string{
 		CapRepoRead, CapRepoWrite, CapShellRun, CapNetFetch,
 		CapFilesRead, CapFilesWrite, CapModelText, CapDeployInvoke,
+		CapDeployRead, CapDeployPlan,
 	}
 }
 
@@ -218,6 +226,8 @@ type ProcedureMatch struct {
 //	sleep           wait Duration (Go duration string); a test convenience
 type ProcedureStep struct {
 	Kind      string         `json:"kind"`
+	Tool      string         `json:"tool,omitempty"` // kind "tool": the bound tool's name
+	Op        string         `json:"op,omitempty"`   // kind "tool": the operation
 	Text      string         `json:"text,omitempty"`
 	Path      string         `json:"path,omitempty"`
 	Content   string         `json:"content,omitempty"`
@@ -553,13 +563,74 @@ type ConditionProof struct {
 // Evidence is what the runtime can show at the moment it ends. It never
 // contains a commit: committing is the caller's act and its evidence.
 type Evidence struct {
-	FilesChanged   []string        `json:"filesChanged,omitempty"`
-	Artifacts      []Artifact      `json:"artifacts,omitempty"`
-	ExternalAction *ExternalAction `json:"externalAction,omitempty"`
-	ApprovalCheck  *ApprovalCheck  `json:"approvalCheck,omitempty"`
-	Denials        []string        `json:"denials,omitempty"`
-	Errors         []string        `json:"errors,omitempty"`
-	NoChange       bool            `json:"noChange,omitempty"`
+	FilesChanged   []string            `json:"filesChanged,omitempty"`
+	Artifacts      []Artifact          `json:"artifacts,omitempty"`
+	ExternalAction *ExternalAction     `json:"externalAction,omitempty"`
+	ApprovalCheck  *ApprovalCheck      `json:"approvalCheck,omitempty"`
+	Denials        []string            `json:"denials,omitempty"`
+	Errors         []string            `json:"errors,omitempty"`
+	NoChange       bool                `json:"noChange,omitempty"`
+	ToolCalls      []ToolCall          `json:"toolCalls,omitempty"`
+	Proposal       *DeploymentProposal `json:"proposal,omitempty"`
+}
+
+// ToolCall records one bounded tool invocation a procedure made: the
+// tool, the operation, the validated parameters, the exact argument
+// vector, and how it ended. Output is kept redacted and capped in the
+// run's events, never here in full.
+type ToolCall struct {
+	Tool        string            `json:"tool"`
+	Op          string            `json:"op"`
+	Capability  string            `json:"capability"`
+	Params      map[string]string `json:"params,omitempty"`
+	Argv        []string          `json:"argv,omitempty"`
+	Ok          bool              `json:"ok"`
+	ExitCode    int               `json:"exitCode"`
+	DurationMs  int64             `json:"durationMs"`
+	Unavailable string            `json:"unavailable,omitempty"`
+	Summary     string            `json:"summary,omitempty"`
+	OutputSHA   string            `json:"outputSha256,omitempty"`
+}
+
+// ---------------------------------------------------------------------
+// deployment-proposal.v1
+// ---------------------------------------------------------------------
+
+// DeploymentProposal is the immutable record of a deployment PLAN: what
+// would be done, to what, at which exact revision, under which engine,
+// with which checks performed and which not. It is evidence of planning,
+// never an approval and never a claim that anything happened. A future
+// execution boundary validates an approval against this document's
+// digest and the current state before it does anything.
+//
+// The engine-owned sections are carried as the engine wrote them
+// (deployment-plan.v1), so the plan's meaning is the engine's alone.
+type DeploymentProposal struct {
+	Schema              string         `json:"schema"`
+	ProposalID          string         `json:"proposalId"`
+	PackageID           string         `json:"packageId"`
+	SupersedesPackageID string         `json:"supersedesPackageId,omitempty"`
+	Agent               AgentRef       `json:"agent"`
+	Operation           string         `json:"operation"`
+	Status              string         `json:"status"` // planned | blocked
+	Question            string         `json:"question,omitempty"`
+	Service             string         `json:"service,omitempty"`
+	Target              string         `json:"target,omitempty"`
+	TargetHost          map[string]any `json:"targetHost,omitempty"`
+	Repository          map[string]any `json:"repository,omitempty"`
+	Revision            map[string]any `json:"revision,omitempty"`
+	Manifest            map[string]any `json:"manifest,omitempty"`
+	Engine              map[string]any `json:"engine,omitempty"`
+	Observed            map[string]any `json:"observed,omitempty"`
+	Operations          []any          `json:"operations,omitempty"`
+	Checks              []any          `json:"checks,omitempty"`
+	Unperformed         []string       `json:"unperformed"`
+	Blockers            []string       `json:"blockers"`
+	Health              map[string]any `json:"health,omitempty"`
+	Rollback            map[string]any `json:"rollback,omitempty"`
+	EngineCommands      []any          `json:"engineCommands,omitempty"`
+	ObservedAt          string         `json:"observedAt"`
+	ProposalDigest      string         `json:"proposalDigest"`
 }
 
 // Artifact is a file the run produced.
@@ -592,7 +663,20 @@ type Cost struct {
 	USD    float64 `json:"usd"`
 	Turns  int     `json:"turns"`
 	Tokens int     `json:"tokens"`
+	// Basis says where the figures come from, so a zero is never read as
+	// "free" when it means "unknown": none (no model was used; the run
+	// was deterministic), harness (reported by the harness), unreported
+	// (a harness ran but reported no cost), mixed (attempts differ).
+	Basis string `json:"basis,omitempty"`
 }
+
+// Cost bases.
+const (
+	CostNone       = "none"
+	CostHarness    = "harness"
+	CostUnreported = "unreported"
+	CostMixed      = "mixed"
+)
 
 // StopInfo says who stopped the run and why.
 type StopInfo struct {

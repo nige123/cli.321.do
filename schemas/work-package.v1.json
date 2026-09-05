@@ -49,7 +49,7 @@
     "capabilities": {
       "type": "object", "additionalProperties": false, "required": ["granted", "limits"],
       "properties": {
-        "granted": { "type": "array", "items": { "enum": ["repo.read", "repo.write", "shell.run", "net.fetch", "files.read", "files.write", "model.text", "deploy.invoke"] } },
+        "granted": { "type": "array", "items": { "enum": ["repo.read", "repo.write", "shell.run", "net.fetch", "files.read", "files.write", "model.text", "deploy.invoke", "deploy.read", "deploy.plan"] } },
         "limits": {
           "type": "object", "additionalProperties": false,
           "properties": {

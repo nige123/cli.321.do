@@ -95,7 +95,8 @@ func (r *Runner) Run(ctx context.Context, wp *protocol.WorkPackage, agent *trust
 	}
 	s.grants = grants
 
-	proc := s.matchProcedure()
+	proc, captures := s.matchProcedure()
+	s.captures = captures
 	var ad adapter.Adapter
 	if proc != nil {
 		p, ok := r.Adapters.Get("procedure")
@@ -137,12 +138,13 @@ func (r *Runner) Run(ctx context.Context, wp *protocol.WorkPackage, agent *trust
 // ---------------------------------------------------------------------
 
 type session struct {
-	runner  *Runner
-	wp      *protocol.WorkPackage
-	agent   *trust.Loaded
-	opts    Options
-	now     func() string
-	receipt *protocol.RunReceipt
+	captures map[string]string
+	runner   *Runner
+	wp       *protocol.WorkPackage
+	agent    *trust.Loaded
+	opts     Options
+	now      func() string
+	receipt  *protocol.RunReceipt
 
 	grants    []string
 	adapter   adapter.Adapter
@@ -356,16 +358,31 @@ func set(xs []string) map[string]bool {
 // matchProcedure finds the first procedure whose predicate matches the
 // objective. Its own requirements must be within the effective grants; a
 // matching but unauthorised procedure is a denial, never a fallback.
-func (s *session) matchProcedure() *protocol.Procedure {
+//
+// Named groups in the predicate are captured for the procedure's tool
+// steps ({{name}} in a parameter), so a request like "plan a.b live" can
+// carry its explicit target into a validated argument vector without any
+// interpretation beyond the regular expression the package declared.
+func (s *session) matchProcedure() (*protocol.Procedure, map[string]string) {
 	for i := range s.agent.Manifest.Procedures {
 		p := &s.agent.Manifest.Procedures[i]
 		re, err := regexp.Compile(p.Matches.ObjectiveRegex)
-		if err != nil || !re.MatchString(s.wp.Objective) {
+		if err != nil {
 			continue
 		}
-		return p
+		m := re.FindStringSubmatch(s.wp.Objective)
+		if m == nil {
+			continue
+		}
+		captures := map[string]string{}
+		for j, name := range re.SubexpNames() {
+			if name != "" && j < len(m) {
+				captures[name] = m[j]
+			}
+		}
+		return p, captures
 	}
-	return nil
+	return nil, nil
 }
 
 func (s *session) deny(reason string, details []string) *protocol.RunReceipt {
@@ -592,6 +609,7 @@ func (s *session) spec(n int, instructions []string, sessionRef string) adapter.
 		SessionRef:   sessionRef,
 		OutputSchema: schema,
 		Procedure:    s.procedure,
+		Captures:     s.captures,
 		Overlay:      overlay,
 	}
 }
@@ -604,7 +622,17 @@ func procName(p *protocol.Procedure) string {
 }
 
 func add(a, b protocol.Cost) protocol.Cost {
-	return protocol.Cost{USD: a.USD + b.USD, Turns: a.Turns + b.Turns, Tokens: a.Tokens + b.Tokens}
+	basis := b.Basis
+	if b.Basis == "" {
+		basis = protocol.CostUnreported
+	}
+	switch {
+	case a.Basis == "":
+		// first attempt
+	case a.Basis != basis:
+		basis = protocol.CostMixed
+	}
+	return protocol.Cost{USD: a.USD + b.USD, Turns: a.Turns + b.Turns, Tokens: a.Tokens + b.Tokens, Basis: basis}
 }
 
 // remaining is what this attempt may still spend: the package limits less
@@ -660,6 +688,10 @@ func (s *session) fill(out adapter.Outcome) {
 	r.Evidence.NoChange = out.Status == protocol.StatusNoChange
 	r.Evidence.ExternalAction = out.ExternalAction
 	r.Evidence.ApprovalCheck = out.ApprovalCheck
+	r.Evidence.ToolCalls = append(r.Evidence.ToolCalls, out.ToolCalls...)
+	if out.Proposal != nil {
+		r.Evidence.Proposal = out.Proposal
+	}
 	if s.wp.Workspace.Kind == "git" && s.wp.Workspace.Path != "" {
 		r.Evidence.FilesChanged = s.opts.ListChangedFiles(s.wp.Workspace.Path)
 	}
