@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# A controllable stand-in for the `claude` CLI, for exercising the real
+# claude_code adapter's lifecycle without a model: it speaks enough of
+# `--output-format stream-json` (a system/init line carrying the session
+# id, an assistant line, and the final result object with
+# structured_output) and honours SIGTERM the way the harness does when the
+# runner ends an attempt.
+#
+# Environment:
+#   FAKE_CLAUDE_LOG         append one line per invocation: the argv, %q-quoted
+#   FAKE_CLAUDE_MODE        complete (default) | hang-until-resumed | hang
+#                           hang-until-resumed: a fresh session waits for
+#                           SIGTERM; a `--resume` invocation completes
+#   FAKE_CLAUDE_WRITE       a path to write a small Go function to before
+#                           completing (relative to the working directory)
+#   FAKE_CLAUDE_CONDITIONS  how many done conditions to answer as met (default 1)
+#   FAKE_CLAUDE_STATUS      changed (default) | no_change | blocked
+set -u
+if [ "${1:-}" = "--version" ]; then echo "fake-claude 0.0.1"; exit 0; fi
+if [ -n "${FAKE_CLAUDE_LOG:-}" ]; then printf '%q ' "$@" >> "$FAKE_CLAUDE_LOG"; printf '\n' >> "$FAKE_CLAUDE_LOG"; fi
+resume=""; prompt=""
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --resume) resume="${args[$((i+1))]}";;
+    -p) prompt="${args[$((i+1))]}";;
+  esac
+done
+session=${resume:-fake-session-$$}
+printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session"
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"working on it"}]}}\n'
+mode=${FAKE_CLAUDE_MODE:-complete}
+if [ "$mode" = "hang" ] || { [ "$mode" = "hang-until-resumed" ] && [ -z "$resume" ]; }; then
+  trap 'exit 143' TERM
+  while :; do sleep 0.05; done
+fi
+if [ -n "${FAKE_CLAUDE_WRITE:-}" ]; then
+  printf 'package calc\n\n// Add returns the sum of a and b.\nfunc Add(a, b int) int { return a + b }\n' > "$FAKE_CLAUDE_WRITE"
+fi
+n=${FAKE_CLAUDE_CONDITIONS:-1}
+conds=""
+for ((c=1; c<=n; c++)); do
+  [ -n "$conds" ] && conds="$conds,"
+  conds="$conds{\"met\":true,\"proof\":\"fake claude: condition $c asserted by the stand-in\"}"
+done
+status=${FAKE_CLAUDE_STATUS:-changed}
+# The prompt excerpt lets a test prove which instructions this attempt saw.
+excerpt=$(printf '%s' "$prompt" | tail -c 120 | tr '\n"\\' '   ')
+printf '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"%s","total_cost_usd":0.0,"num_turns":1,"structured_output":{"status":"%s","summary":"fake claude finished (%s)","conditions":[%s]}}\n' "$session" "$status" "$excerpt" "$conds"
+exit 0
