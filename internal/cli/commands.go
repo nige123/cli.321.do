@@ -87,7 +87,7 @@ func cmdPackages(env Env, args []string) int {
 		m := l.Manifest
 		fmt.Fprintf(env.Stdout, "%s  %s  %s\n", m.ID, m.Version, l.Digest)
 		fmt.Fprintf(env.Stdout, "trust:      %s\n", l.Label)
-		fmt.Fprintf(env.Stdout, "publisher:  %s   owner: %s   licence: %s%s\n", m.Publisher.Domain, m.Owner.LegalName, m.Licence.SPDX, m.Licence.URL)
+		fmt.Fprintf(env.Stdout, "publisher:  %s   owner: %s   licence: %s\n", m.Publisher.Domain, m.Owner.LegalName, strings.TrimSpace(m.Licence.SPDX+" "+m.Licence.URL))
 		fmt.Fprintf(env.Stdout, "role:       %s\n", m.Identity.Role)
 		fmt.Fprintf(env.Stdout, "requires:   %s\n", strings.Join(m.Capabilities.Required, ", "))
 		fmt.Fprintf(env.Stdout, "optional:   %s\n", strings.Join(m.Capabilities.Optional, ", "))
