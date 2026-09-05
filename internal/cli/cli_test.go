@@ -378,7 +378,7 @@ func TestDoctorListsTheToolBinding(t *testing.T) {
 	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": &tool.DeployEngine{Bin: "/opt/engine/bin/deploy-engine"}}))
 	var out bytes.Buffer
 	Main(Env{Stdin: strings.NewReader(""), Stdout: &out, Stderr: &out, Args: []string{"doctor"}, TrustPath: "", Home: t.TempDir(), Adapters: reg})
-	if !strings.Contains(out.String(), "deploy_engine: /opt/engine/bin/deploy-engine; operations: status (deploy.read), plan (deploy.plan), execute (deploy.invoke)") {
+	if !strings.Contains(out.String(), "deploy_engine: /opt/engine/bin/deploy-engine; execute unavailable; operations: status (deploy.read), plan (deploy.plan), execute (deploy.invoke)") {
 		t.Fatalf("doctor: %s", out.String())
 	}
 }

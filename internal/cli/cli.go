@@ -97,10 +97,22 @@ func DefaultRegistry(stderr io.Writer) *adapter.Registry {
 //	DEPLOY_ENGINE_BIN   the deployment engine's entry point
 //	                    (web.321.do/bin/deploy-engine); unset means the
 //	                    deploy_engine tool is present but not configured
+//	DEPLOY_ENGINE_EXECUTE  a comma-separated list of targets on which an
+//	                    APPROVED deployment may be executed through the
+//	                    engine's `go`. Unset means execute is unavailable,
+//	                    which is the state of every production binding.
 func DefaultTools() tool.Registry {
-	return tool.Registry{
-		"deploy_engine": &tool.DeployEngine{Bin: os.Getenv("DEPLOY_ENGINE_BIN")},
+	de := &tool.DeployEngine{Bin: os.Getenv("DEPLOY_ENGINE_BIN")}
+	if allow := strings.TrimSpace(os.Getenv("DEPLOY_ENGINE_EXECUTE")); allow != "" && de.Bin != "" {
+		var targets []string
+		for _, t := range strings.Split(allow, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				targets = append(targets, t)
+			}
+		}
+		de.Exec = &tool.EngineExecutor{Bin: de.Bin, AllowedTargets: targets}
 	}
+	return tool.Registry{"deploy_engine": de}
 }
 
 type global struct {
