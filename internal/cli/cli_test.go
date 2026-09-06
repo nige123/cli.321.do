@@ -360,6 +360,108 @@ func TestOperatorGoIsPreparedNotExecutedEvenWithAGrant(t *testing.T) {
 	}
 }
 
+// operatorExecCLI is operatorCLI with execution ENABLED for the named
+// targets (an EngineExecutor bound to the fake engine, FAKE_ENGINE_ALLOW_GO
+// set), and control over whether the caller is treated as an interactive
+// operator at a terminal.
+func operatorExecCLI(t *testing.T, interactive bool, targets ...string) (func(args ...string) (int, string, string, string), string) {
+	t.Helper()
+	tp := operatorTrust(t)
+	log := filepath.Join(t.TempDir(), "engine.log")
+	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	env := append(os.Environ(), "FAKE_ENGINE_LOG="+log, "FAKE_ENGINE_ALLOW_GO=1")
+	de := &tool.DeployEngine{Bin: bin, Env: env}
+	de.Exec = &tool.EngineExecutor{Bin: bin, AllowedTargets: targets, Env: env}
+	reg := adapter.NewRegistry()
+	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": de}))
+	reg.Register(modelTrapCLI{t})
+	home := t.TempDir()
+	run := func(args ...string) (int, string, string, string) {
+		var out, errb bytes.Buffer
+		code := Main(Env{Stdin: strings.NewReader(""), Stdout: &out, Stderr: &errb, Args: args, TrustPath: tp, Home: home, Adapters: reg, Interactive: interactive})
+		return code, out.String(), errb.String(), home
+	}
+	return run, log
+}
+
+// TestOperatorGoExecutesUnderAssumedApprovalWhenEnabled proves the settled
+// rule: a person typing `321 <agent> go <svc> <target>` at a terminal IS
+// the human approval, so the go plans, mints an approval bound to that
+// plan, and executes — where execution is enabled.
+func TestOperatorGoExecutesUnderAssumedApprovalWhenEnabled(t *testing.T) {
+	run, log := operatorExecCLI(t, true, "live")
+	code, out, errb, home := run("op", "go", "alpha.web", "live")
+	if code != 0 {
+		t.Fatalf("go: code=%d\nout=%s\nerr=%s", code, out, errb)
+	}
+	if !strings.Contains(errb, "operator approval assumed") {
+		t.Errorf("expected the assumed-approval note on stderr:\n%s", errb)
+	}
+	for _, want := range []string{"COMPLETED", "Deployed alpha.web successfully"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "nothing was deployed") {
+		t.Errorf("must not read as prepared-not-executed:\n%s", out)
+	}
+	b, _ := os.ReadFile(log)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	sawGo := false
+	for _, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "go ") {
+			sawGo = true
+		}
+	}
+	if !sawGo {
+		t.Fatalf("the engine's go never ran: %q", lines)
+	}
+	// The receipt records the executed action bound to the operator approval.
+	runs, err := os.ReadDir(filepath.Join(home, "runs"))
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("want exactly one go run dir, got %v (%v)", runs, err)
+	}
+	rb, err := os.ReadFile(filepath.Join(home, "runs", runs[0].Name(), "receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r protocol.RunReceipt
+	if json.Unmarshal(rb, &r) != nil {
+		t.Fatalf("receipt: %s", rb)
+	}
+	if r.Evidence.ExternalAction == nil || !strings.HasPrefix(r.Evidence.ExternalAction.ApprovalRef, "operator/") {
+		t.Fatalf("expected an external action under an operator/ approval: %+v", r.Evidence.ExternalAction)
+	}
+	if r.Evidence.ApprovalCheck == nil || !r.Evidence.ApprovalCheck.OperationMatched {
+		t.Fatalf("expected the approval check to have matched the fresh plan: %+v", r.Evidence.ApprovalCheck)
+	}
+}
+
+// TestOperatorGoNonInteractiveDoesNotSelfApprove proves the boundary is not
+// weakened for unattended runs: with execution enabled and deploy.invoke
+// granted, a NON-interactive go still blocks for want of an approval —
+// only a person at the terminal (or an async approval on a package) supplies
+// one. Nothing is deployed.
+func TestOperatorGoNonInteractiveDoesNotSelfApprove(t *testing.T) {
+	run, log := operatorExecCLI(t, false, "live")
+	code, out, _, _ := run("--grant", "deploy.invoke", "op", "go", "alpha.web", "live")
+	if code != wire.ExitBlocked {
+		t.Fatalf("want blocked, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "approval") {
+		t.Errorf("expected a needs-approval message:\n%s", out)
+	}
+	if strings.Contains(strings.ToLower(out), "deployed successfully") {
+		t.Fatal("must never read as deployed")
+	}
+	b, _ := os.ReadFile(log)
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "go ") {
+			t.Fatalf("the engine's go must not have run: %q", string(b))
+		}
+	}
+}
+
 func TestOperatorUnsupportedRequestAndUnboundEngine(t *testing.T) {
 	run, _ := operatorCLI(t, true)
 	code, out, _, _ := run("--non-interactive", "op", "restart", "alpha.web")

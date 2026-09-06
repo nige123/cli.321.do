@@ -69,6 +69,13 @@ func cmdAgent(env Env, g global, name string, words []string) int {
 		return wire.ExitUsage
 	}
 
+	// The CLI invocation is itself the human approval: for an interactive
+	// operator `go`, plan first and attach an approval bound to that plan
+	// so the go can execute (still only where DEPLOY_ENGINE_EXECUTE allows).
+	if note := assumeOperatorApproval(env, g, cfg, agent, wp, request); note != "" {
+		fmt.Fprintln(env.Stderr, "321:", note)
+	}
+
 	home, err := env.home()
 	if err != nil {
 		fmt.Fprintln(env.Stderr, "321:", err)
@@ -394,7 +401,11 @@ func renderReceipt(w io.Writer, r *protocol.RunReceipt, runDir string) {
 			sha, _ := p.Revision["sha"].(string)
 			fmt.Fprintf(w, "  %s -> %s at %s; not run: %s\n", p.Service, p.Target, sha, strings.Join(p.Unperformed, ", "))
 		}
-		fmt.Fprintf(w, "  written to %s; it is a plan, not an approval, and nothing was deployed\n", filepath.Join(runDir, "proposal.json"))
+		note := "it is a plan, not an approval, and nothing was deployed"
+		if r.Evidence.ExternalAction != nil {
+			note = "the plan that was approved and executed (see the receipt's externalAction)"
+		}
+		fmt.Fprintf(w, "  written to %s; %s\n", filepath.Join(runDir, "proposal.json"), note)
 	}
 	switch r.Cost.Basis {
 	case protocol.CostNone:
