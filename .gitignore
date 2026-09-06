@@ -2,3 +2,6 @@
 /dist/
 *.test
 /.claude/settings.local.json
+
+# Per-host secrets (gobin signing key, etc.) — never commit (public repo)
+/conf/secrets.conf
