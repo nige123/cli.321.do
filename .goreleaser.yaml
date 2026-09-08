@@ -1,0 +1,43 @@
+# Checked-in GoReleaser config for `dp gobin make` (the escape hatch the
+# gobin design names: when this file exists, the engine uses it instead of
+# generating one; it still supplies the tag, the signing key and S3).
+#
+# It mirrors the generated config exactly, with ONE addition: GitHub
+# release publishing is disabled. Releases go to S3 (version.json +
+# signed per-arch archives), never to a GitHub release, so without this
+# goreleaser refuses to run for want of a GITHUB_TOKEN it would never use.
+# The version stamp comes from the tag the engine creates (v0.1.0 → 0.1.0).
+version: 2
+project_name: "321"
+release:
+  disable: true
+builds:
+  - id: "321"
+    binary: "321"
+    main: .
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X cli.321.do/internal/cli.Version={{ .Version }}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+archives:
+  - id: "321"
+    formats:
+      - tar.gz
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+signs:
+  - id: ed25519
+    artifacts: all
+    cmd: gobin-sign
+    args:
+      - "${artifact}"
+    env:
+      - GOBIN_SIGNING_KEY
