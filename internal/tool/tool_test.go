@@ -11,15 +11,15 @@ import (
 	"cli.321.do/internal/protocol"
 )
 
-func fakeEngine(t *testing.T) (*DeployEngine, string) {
+func fakeEngine(t *testing.T) (*DP, string) {
 	t.Helper()
-	bin, err := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	bin, err := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "dp"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := filepath.Join(t.TempDir(), "engine.log")
 	env := append(os.Environ(), "FAKE_ENGINE_LOG="+log)
-	return &DeployEngine{Bin: bin, Env: env, Timeout: 20 * time.Second}, log
+	return &DP{Bin: bin, Env: env, Timeout: 20 * time.Second}, log
 }
 
 func invocations(log string) []string {
@@ -31,7 +31,7 @@ func invocations(log string) []string {
 }
 
 func TestArgvIsStrictAndNeverAShell(t *testing.T) {
-	d := &DeployEngine{}
+	d := &DP{}
 	good := []struct {
 		op     string
 		params map[string]string
@@ -112,7 +112,7 @@ func TestExecuteIsNotPerformedInThisBuild(t *testing.T) {
 }
 
 func TestUnboundAndUnknownAreRefusedWithoutRunning(t *testing.T) {
-	d := &DeployEngine{}
+	d := &DP{}
 	if _, err := d.Run(context.Background(), "status", nil); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("unbound: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestTheFutureBoundaryMatchesTheExactProposalAndCurrentState(t *testing.T) {
 }
 
 func TestTheEngineExecutorRunsGoOnlyOnAllowedTargets(t *testing.T) {
-	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "dp"))
 	log := filepath.Join(t.TempDir(), "engine.log")
 	env := append(os.Environ(), "FAKE_ENGINE_LOG="+log, "FAKE_ENGINE_ALLOW_GO=1")
 	ex := &EngineExecutor{Bin: bin, AllowedTargets: []string{"dev"}, Env: env, Timeout: 20 * time.Second}

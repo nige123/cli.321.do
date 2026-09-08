@@ -241,10 +241,10 @@ canonical content.
 ## Tools, deployment planning and the execution boundary
 
 A package's deterministic procedure may reach an external program through
-a **tool step** (`{"kind":"tool","tool":"deploy_engine","op":"plan",
+a **tool step** (`{"kind":"tool","tool":"dp","op":"plan",
 "params":{...}}`). A tool is bound by explicit configuration, never by a
 command name on PATH, and exposes named operations that each carry their
-own capability: `deploy_engine` offers `status` (`deploy.read`), `plan`
+own capability: `dp` offers `status` (`deploy.read`), `plan`
 (`deploy.plan`) and `execute` (`deploy.invoke`). The runtime checks the
 grant per operation, substitutes named captures from the procedure's
 `objectiveRegex` into the declared parameters, validates every value
@@ -255,11 +255,11 @@ like a credential, and records the call on the receipt (`evidence.toolCalls`).
 An unknown parameter, an unsupported operation or a value that does not
 match its pattern is refused before anything runs.
 
-- `DEPLOY_ENGINE_BIN` names the deployment engine's entry point
-  (web.321.do's `bin/deploy-engine`). Unset, the tool is present but not
+- `DP_BIN` names the deployment engine's entry point
+  (deploy.321.do's `bin/dp`). Unset, the tool is present but not
   configured and a procedure that needs it fails saying so. `321 doctor`
   prints the binding.
-- `DEPLOY_ENGINE_EXECUTE` names, as a comma-separated list, the targets on
+- `DP_EXECUTE` names, as a comma-separated list, the targets on
   which an APPROVED deployment may be executed through the engine's own
   `go <service> <target>`. Unset, execute is unavailable, which is the
   state of every production binding. A target not listed is refused before
@@ -299,7 +299,7 @@ match its pattern is refused before anything runs.
   without a basis is unknown, not free.
 
 The unbranded fixture `testdata/packages/example.test/operator` and the
-recording stand-in `testdata/fakeengine/deploy-engine` are the public tests
+recording stand-in `testdata/fakeengine/dp` are the public tests
 of all of this; the official operator package lives in agents.321.do.
 
 ## Canonical JSON

@@ -94,16 +94,16 @@ func DefaultRegistry(stderr io.Writer) *adapter.Registry {
 // reach. Each binding is an explicit path from the environment; nothing
 // is looked up by command name on PATH.
 //
-//	DEPLOY_ENGINE_BIN   the deployment engine's entry point
-//	                    (web.321.do/bin/deploy-engine); unset means the
-//	                    deploy_engine tool is present but not configured
-//	DEPLOY_ENGINE_EXECUTE  a comma-separated list of targets on which an
+//	DP_BIN   the deployment engine's entry point
+//	                    (deploy.321.do/bin/dp); unset means the
+//	                    dp tool is present but not configured
+//	DP_EXECUTE  a comma-separated list of targets on which an
 //	                    APPROVED deployment may be executed through the
 //	                    engine's `go`. Unset means execute is unavailable,
 //	                    which is the state of every production binding.
 func DefaultTools() tool.Registry {
-	de := &tool.DeployEngine{Bin: os.Getenv("DEPLOY_ENGINE_BIN")}
-	if allow := strings.TrimSpace(os.Getenv("DEPLOY_ENGINE_EXECUTE")); allow != "" && de.Bin != "" {
+	de := &tool.DP{Bin: os.Getenv("DP_BIN")}
+	if allow := strings.TrimSpace(os.Getenv("DP_EXECUTE")); allow != "" && de.Bin != "" {
 		var targets []string
 		for _, t := range strings.Split(allow, ",") {
 			if t = strings.TrimSpace(t); t != "" {
@@ -112,7 +112,7 @@ func DefaultTools() tool.Registry {
 		}
 		de.Exec = &tool.EngineExecutor{Bin: de.Bin, AllowedTargets: targets}
 	}
-	return tool.Registry{"deploy_engine": de}
+	return tool.Registry{"dp": de}
 }
 
 type global struct {
@@ -323,7 +323,7 @@ Inspection:
   321 doctor                    installed adapters and what each actually enforces, and bound tools
 
 Tool bindings (procedures only, by explicit path, never by PATH lookup):
-  DEPLOY_ENGINE_BIN             the deployment engine entry point a package's deploy_engine
+  DP_BIN             the deployment engine entry point a package's dp
                                 tool steps may call: status (deploy.read) and plan (deploy.plan);
                                 execute (deploy.invoke) is not performed in this build
   321 version | help

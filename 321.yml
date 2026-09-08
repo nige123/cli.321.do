@@ -1,7 +1,7 @@
 # 321.yml - manifest for the 321 agent runtime binary.
 #
 # Not a daemon: no targets. The gobin: block drives `321 gobin` builds and
-# releases (see web.321.do docs/superpowers/specs/2026-07-20-321-gobin-design.md).
+# releases (see deploy.321.do docs/superpowers/specs/2026-07-20-321-gobin-design.md).
 #
 # The binary is named `321`: this is the reclaim of the command for the Go
 # agent runtime — the front door `321 <agent> <request>`. Releasing it onto

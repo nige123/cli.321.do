@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A recording stand-in for the deployment engine's entry point, for tests
-# of the deploy_engine tool binding. It answers `status` and `plan` with
+# of the dp tool binding. It answers `status` and `plan` with
 # deployment-status.v1 / deployment-plan.v1 documents and REFUSES anything
 # else with exit 64 — so a test can prove no other subcommand ever reached
 # the engine. Every argv is appended to $FAKE_ENGINE_LOG, %q-quoted.
@@ -76,7 +76,7 @@ JSON
   go)
     # Only when a test explicitly allows it: the executor path.
     if [ "${FAKE_ENGINE_ALLOW_GO:-}" != "1" ]; then
-      echo "fake deploy-engine: refused subcommand 'go' (FAKE_ENGINE_ALLOW_GO is not set)" >&2; exit 64
+      echo "fake dp: refused subcommand 'go' (FAKE_ENGINE_ALLOW_GO is not set)" >&2; exit 64
     fi
     svc=${args[0]:-}; target=${args[1]:-}
     if [ "${FAKE_ENGINE_GO_FAILS:-}" = "1" ]; then
@@ -84,6 +84,6 @@ JSON
     fi
     printf '3... 2... 1... deploying %s (%s)\n  [OK] apt_deps\n  [OK] cpanm\n  [OK] generate_ubic\n  [OK] hot_deploy\n  [OK] health_check\n  Deployed %s successfully\n' "$svc" "$target" "$svc"; exit 0;;
   *)
-    echo "fake deploy-engine: refused subcommand '$cmd' (only status and plan answer here)" >&2
+    echo "fake dp: refused subcommand '$cmd' (only status and plan answer here)" >&2
     exit 64;;
 esac

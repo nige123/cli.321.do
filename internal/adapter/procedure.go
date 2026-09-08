@@ -45,14 +45,14 @@ func (p *ProcedureAdapter) Bindings() []string {
 	for _, name := range p.Tools.Names() {
 		t := p.Tools[name]
 		state := "bound"
-		if de, ok := t.(*tool.DeployEngine); ok {
+		if de, ok := t.(*tool.DP); ok {
 			if de.Bound() {
 				state = de.Bin
 			} else {
-				state = "not configured (set DEPLOY_ENGINE_BIN to the engine's explicit entry point)"
+				state = "not configured (set DP_BIN to the engine's explicit entry point)"
 			}
 			if ee, ok := de.Exec.(*tool.EngineExecutor); ok {
-				state += "; execute ENABLED on " + strings.Join(ee.AllowedTargets, ", ") + " (DEPLOY_ENGINE_EXECUTE)"
+				state += "; execute ENABLED on " + strings.Join(ee.AllowedTargets, ", ") + " (DP_EXECUTE)"
 			} else if de.Exec == nil {
 				state += "; execute unavailable"
 			}

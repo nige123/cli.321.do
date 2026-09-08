@@ -28,7 +28,7 @@ import (
 // and the boundary compares fresh-against-approved exactly as in the
 // delegated flow; the two plans are milliseconds apart, so a genuine
 // change between them (and only that) still refuses. Nothing here widens
-// the boundary: execution remains gated by DEPLOY_ENGINE_EXECUTE, the
+// the boundary: execution remains gated by DP_EXECUTE, the
 // engine still health-gates and rolls back, and a plan that does not come
 // back `planned` mints no approval at all.
 //
@@ -115,7 +115,7 @@ func assumeOperatorApproval(env Env, g global, cfg *trust.Config, agent *trust.L
 		return ""
 	}
 	sha, _ := proposal.Revision["sha"].(string)
-	return fmt.Sprintf("operator approval assumed (you typed the command): deploy %s to %s at %s — execution proceeds only where DEPLOY_ENGINE_EXECUTE enables it",
+	return fmt.Sprintf("operator approval assumed (you typed the command): deploy %s to %s at %s — execution proceeds only where DP_EXECUTE enables it",
 		proposal.Service, proposal.Target, shortSHA(sha))
 }
 

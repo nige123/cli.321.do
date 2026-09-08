@@ -71,7 +71,7 @@ func cmdAgent(env Env, g global, name string, words []string) int {
 
 	// The CLI invocation is itself the human approval: for an interactive
 	// operator `go`, plan first and attach an approval bound to that plan
-	// so the go can execute (still only where DEPLOY_ENGINE_EXECUTE allows).
+	// so the go can execute (still only where DP_EXECUTE allows).
 	if note := assumeOperatorApproval(env, g, cfg, agent, wp, request); note != "" {
 		fmt.Fprintln(env.Stderr, "321:", note)
 	}

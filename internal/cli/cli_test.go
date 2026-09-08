@@ -276,13 +276,13 @@ func operatorCLI(t *testing.T, bound bool) (func(args ...string) (int, string, s
 	t.Helper()
 	tp := operatorTrust(t)
 	log := filepath.Join(t.TempDir(), "engine.log")
-	de := &tool.DeployEngine{}
+	de := &tool.DP{}
 	if bound {
-		bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
-		de = &tool.DeployEngine{Bin: bin, Env: append(os.Environ(), "FAKE_ENGINE_LOG="+log)}
+		bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "dp"))
+		de = &tool.DP{Bin: bin, Env: append(os.Environ(), "FAKE_ENGINE_LOG="+log)}
 	}
 	reg := adapter.NewRegistry()
-	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": de}))
+	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"dp": de}))
 	reg.Register(modelTrapCLI{t})
 	home := t.TempDir()
 	run := func(args ...string) (int, string, string, string) {
@@ -303,7 +303,7 @@ func TestOperatorStatusByAliasAndByCanonicalIDUsesNoModel(t *testing.T) {
 		t.Fatalf("transcript: %s", out)
 	}
 	code, out, errb, _ = run("example.test/operator", "status", "alpha.web", "live")
-	if code != 0 || !strings.Contains(out, "Tool: deploy_engine status status alpha.web live --json (ok)") {
+	if code != 0 || !strings.Contains(out, "Tool: dp status status alpha.web live --json (ok)") {
 		t.Fatalf("canonical id: %d\n%s\n%s", code, out, errb)
 	}
 	b, _ := os.ReadFile(log)
@@ -346,7 +346,7 @@ func TestOperatorGoIsPreparedNotExecutedEvenWithAGrant(t *testing.T) {
 	if code != wire.ExitBlocked {
 		t.Fatalf("go: %d %s", code, out)
 	}
-	for _, want := range []string{"BLOCKED", "execution is unavailable in this development slice", "nothing was deployed", "Tool: deploy_engine execute  (not performed)", "Proposal: "} {
+	for _, want := range []string{"BLOCKED", "execution is unavailable in this development slice", "nothing was deployed", "Tool: dp execute  (not performed)", "Proposal: "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
@@ -368,12 +368,12 @@ func operatorExecCLI(t *testing.T, interactive bool, targets ...string) (func(ar
 	t.Helper()
 	tp := operatorTrust(t)
 	log := filepath.Join(t.TempDir(), "engine.log")
-	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "dp"))
 	env := append(os.Environ(), "FAKE_ENGINE_LOG="+log, "FAKE_ENGINE_ALLOW_GO=1")
-	de := &tool.DeployEngine{Bin: bin, Env: env}
+	de := &tool.DP{Bin: bin, Env: env}
 	de.Exec = &tool.EngineExecutor{Bin: bin, AllowedTargets: targets, Env: env}
 	reg := adapter.NewRegistry()
-	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": de}))
+	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"dp": de}))
 	reg.Register(modelTrapCLI{t})
 	home := t.TempDir()
 	run := func(args ...string) (int, string, string, string) {
@@ -470,17 +470,17 @@ func TestOperatorUnsupportedRequestAndUnboundEngine(t *testing.T) {
 	}
 	run, _ = operatorCLI(t, false)
 	code, out, _, _ = run("op", "status")
-	if code != wire.ExitFailed || !strings.Contains(out, "DEPLOY_ENGINE_BIN") {
+	if code != wire.ExitFailed || !strings.Contains(out, "DP_BIN") {
 		t.Fatalf("unbound: %d %s", code, out)
 	}
 }
 
 func TestDoctorListsTheToolBinding(t *testing.T) {
 	reg := adapter.NewRegistry()
-	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": &tool.DeployEngine{Bin: "/opt/engine/bin/deploy-engine"}}))
+	reg.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"dp": &tool.DP{Bin: "/opt/engine/bin/dp"}}))
 	var out bytes.Buffer
 	Main(Env{Stdin: strings.NewReader(""), Stdout: &out, Stderr: &out, Args: []string{"doctor"}, TrustPath: "", Home: t.TempDir(), Adapters: reg})
-	if !strings.Contains(out.String(), "deploy_engine: /opt/engine/bin/deploy-engine; execute unavailable; operations: status (deploy.read), plan (deploy.plan), execute (deploy.invoke)") {
+	if !strings.Contains(out.String(), "dp: /opt/engine/bin/dp; execute unavailable; operations: status (deploy.read), plan (deploy.plan), execute (deploy.invoke)") {
 		t.Fatalf("doctor: %s", out.String())
 	}
 }
