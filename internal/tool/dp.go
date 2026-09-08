@@ -16,8 +16,8 @@ import (
 	"cli.321.do/internal/protocol"
 )
 
-// DeployEngine binds the deployment engine's explicit entry point
-// (web.321.do's bin/deploy-engine) as a tool. The engine keeps every
+// DP binds the deployment engine's explicit entry point
+// (deploy.321.do's bin/dp) as a tool. The engine keeps every
 // deployment mechanic; this binding only decides which of its
 // subcommands a procedure may reach, with which arguments, and under
 // which capability.
@@ -28,9 +28,9 @@ import (
 //	plan     deploy.plan     `plan <service> <target> [--revision <sha>] --json`
 //	execute  deploy.invoke   NOT PERFORMED: reported as unavailable, nothing runs
 //
-// The binding is an explicit path (DEPLOY_ENGINE_BIN), never a command
+// The binding is an explicit path (DP_BIN), never a command
 // name looked up on PATH: the name `321` is ambiguous on this estate.
-type DeployEngine struct {
+type DP struct {
 	// Bin is the executable. Empty means the tool is not bound.
 	Bin string
 	// Timeout bounds one call; zero means DefaultTimeout.
@@ -45,7 +45,7 @@ type DeployEngine struct {
 }
 
 // Executor exposes the configured executor, if any.
-func (d *DeployEngine) Executor() Executor { return d.Exec }
+func (d *DP) Executor() Executor { return d.Exec }
 
 const (
 	DefaultTimeout   = 2 * time.Minute
@@ -61,9 +61,9 @@ var (
 	revisionRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 )
 
-func (d *DeployEngine) Name() string { return "deploy_engine" }
+func (d *DP) Name() string { return "dp" }
 
-func (d *DeployEngine) Ops() []Op {
+func (d *DP) Ops() []Op {
 	return []Op{
 		{Name: "status", Capability: protocol.CapDeployRead},
 		{Name: "plan", Capability: protocol.CapDeployPlan},
@@ -71,7 +71,7 @@ func (d *DeployEngine) Ops() []Op {
 	}
 }
 
-func (d *DeployEngine) executeUnavailable() string {
+func (d *DP) executeUnavailable() string {
 	if d.Exec == nil {
 		return ExecutionUnavailable
 	}
@@ -79,30 +79,30 @@ func (d *DeployEngine) executeUnavailable() string {
 }
 
 // Bound reports whether an executable is configured.
-func (d *DeployEngine) Bound() bool { return d.Bin != "" }
+func (d *DP) Bound() bool { return d.Bin != "" }
 
 // Argv builds the argument vector for an operation, refusing anything
 // that is not a validated parameter. Exported so the surface is testable
 // without a process. Every value is checked against a strict pattern, so
 // no value can begin with "-" or carry a shell metacharacter; the vector
 // is passed to exec directly, never to a shell.
-func (d *DeployEngine) Argv(op string, params map[string]string) ([]string, error) {
+func (d *DP) Argv(op string, params map[string]string) ([]string, error) {
 	for k := range params {
 		switch k {
 		case "service", "target", "revision":
 		default:
-			return nil, fmt.Errorf("deploy_engine: unsupported parameter %q", k)
+			return nil, fmt.Errorf("dp: unsupported parameter %q", k)
 		}
 	}
 	service, target, revision := params["service"], params["target"], params["revision"]
 	if service != "" && !serviceRe.MatchString(service) {
-		return nil, fmt.Errorf("deploy_engine: service %q is not a group.name service name", service)
+		return nil, fmt.Errorf("dp: service %q is not a group.name service name", service)
 	}
 	if target != "" && !targetRe.MatchString(target) {
-		return nil, fmt.Errorf("deploy_engine: target %q is not a target name", target)
+		return nil, fmt.Errorf("dp: target %q is not a target name", target)
 	}
 	if revision != "" && !revisionRe.MatchString(revision) {
-		return nil, fmt.Errorf("deploy_engine: revision %q is not a commit sha", revision)
+		return nil, fmt.Errorf("dp: revision %q is not a commit sha", revision)
 	}
 	switch op {
 	case "status":
@@ -114,7 +114,7 @@ func (d *DeployEngine) Argv(op string, params map[string]string) ([]string, erro
 			argv = append(argv, target)
 		}
 		if revision != "" {
-			return nil, errors.New("deploy_engine: status takes no revision")
+			return nil, errors.New("dp: status takes no revision")
 		}
 		return append(argv, "--json"), nil
 	case "plan", "execute":
@@ -138,12 +138,12 @@ func (d *DeployEngine) Argv(op string, params map[string]string) ([]string, erro
 		}
 		return append(argv, "--json"), nil
 	}
-	return nil, fmt.Errorf("deploy_engine: unsupported operation %q", op)
+	return nil, fmt.Errorf("dp: unsupported operation %q", op)
 }
 
-func (d *DeployEngine) Run(ctx context.Context, op string, params map[string]string) (Result, error) {
+func (d *DP) Run(ctx context.Context, op string, params map[string]string) (Result, error) {
 	if _, ok := OpOf(d, op); !ok {
-		return Result{}, fmt.Errorf("deploy_engine: unsupported operation %q", op)
+		return Result{}, fmt.Errorf("dp: unsupported operation %q", op)
 	}
 	argv, err := d.Argv(op, params)
 	if err != nil {
@@ -155,7 +155,7 @@ func (d *DeployEngine) Run(ctx context.Context, op string, params map[string]str
 		return Result{Ok: false, ExitCode: -1, Unavailable: o.Unavailable, Argv: nil}, nil
 	}
 	if !d.Bound() {
-		return Result{}, errors.New("deploy_engine: not configured (set DEPLOY_ENGINE_BIN to the engine's explicit entry point)")
+		return Result{}, errors.New("dp: not configured (set DP_BIN to the engine's explicit entry point)")
 	}
 	timeout := d.Timeout
 	if timeout <= 0 {
@@ -186,11 +186,11 @@ func (d *DeployEngine) Run(ctx context.Context, op string, params map[string]str
 		res.ExitCode = -1
 	}
 	if runCtx.Err() == context.DeadlineExceeded {
-		res.Output = Redact(fmt.Sprintf("deploy_engine: no answer within %s\n%s", timeout, stderr.String()))
+		res.Output = Redact(fmt.Sprintf("dp: no answer within %s\n%s", timeout, stderr.String()))
 		return res, nil
 	}
 	if runErr != nil && cmd.ProcessState == nil {
-		return Result{}, fmt.Errorf("deploy_engine: process did not start: %v", runErr)
+		return Result{}, fmt.Errorf("dp: process did not start: %v", runErr)
 	}
 	raw := stdout.Bytes()
 	res.Truncated = stdout.Len() >= maxOut
@@ -307,7 +307,7 @@ func short(sha string) string {
 
 // EngineExecutor performs an approved deployment by calling the engine's
 // own `go <service> <target>` through the same explicit entry point. It is
-// bound only when DEPLOY_ENGINE_EXECUTE names the targets it may act on;
+// bound only when DP_EXECUTE names the targets it may act on;
 // a target not named is refused before anything runs. The engine keeps
 // every deployment mechanic; this only invokes it and reports its words.
 type EngineExecutor struct {
@@ -317,7 +317,7 @@ type EngineExecutor struct {
 	Env            []string
 }
 
-func (e *EngineExecutor) Name() string { return "deploy-engine go" }
+func (e *EngineExecutor) Name() string { return "dp go" }
 
 // Allowed says whether execution may reach target at all.
 func (e *EngineExecutor) Allowed(target string) bool {
@@ -331,7 +331,7 @@ func (e *EngineExecutor) Allowed(target string) bool {
 
 func (e *EngineExecutor) Execute(p *protocol.DeploymentProposal, a *protocol.Approval) (string, error) {
 	if !e.Allowed(p.Target) {
-		return "", fmt.Errorf("execution on target %q is not enabled here (DEPLOY_ENGINE_EXECUTE lists: %s)", p.Target, strings.Join(e.AllowedTargets, ", "))
+		return "", fmt.Errorf("execution on target %q is not enabled here (DP_EXECUTE lists: %s)", p.Target, strings.Join(e.AllowedTargets, ", "))
 	}
 	if !serviceRe.MatchString(p.Service) || !targetRe.MatchString(p.Target) {
 		return "", fmt.Errorf("the approved proposal names an invalid service or target")

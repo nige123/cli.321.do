@@ -92,7 +92,7 @@
       "type": "object", "additionalProperties": false, "required": ["kind"],
       "properties": {
         "kind": { "enum": ["emit", "write", "assert", "blocked", "external_action", "no_change", "fail", "await_directive", "sleep", "tool"] },
-        "tool": { "type": "string", "description": "kind tool: the name of a tool the runtime binds by explicit configuration (deploy_engine)." },
+        "tool": { "type": "string", "description": "kind tool: the name of a tool the runtime binds by explicit configuration (dp)." },
         "op": { "type": "string", "description": "kind tool: the operation; each carries its own capability requirement." },
         "text": { "type": "string" },
         "path": { "$ref": "#/$defs/safeRelPath" },

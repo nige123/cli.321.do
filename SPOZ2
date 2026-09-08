@@ -30,7 +30,7 @@ behaviours:
       numbering carried forward, the old receipt preserved and linked from the
       new one.
     - A package's deterministic procedure may call an externally bound tool
-      (deploy_engine, bound by DEPLOY_ENGINE_BIN, never by a PATH lookup)
+      (dp, bound by DP_BIN, never by a PATH lookup)
       through named operations that each carry their own capability: status
       needs deploy.read, plan needs deploy.plan, execute needs deploy.invoke.
       Parameters are validated against strict patterns and passed as an argument

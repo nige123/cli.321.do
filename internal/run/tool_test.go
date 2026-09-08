@@ -15,7 +15,7 @@ import (
 	"cli.321.do/internal/trust"
 )
 
-// The deploy_engine tool binding through the runner, with the unbranded
+// The dp tool binding through the runner, with the unbranded
 // operator fixture and the recording fake engine. Nothing here needs a
 // model, a network, or a real engine.
 
@@ -62,11 +62,11 @@ func (m modelTrap) Run(ctx context.Context, spec adapter.Spec, ctl adapter.Contr
 
 func toolRegistry(t *testing.T, env ...string) (*adapter.Registry, string) {
 	t.Helper()
-	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "dp"))
 	log := filepath.Join(t.TempDir(), "engine.log")
-	de := &tool.DeployEngine{Bin: bin, Env: append(append(os.Environ(), "FAKE_ENGINE_LOG="+log), env...), Timeout: 30 * time.Second}
+	de := &tool.DP{Bin: bin, Env: append(append(os.Environ(), "FAKE_ENGINE_LOG="+log), env...), Timeout: 30 * time.Second}
 	r := adapter.NewRegistry()
-	r.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": de}))
+	r.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"dp": de}))
 	r.Register(modelTrap{t})
 	return r, log
 }
@@ -334,12 +334,12 @@ func TestAReplacementProposalNamesItsPredecessorAndLeavesItHistorical(t *testing
 
 func boundRegistry(t *testing.T, env ...string) (*adapter.Registry, string, *tool.RecordingExecutor) {
 	t.Helper()
-	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "deploy-engine"))
+	bin, _ := filepath.Abs(filepath.Join("..", "..", "testdata", "fakeengine", "dp"))
 	log := filepath.Join(t.TempDir(), "engine.log")
 	ex := &tool.RecordingExecutor{}
-	de := &tool.DeployEngine{Bin: bin, Env: append(append(os.Environ(), "FAKE_ENGINE_LOG="+log), env...), Timeout: 30 * time.Second, Exec: ex}
+	de := &tool.DP{Bin: bin, Env: append(append(os.Environ(), "FAKE_ENGINE_LOG="+log), env...), Timeout: 30 * time.Second, Exec: ex}
 	r := adapter.NewRegistry()
-	r.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"deploy_engine": de}))
+	r.RegisterHidden(adapter.NewProcedureWithTools(tool.Registry{"dp": de}))
 	r.Register(modelTrap{t})
 	return r, log, ex
 }
