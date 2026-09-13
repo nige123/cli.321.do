@@ -124,5 +124,14 @@ decisions:
       procedures, so the 1DA slice runs status and planning deterministically
       through the existing Perl deployment engine with no model and no new
       deployment logic in Go.
+    - 2026-09-13: The runtime stays in Go. Raku++ (rakupp) was considered for
+      building the 321 executable and rejected: it compiles Raku, so it would
+      mean rewriting the runtime; Go already builds static binaries for every
+      release target from one machine (CGO_ENABLED=0), while Raku++ cannot
+      cross-compile, needs glibc 2.38 on Linux and has a proven recipe only for
+      Linux x86_64, macOS and Windows x64; and the runtime's concurrency, child
+      processes, signal handling and signing are where a young, fast-moving
+      compiler is riskiest. Raku++ remains the route for tools written in Raku,
+      such as spoz2.
 
 references:
