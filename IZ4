@@ -1,139 +1,96 @@
-SPOZ2
+IZ4
 
-# What is this project supposed to do?
-# Humans and AI tools should treat this file as the authoritative
-# expression of intent.  Edit it directly or use `spoz2 add ...`.
+# Every IZ4 inherits Invariants 0-4 ('iz4 invariants' shows them).
+# Project invariants begin at 5.
 
-gist:
-    321 is a free, harness-agnostic agent runtime and its command-line front
-    door. It accepts a neutral WorkPackage, resolves and loads an AgentPackage,
-    selects a capable installed harness adapter or a deterministic procedure,
-    enforces capability grants and exact approvals, executes with ordered
-    in-flight directives, and emits run events and an immutable receipt. It is
-    the same runtime whether a person types '321 <agent> <request>' at a
-    terminal or a work system delegates a package to it.
+IS FOR WHAT
+321 is a free, harness-agnostic agent runtime and its command-line front door.
+It accepts a neutral WorkPackage, resolves and loads an AgentPackage, selects a
+capable installed harness adapter or a deterministic procedure, enforces
+capability grants and exact approvals, executes with ordered in-flight
+directives, and emits run events and an immutable receipt. It is the same
+runtime whether a person types '321 <agent> <request>' at a terminal or a work
+system delegates a package to it.
 
-behaviours:
-    - A person runs '321 <agent> <request>' or '321 <publisher-domain>/<agent>
-      <request>' and the request becomes a WorkPackage under local policy,
-      executed through the same path a delegated package takes.
-    - A machine caller runs '321 run' with one WorkPackage and any number of
-      ordered WorkDirectives over NDJSON, and reads RunEvents, directive
-      acknowledgements and exactly one terminal RunReceipt back.
-    - Standalone use needs no 123 account, database or network service; a
-      delegated package is owned by its issuer and the runtime never interprets
-      the issuer's correlation references.
-    - Stop takes effect even when earlier directive sequence numbers are
-      missing; clarify and steer stay ordered and are never silently dropped.
-    - A run that ended blocked can be continued once its question is answered:
-      the same immutable package, a clarify directive, cost and attempt
-      numbering carried forward, the old receipt preserved and linked from the
-      new one.
-    - A package's deterministic procedure may call an externally bound tool
-      (dp, bound by DP_BIN, never by a PATH lookup)
-      through named operations that each carry their own capability: status
-      needs deploy.read, plan needs deploy.plan, execute needs deploy.invoke.
-      Parameters are validated against strict patterns and passed as an argument
-      vector with no shell.
-    - A plan operation yields an immutable deployment-proposal.v1 on the
-      receipt: exact revision, manifest and engine digests, operations in order,
-      checks performed and not performed, blockers, rollback limits, and a
-      digest over the canonical document. It is evidence of planning, never an
-      approval.
+IS FOR WHO
+People who delegate work to agents, and the work systems that hand packages to
+the runtime.
 
-invariants:
-    - Invariant 0: humans first. Help people thrive, and respect each person's
-      dignity. Do no harm, and no greater good makes a person disposable. Keep
-      humans in charge: explain consequential actions, accept challenge and
-      correction, and stop safely when asked. When an objective conflicts with
-      these protections, preserve them, report the conflict, and safely pause
-      the affected action. Be honest about what this is, what it knows, what it
-      has done, and what remains uncertain or blocked. No other entry may weaken
-      this.
-    - The runtime never understands or mutates Track, Step, Entry or Action.
-      Correlation references are opaque and echoed verbatim.
-    - Agent identity is publisher domain plus agent name. Version and content
-      digest are separate fields, never part of the identity. A manifest's
-      domain is a claim; official or verified status comes only from
-      administrator-pinned trust configuration and, where present, a verifying
-      signature.
-    - Official and user agent packages use identical runtime interfaces. No
-      official agent name is hard-coded in the runtime; short names are explicit
-      aliases in trust configuration and an alias is never silently replaced.
-    - Effective authority is the intersection of the caller's grants, local
-      policy and the package's own restrictions. Neither agent text, prompt text
-      nor a steering directive grants authority, and a capability is granted
-      only when the selected adapter actually enforces it.
-    - A package requiring a restriction no adapter can enforce is denied. There
-      is no fallback to less restricted execution.
-    - An approved external action is checked against the approved proposal
-      itself, not only its parameter hash, before it is performed.
-    - A WorkPackage is immutable once issued. Material change is a replacement
-      package linked by supersedesPackageId; the receipt records received,
-      applied and rejected directives and never rewrites old conditions to fit
-      new evidence.
-    - The runtime edits a caller-owned workspace and never commits, pushes or
-      lands. The receipt describes the runtime outcome at the moment it ends,
-      and a later commit is the caller's evidence linked by receipt digest.
-    - Budgets are cumulative across attempts within a run, and continuation
-      stays on the configured harness.
-    - Loading a package never executes package content, never follows a path
-      outside the package root, and never installs anything.
-    - Network authority is separate from shell authority: shell.run never
-      implies network access. The agent's network mode comes only from an
-      explicit grant, and a required network restriction that the selected
-      adapter cannot enforce denies the run.
-    - A receipt carries the digest of the package exactly as received and the
-      digest of its ordered conditions, so an issuer can prove which package and
-      which condition list a receipt answers.
-    - Execution of a deployment is not performed by this runtime until the
-      execution boundary is enabled; until then every execute operation is
-      recorded as not performed and the run ends blocked, whatever approval or
-      grant the package carries. When enabled, the boundary validates the exact
-      proposal digest, the approved parameters and the current manifest and
-      deployed revision immediately before acting, and changed parameters
-      require a renewed approval.
-    - A receipt's cost carries its basis: none when no model was used, harness
-      when the harness reported it, unreported when a harness ran and reported
-      nothing. A zero without a basis is unknown, not free.
-    - An approval of a deployment travels on the package as approval.proposal,
-      the approved proposal verbatim with its digest named in the approved
-      parameters. Where an executor is bound, execution is preceded by a fresh
-      plan of the same target and refused unless the approved parameters, the
-      manifest digest and the deployed revision all still hold; changed
-      parameters need a new proposal and a renewed approval.
+INVARIANT 5
+The runtime never understands or mutates Track, Step, Entry or Action.
+Correlation references are opaque and echoed verbatim.
 
-constraints:
-    - Go standard library only for the runtime; the five public protocols and
-      the fixtures under testdata are Apache-2.0 and carry no official agent
-      content.
-    - Configuration is JSON under ~/.321 (trust and policy), because the runtime
-      has no YAML dependency.
-    - One canonical JSON form for every digest, stated in
-      internal/protocol/canonical.go and pinned by testdata/canonical: bytewise
-      key order, no whitespace, minimal escaping, ES6 number rendering. A second
-      implementation must reproduce the fixture bytes.
+INVARIANT 6
+Agent identity is publisher domain plus agent name. Version and content digest
+are separate fields, never part of the identity. A manifest's domain is a claim;
+official or verified status comes only from administrator-pinned trust
+configuration and, where present, a verifying signature.
 
-decisions:
-    - 2026-09-05: The publisher namespace for official agents is 321.do; the
-      legal owner is Nige Ltd; 123.do is the commercial work system that
-      consumes packages. One agent has one canonical identity.
-    - 2026-09-05: Package downloading, installation commands, online publisher
-      enrolment and a registry service are deferred. Slice 0 loads only
-      administrator-configured packages.
-    - 2026-09-05: deploy.read and deploy.plan join the capability vocabulary as
-      the read-only halves of deployment authority, and the tool step kind joins
-      procedures, so the 1DA slice runs status and planning deterministically
-      through the existing Perl deployment engine with no model and no new
-      deployment logic in Go.
-    - 2026-09-13: The runtime stays in Go. Raku++ (rakupp) was considered for
-      building the 321 executable and rejected: it compiles Raku, so it would
-      mean rewriting the runtime; Go already builds static binaries for every
-      release target from one machine (CGO_ENABLED=0), while Raku++ cannot
-      cross-compile, needs glibc 2.38 on Linux and has a proven recipe only for
-      Linux x86_64, macOS and Windows x64; and the runtime's concurrency, child
-      processes, signal handling and signing are where a young, fast-moving
-      compiler is riskiest. Raku++ remains the route for tools written in Raku,
-      such as spoz2.
+INVARIANT 7
+Official and user agent packages use identical runtime interfaces. No official
+agent name is hard-coded in the runtime; short names are explicit aliases in
+trust configuration and an alias is never silently replaced.
 
-references:
+INVARIANT 8
+Effective authority is the intersection of the caller's grants, local policy and
+the package's own restrictions. Neither agent text, prompt text nor a steering
+directive grants authority, and a capability is granted only when the selected
+adapter actually enforces it.
+
+INVARIANT 9
+A package requiring a restriction no adapter can enforce is denied. There is no
+fallback to less restricted execution.
+
+INVARIANT 10
+An approved external action is checked against the approved proposal itself, not
+only its parameter hash, before it is performed.
+
+INVARIANT 11
+A WorkPackage is immutable once issued. Material change is a replacement package
+linked by supersedesPackageId; the receipt records received, applied and
+rejected directives and never rewrites old conditions to fit new evidence.
+
+INVARIANT 12
+The runtime edits a caller-owned workspace and never commits, pushes or lands.
+The receipt describes the runtime outcome at the moment it ends, and a later
+commit is the caller's evidence linked by receipt digest.
+
+INVARIANT 13
+Budgets are cumulative across attempts within a run, and continuation stays on
+the configured harness.
+
+INVARIANT 14
+Loading a package never executes package content, never follows a path outside
+the package root, and never installs anything.
+
+INVARIANT 15
+Network authority is separate from shell authority: shell.run never implies
+network access. The agent's network mode comes only from an explicit grant, and
+a required network restriction that the selected adapter cannot enforce denies
+the run.
+
+INVARIANT 16
+A receipt carries the digest of the package exactly as received and the digest
+of its ordered conditions, so an issuer can prove which package and which
+condition list a receipt answers.
+
+INVARIANT 17
+Execution of a deployment is not performed by this runtime until the execution
+boundary is enabled; until then every execute operation is recorded as not
+performed and the run ends blocked, whatever approval or grant the package
+carries. When enabled, the boundary validates the exact proposal digest, the
+approved parameters and the current manifest and deployed revision immediately
+before acting, and changed parameters require a renewed approval.
+
+INVARIANT 18
+A receipt's cost carries its basis: none when no model was used, harness when
+the harness reported it, unreported when a harness ran and reported nothing. A
+zero without a basis is unknown, not free.
+
+INVARIANT 19
+An approval of a deployment travels on the package as approval.proposal, the
+approved proposal verbatim with its digest named in the approved parameters.
+Where an executor is bound, execution is preceded by a fresh plan of the same
+target and refused unless the approved parameters, the manifest digest and the
+deployed revision all still hold; changed parameters need a new proposal and a
+renewed approval.
