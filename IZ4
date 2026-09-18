@@ -71,8 +71,10 @@ the run.
 
 INVARIANT 16
 A receipt carries the digest of the package exactly as received and the digest
-of its ordered conditions, so an issuer can prove which package and which
-condition list a receipt answers.
+of its ordered conditions.
+
+BECAUSE
+An issuer can prove which package and which condition list a receipt answers.
 
 INVARIANT 17
 Execution of a deployment is not performed by this runtime until the execution
