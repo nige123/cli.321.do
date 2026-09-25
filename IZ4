@@ -3,7 +3,7 @@ IZ4
 # Every IZ4 inherits Invariants 0-4 ('iz4 invariants' shows them).
 # Project invariants begin at 5.
 
-IS FOR WHAT
+IS FOR WHAT?
 321 is a free, harness-agnostic agent runtime and its command-line front door.
 It accepts a neutral WorkPackage, resolves and loads an AgentPackage, selects a
 capable installed harness adapter or a deterministic procedure, enforces
@@ -12,7 +12,7 @@ directives, and emits run events and an immutable receipt. It is the same
 runtime whether a person types '321 <agent> <request>' at a terminal or a work
 system delegates a package to it.
 
-IS FOR WHO
+IS FOR WHO?
 People who delegate work to agents, and the work systems that hand packages to
 the runtime.
 
