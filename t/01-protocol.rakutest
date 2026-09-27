@@ -50,7 +50,7 @@ is params-hash({ to => 'x', amount => 3 }), params-hash({ amount => 3, to => 'x'
 is params-hash(Any), params-hash({}), 'nil params hash as the empty object';
 ok is-digest(params-hash({ a => 1 })), 'a params hash is a digest';
 my %dir = doc('WorkDirective', schema => SCHEMA-WORK-DIRECTIVE, directiveId => 'd1', packageId => new-ulid(), seq => 1,
-    issuer => { kind => 'local', id => 't' }, issuedAt => now(), kind => DIRECTIVE-STEER, payload => { text => 'go left' });
+    issuer => { kind => 'local', id => 't' }, issuedAt => now-stamp(), kind => DIRECTIVE-STEER, payload => { text => 'go left' });
 %dir<digest> = directive-digest(%dir);
 is directive-digest(%dir), %dir<digest>, 'the digest does not depend on the digest field';
 ok !validate-work-directive(%dir), 'a valid directive validates';
@@ -78,7 +78,7 @@ is parse-agent-id('example.test/helper').Str, 'example.test/helper', 'the canoni
 
 # ---- validators ---------------------------------------------------------------
 my $min = doc('WorkPackage', schema => SCHEMA-WORK-PACKAGE, packageId => new-ulid(), issuer => { kind => 'local', id => 't' },
-    issuedAt => now(), agent => { id => 'local/helper' }, placement => PLACEMENT-CLIENT,
+    issuedAt => now-stamp(), agent => { id => 'local/helper' }, placement => PLACEMENT-CLIENT,
     workspace => { kind => 'none', ownership => 'caller' }, objective => 'do', completion => { conditions => [] },
     capabilities => { granted => [] });
 ok !validate-work-package($min), 'a minimal package validates' or diag validate-work-package($min).Str;
@@ -123,8 +123,8 @@ is parse-duration('0'), 0, '0';
 for '', 'soon', '10', '1x' -> $bad { ok !is-duration($bad), "'$bad' is not a duration" }
 ok is-timestamp('2026-09-05T10:00:00Z') && is-timestamp('2026-09-05T10:00:00.123456789Z') && is-timestamp('2026-09-05T10:00:00+01:00'), 'RFC 3339 forms parse';
 ok !is-timestamp('garbage') && !is-timestamp('') && !is-timestamp('2026-09-05 10:00:00'), 'other forms do not';
-ok is-timestamp(now()), 'now() is a timestamp';
-unlike now(), /'0Z'$/, 'now() trims trailing zeros';
+ok is-timestamp(now-stamp()), 'now-stamp() is a timestamp';
+unlike now-stamp(), /'0Z'$/, 'now-stamp() trims trailing zeros';
 
 # ---- shapes match the schema documents ------------------------------------
 # Every field a shape can emit is a property the matching schema declares,

@@ -1,0 +1,159 @@
+# The dp tool binding: strict argument vectors, the recording fake engine,
+# redaction, and the execution boundary with a recording executor.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use X321Test;
+use X321::Shape;
+use X321::Protocol;
+use X321::Async;
+use X321::Tool;
+
+sub engine(*%extra --> List) {
+    my $log = temp-dir().add('engine.log');
+    my %env = %*ENV, FAKE_ENGINE_LOG => $log.Str, |%extra;
+    (DP.new(:bin(fake-engine().Str), :%env, :timeout(20)), $log);
+}
+my $bg = Cancel.new;
+
+# ---- argv is strict and never a shell ------------------------------------------
+my $d = DP.new;
+for (
+    ('status', {}, 'status --json'),
+    ('status', { service => 'alpha.web' }, 'status alpha.web --json'),
+    ('status', { service => 'alpha.web', target => 'live' }, 'status alpha.web live --json'),
+    ('plan', { service => 'alpha.web', target => 'live' }, 'plan alpha.web live --json'),
+    ('plan', { service => 'alpha.web', target => 'live', revision => '0f94b03' }, 'plan alpha.web live --revision 0f94b03 --json'),
+    ('plan', { target => 'live' }, 'plan  live --json'),
+) -> ($op, %params, $want) {
+    is $d.argv($op, %params).join(' '), $want, "$op {%params.sort.map({ .key ~ '=' ~ .value }).join(' ')}";
+}
+for (
+    ('status', { service => 'alpha.web; rm -rf /' }),
+    ('status', { service => '--force' }),
+    ('status', { service => '-v' }),
+    ('plan', { service => 'alpha.web', target => 'live$(touch x)' }),
+    ('plan', { service => 'alpha.web', target => 'live', revision => 'HEAD' }),
+    ('plan', { service => 'alpha.web', target => 'live', revision => 'master' }),
+    ('plan', { service => 'alpha.web', target => 'live', revision => '--revision' }),
+    ('plan', { service => 'alpha.web', target => 'live', force => 'yes' }),
+    ('plan', { service => 'alpha.web', target => 'live', command => 'go' }),
+    ('status', { revision => '0f94b03' }),
+    ('restart', { service => 'alpha.web' }),
+    ('go', { service => 'alpha.web', target => 'live' }),
+) -> ($op, %params) {
+    throws-like { $d.argv($op, %params) }, X::X321::Tool, "$op {%params.values.join(' ')} is refused";
+}
+
+# ---- status and plan run the bound engine --------------------------------------
+my ($dp, $log) = engine();
+my $res = $dp.run($bg, 'status', { target => 'live' });
+ok $res.ok && $res.data.defined, 'status runs and parses a document';
+my $s = summarise('status', $res.data);
+ok $s.contains('alpha.web running') && $s.contains('beta.web not running'), 'status summary' or diag $s;
+$res = $dp.run($bg, 'plan', { service => 'alpha.web', target => 'live', revision => '0f94b03' });
+ok $res.ok && $res.data<status> eq 'planned', 'plan runs';
+is $res.data<revision><sha>, '0f94b03', 'the requested revision is bound';
+is $res.data<revision><source>, 'requested', 'and marked requested';
+my @inv = read-lines($log);
+is @inv.elems, 2, 'two invocations';
+is @inv[0], 'status live --json', 'status argv';
+ok @inv[1].starts-with('plan alpha.web live --revision 0f94b03 --json'), 'plan argv';
+ok $res.output-digest.starts-with('sha256:'), 'the output digest is a digest';
+ok $res.duration > 0, 'duration is measured';
+
+# ---- execute is not performed in this build -------------------------------------
+($dp, $log) = engine();
+$res = $dp.run($bg, 'execute', { service => 'alpha.web', target => 'live', revision => '0f94b03' });
+ok $res.unavailable ne '' && !$res.ok && !$res.argv, 'execute is reported unavailable and runs nothing';
+ok !$log.e, 'the engine was not invoked';
+
+# ---- unbound and unknown are refused without running --------------------------
+throws-like { DP.new.run($bg, 'status', {}) }, X::X321::Tool, message => /'not configured'/, 'an unbound tool says so';
+($dp, $log) = engine();
+throws-like { $dp.run($bg, 'restart', { service => 'alpha.web' }) }, X::X321::Tool, 'restart is refused';
+throws-like { $dp.run($bg, 'plan', { service => 'alpha.web', target => 'live', revision => 'master' }) }, X::X321::Tool, 'a branch name is not a revision';
+ok !$log.e, 'a refused call never reaches the engine';
+
+# ---- output is redacted and capped ----------------------------------------------
+($dp, $log) = engine(FAKE_ENGINE_SECRET => 'sk-ant-verysecretvalue1234567890');
+$res = $dp.run($bg, 'plan', { service => 'alpha.web', target => 'live' });
+ok $res.ok, 'plan with a planted secret runs';
+ok !$res.output.contains('verysecret'), 'the secret does not leak into the output';
+is $res.data<engine><token>, REDACTED, 'a value under a sensitive key is replaced';
+ok !$res.data<engine><note>.contains('verysecret'), 'an assignment inside a string is redacted';
+my $got = redact("Authorization: Bearer abcdefghijklmnop token=xyz123456 -----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY----- ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+ok !$got.contains('abcdefghijklmnop') && !$got.contains('xyz123456') && !$got.contains("\nabc\n") && !$got.contains('ghp_ABC'), 'free-text redaction' or diag $got;
+my $capped = DP.new(:bin(fake-engine().Str), :env($dp.env), :timeout(20), :max-output(200));
+$res = $capped.run($bg, 'plan', { service => 'alpha.web', target => 'live' });
+ok $res.truncated && !$res.data.defined && $res.output.chars <= 400, 'a capped output is marked truncated and not parsed';
+
+# ---- the boundary ----------------------------------------------------------------
+sub proposal-fixture() {
+    my %p = doc('DeploymentProposal', schema => SCHEMA-DEPLOYMENT-PROPOSAL, proposalId => new-ulid(), packageId => new-ulid(),
+        agent => { id => 'example.test/operator', version => '0.1.0' }, operation => 'deploy', status => 'planned',
+        service => 'alpha.web', target => 'live',
+        revision => { sha => '0f94b03cf776c9b4ca9fe028d6879557f8d06bb3', source => 'requested' },
+        manifest => { digest => 'sha256:' ~ '3' x 64 }, observed => { deployedRevision => '1' x 40 },
+        unperformed => ['tests'], blockers => [], observedAt => '2026-09-05T12:00:00Z');
+    %p<proposalDigest> = proposal-digest(%p);
+    ok !validate-deployment-proposal(%p), 'the proposal fixture validates' or diag validate-deployment-proposal(%p).Str;
+    %p;
+}
+sub approval-for(%p) {
+    my %params = approval-params(%p);
+    doc('Approval', proposalRef => %p<proposalId>, approvalRef => 'approval-1', approvedBy => 'user:1', action => 'deploy',
+        target => %p<service> ~ '@' ~ %p<target>, params => %params, paramsHash => params-hash(%params));
+}
+my %p = proposal-fixture();
+my %a = approval-for(%p);
+my $now = CurrentState.new(:manifest-digest(%p<manifest><digest>), :deployed-revision('1' x 40), :revision-exists);
+my $ex = RecordingExecutor.new;
+lives-ok { gate(%p, %a, $now, $ex) }, 'a matching approval against unchanged state passes';
+is $ex.calls.elems, 1, 'executed once';
+sub refuse(Str $name, $p2, $a2, CurrentState $st) {
+    my $ex2 = RecordingExecutor.new;
+    throws-like { gate($p2, $a2, $st, $ex2) }, X::X321::Tool, "$name: refused";
+    is $ex2.calls.elems, 0, "$name: the executor is not called";
+}
+my %p2 = load('DeploymentProposal', %p); %p2<revision> = { sha => '9' x 40, source => 'requested' }; %p2<proposalDigest> = proposal-digest(%p2);
+refuse('changed revision', %p2, %a, $now);
+my %a2 = load('Approval', %a); %a2<params> = %( |%a<params>, revision => '9' x 40 );
+refuse('edited params', %p, %a2, $now);
+my %a3 = load('Approval', %a2); %a3<paramsHash> = params-hash(%a3<params>);
+refuse('re-hashed params', %p, %a3, $now);
+my %a4 = load('Approval', %a); %a4<target> = 'alpha.web@dev';
+refuse('other target', %p, %a4, $now);
+refuse('manifest changed', %p, %a, CurrentState.new(:manifest-digest('sha256:other'), :deployed-revision($now.deployed-revision), :revision-exists));
+refuse('deployed revision moved', %p, %a, CurrentState.new(:manifest-digest($now.manifest-digest), :deployed-revision('5' x 40), :revision-exists));
+refuse('revision gone', %p, %a, CurrentState.new(:manifest-digest($now.manifest-digest), :deployed-revision($now.deployed-revision), :!revision-exists));
+my %pb = load('DeploymentProposal', %p); %pb<status> = 'blocked'; %pb<proposalDigest> = proposal-digest(%pb);
+refuse('blocked proposal', %pb, approval-for(%pb), $now);
+refuse('no approval', %p, Any, $now);
+my %pt = load('DeploymentProposal', %p); %pt<proposalDigest> = 'sha256:' ~ '0' x 64;
+refuse('tampered digest', %pt, %a, $now);
+
+# ---- the engine executor runs go only on allowed targets ------------------------
+my $golog = temp-dir().add('engine.log');
+my %goenv = %*ENV, FAKE_ENGINE_LOG => $golog.Str, FAKE_ENGINE_ALLOW_GO => '1';
+my $eng = EngineExecutor.new(:bin(fake-engine().Str), :allowed-targets(['dev']), :env(%goenv), :timeout(20));
+throws-like { $eng.execute(%p, %a) }, X::X321::Tool, message => /'not enabled'/, 'live is refused before the engine is invoked';
+ok !$golog.e, 'and nothing ran';
+my %pd = load('DeploymentProposal', %p); %pd<target> = 'dev'; %pd<proposalDigest> = proposal-digest(%pd);
+my $out = $eng.execute(%pd, approval-for(%pd));
+ok $out.contains('completed'), 'dev executes' or diag $out;
+is read-lines($golog).join('|'), 'go alpha.web dev', 'the engine saw exactly go';
+my $failing = EngineExecutor.new(:bin(fake-engine().Str), :allowed-targets(['dev']), :env(%( |%goenv, FAKE_ENGINE_GO_FAILS => '1' )), :timeout(20));
+throws-like { $failing.execute(%pd, approval-for(%pd)) }, X::X321::Tool, message => /'rolled back'/, 'a rolled-back deploy is a failure whatever the exit code';
+
+# ---- cancellation and timeouts ------------------------------------------------
+my ($slow, $) = engine(FAKE_ENGINE_SLEEP => '5');
+my $c = Cancel.new;
+my $run = start { $slow.run($c, 'plan', { service => 'alpha.web', target => 'live' }) };
+sleep 0.5; $c.cancel;
+my $r = await $run;
+ok !$r.ok && $r.exit-code == -1, 'a cancelled call ends without a result';
+my $quick = DP.new(:bin(fake-engine().Str), :env(%( |%*ENV, FAKE_ENGINE_SLEEP => '5' )), :timeout(1));
+$r = $quick.run($bg, 'plan', { service => 'alpha.web', target => 'live' });
+ok $r.output.contains('no answer within 1s'), 'a timeout says so';
+
+done-testing;

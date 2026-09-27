@@ -150,7 +150,7 @@ sub parse-agent-id(Str $s --> AgentID) is export {
 
 #| The current UTC time in the format every timestamp uses (RFC 3339 with
 #| the fraction trimmed of trailing zeros, as Go's RFC3339Nano writes it).
-sub now(--> Str) is export {
+sub now-stamp(--> Str) is export {
     my $s = DateTime.now.utc.Str;
     $s ~~ s/ (\.\d*?) 0+ Z $/$0Z/;
     $s ~~ s/ \. Z $/Z/;
