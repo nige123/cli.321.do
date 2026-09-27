@@ -1,0 +1,3 @@
+# Package and protocol fixtures are digested byte for byte: never convert
+# their line endings (actions/checkout on Windows would write CRLF).
+testdata/** -text
