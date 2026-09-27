@@ -22,7 +22,7 @@ use Do321::Wire;
 use Do321::Hooks;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.3.1';
+constant VERSION is export = '0.3.2';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
