@@ -393,5 +393,25 @@ internal/cli        the front door
 testdata/packages   unbranded fixture packages
 ```
 
-`SPOZ2` beside this file states what the runtime is supposed to do; read it
-before changing behaviour and add to it first.
+## Decisions
+
+- 2026-09-05: The publisher namespace for official agents is `321.do`; the
+  legal owner is Nige Ltd; 123.do is the commercial work system that
+  consumes packages. One agent has one canonical identity.
+- Configuration under `~/.321` is JSON, because the runtime takes no YAML
+  dependency.
+- 2026-09-13: The runtime stays in Go. Raku++ (rakupp) was considered for
+  building the `321` executable and rejected: it compiles Raku, so it would
+  mean rewriting the runtime; Go builds static binaries for every release
+  target from one machine (`CGO_ENABLED=0`), while Raku++ cannot
+  cross-compile, needs glibc 2.38 on Linux and has a proven recipe only for
+  Linux x86_64, macOS and Windows x64; and the runtime's concurrency, child
+  processes, signal handling and signing are where a young, fast-moving
+  compiler is riskiest. Raku++ remains the route for tools written in Raku,
+  such as `iz4`.
+
+## Intent
+
+`IZ4` beside this file says what the runtime is for, who it is for, and the
+invariants that must remain true. Run `iz4 invariants` before changing
+behaviour; a change to what must remain true goes into `IZ4` first.
