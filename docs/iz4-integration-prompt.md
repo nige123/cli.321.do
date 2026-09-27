@@ -1,5 +1,14 @@
 # cli.321.do: make 321 the engine under iz4, beside 123.do
 
+> Status, 2026-09-27: sections 1 to 5 are built in the Raku++ runtime
+> (v0.3.0). Two decisions differ from the text below, deliberately: the
+> IZ4 report is not added to the package's completion conditions, because
+> Invariants 11 and 16 keep the receipt's conditions aligned to the issued
+> package's, so a completed run without the report ends blocked instead;
+> and the prompt-only package ships in this repository as `packages/prompt`
+> with the identity `local/prompt`, loaded with --package-dir, so no trust
+> pinning is needed. What remains is the iz4 side, in cli.iz4.you.
+
 Work in this repository. Run `iz4 agent` first and follow the protocol
 it prints: 321 keeps its own IZ4 (Invariants 5-19) and inherits 0-4. Report
 every affected invariant when you finish. Do not touch cli.iz4.you,

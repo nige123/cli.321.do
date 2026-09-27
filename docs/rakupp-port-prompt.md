@@ -1,5 +1,9 @@
 # cli.321.do: move the runtime from Go to Raku++, then make it the engine under iz4
 
+> Status, 2026-09-27: done. Parity is v0.2.0 (the Go tree removed in the
+> same commit); the integration is v0.3.0. The Raku++ differences met are
+> recorded in the 321-rakupp-binaries skill's gotchas.
+
 Work in this repository. Run `iz4 agent` first and follow the protocol it
 prints: 321 keeps its own IZ4 (Invariants 5-19) and inherits 0-4. Report
 every affected invariant when you finish. Load the `321-rakupp-binaries`
