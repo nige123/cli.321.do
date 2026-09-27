@@ -1,0 +1,144 @@
+# These tests drive the REAL claude_code adapter - its argument surface,
+# its stream reader, its SIGTERM handling and its --resume continuation -
+# against a controllable stand-in for the `claude` executable
+# (testdata/fakeclaude/claude).  No model is involved.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321RunTest;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Adapter;
+use Do321::Run;
+
+my $bg = Cancel.new;
+my $agent = helper();
+
+sub claude-env(Str $mode, *%extra --> List) {
+    my $log = temp-dir().add('claude.log');
+    my %env = %*ENV, FAKE_CLAUDE_LOG => $log.Str, FAKE_CLAUDE_MODE => $mode, |%extra;
+    ($log, $%env);
+}
+
+sub claude-registry(%env --> Registry) {
+    Registry.new.register-hidden(new-procedure()).register(ClaudeCode.new(:binary(fake-claude().Str), :kill-wait(3), :%env));
+}
+
+# claude_code denies network none with a shell before spawning
+{
+    my ($log, $env) = claude-env('complete');
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><granted> = [CAP-REPO-READ, CAP-SHELL-RUN];
+    %wp<capabilities><limits><network> = NETWORK-NONE;
+    my $col = Collector.new;
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new(:sink($col)));
+    ok %r<status> eq STATUS-DENIED && %r<denied>.defined, 'a denial' or diag %r<status>;
+    my $joined = @(%r<denied><details>).join("\n");
+    ok $joined.contains(FEAT-NETWORK-DENY) && $joined.contains('shell.run is granted'), 'the denial names the unenforceable requirement' or diag $joined;
+    ok !$log.e, 'the harness was not spawned';
+    ok $col.count(EVENT-ADAPTER-SELECTED) == 0 && %r<attempts>.elems == 0, 'no adapter selected, no attempt made';
+}
+
+# provider_only with a shell is denied too
+{
+    my ($log, $env) = claude-env('complete');
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><granted> = [CAP-REPO-READ, CAP-SHELL-RUN];
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new);
+    is %r<status>, STATUS-DENIED, 'provider_only with a shell is not enforceable either';
+    ok !$log.e, 'the harness was not spawned';
+}
+
+# claude_code runs with an enforceable envelope
+{
+    my ($log, $env) = claude-env('complete', FAKE_CLAUDE_CONDITIONS => '2');
+    my %wp = pkg-for($agent, 'build it', 'built', 'and tested');
+    %wp<capabilities><granted> = [CAP-REPO-READ, CAP-REPO-WRITE, CAP-SHELL-RUN];
+    %wp<capabilities><limits> = load('Limits', { network => NETWORK-OPEN, maxTurns => 8, maxUsd => 1 });
+    my $col = Collector.new;
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new(:sink($col)));
+    check-receipt(%r);
+    ok %r<status> eq STATUS-COMPLETED && %r<attempts>.elems == 1, 'one completed attempt' or diag "{%r<status>} {%r<evidence><errors>.raku}";
+    my @inv = read-lines($log);
+    is @inv.elems, 1, 'one invocation';
+    for '--permission-mode dontAsk', '--allowedTools', 'Bash', 'Edit', '--max-turns 8', '--max-budget-usd 1.00', '--json-schema' -> $want {
+        ok @inv[0].contains($want), "the surface carries $want" or diag @inv[0];
+    }
+    ok !@inv[0].contains('WebFetch'), 'net.fetch was not granted; WebFetch is not allowed';
+    ok %r<conditions>.elems == 2 && %r<conditions>[0]<met> && %r<conditions>[1]<met>, 'conditions from the harness, by index';
+    ok %r<harness><adapter> eq 'claude_code' && %r<harness><sessionRefs>.elems == 1, 'the harness and its session';
+    is %r<cost><basis>, COST-HARNESS, 'cost as the harness reported';
+}
+
+# steer interrupts, then resumes and applies at the boundary
+{
+    my ($log, $env) = claude-env('hang-until-resumed');
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(claude-registry(%$env)), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-PROGRESS);
+    my %steer = directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'use the existing helper');
+    $ch.send(%steer);
+    $col.wait(EVENT-DIRECTIVE-RECEIVED);
+    my %r = await $done;
+    check-receipt(%r);
+    ok %r<status> eq STATUS-COMPLETED && %r<attempts>.elems == 2, 'two attempts and completion' or diag %r<attempts>.raku;
+    is %r<attempts>[0]<endReason>, 'ended_for_instructions', 'attempt 1 ends for instructions';
+    ok %r<attempts>[0]<sessionRef>.starts-with('fake-session-'), 'the interrupted attempt\'s session is read off the init event';
+    my @inv = read-lines($log);
+    is @inv.elems, 2, 'two harness invocations';
+    ok @inv[1].contains('--resume ' ~ %r<attempts>[0]<sessionRef>), 'attempt 2 resumes the interrupted session' or diag @inv[1];
+    ok @inv[1].contains('use the existing helper') && !@inv[0].contains('existing helper'), 'the instruction reaches only the resumed prompt';
+    ok is-in(%steer<directiveId>, %r<directives><applied>), 'the steer is applied';
+    my $order = $col.kinds.grep({ is-in($_, [EVENT-DIRECTIVE-RECEIVED, EVENT-DIRECTIVE-APPLIED, EVENT-ATTEMPT-ENDED, EVENT-ATTEMPT-STARTED]) }).join(',');
+    ok $order.contains('directive_received,attempt_ended,attempt_started,directive_applied'), 'applied only once the resumed attempt has started' or diag $order;
+}
+
+# pause terminates the process and resume continues the session
+{
+    my ($log, $env) = claude-env('hang-until-resumed');
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(claude-registry(%$env)), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-PROGRESS);
+    my %pause = directive(%wp<packageId>, 1, DIRECTIVE-PAUSE, 'hold on');
+    $ch.send(%pause);
+    $col.wait(EVENT-PAUSED);
+    $col.wait(EVENT-DIRECTIVE-APPLIED, -> %e { %e<payload><directiveId> eq %pause<directiveId> });
+    is read-lines($log).elems, 1, 'paused: the process has ended and no new one started';
+    is $col.count(EVENT-ATTEMPT-STARTED), 1, 'no attempt starts while paused';
+    $ch.send(directive(%wp<packageId>, 2, DIRECTIVE-RESUME, ''));
+    my %r = await $done;
+    check-receipt(%r);
+    ok %r<status> eq STATUS-COMPLETED && %r<attempts>.elems == 2 && %r<attempts>[0]<endReason> eq 'paused', 'paused then a resumed attempt' or diag %r<attempts>.raku;
+    my @inv = read-lines($log);
+    ok @inv.elems == 2 && @inv[1].contains('--resume ' ~ %r<attempts>[0]<sessionRef>), 'resume continues the interrupted session';
+    my $order = $col.kinds.grep({ is-in($_, [EVENT-DIRECTIVE-APPLIED, EVENT-ATTEMPT-ENDED, EVENT-PAUSED]) }).join(',');
+    ok $order.starts-with('attempt_ended,directive_applied,paused') || $order.starts-with('attempt_ended,paused,directive_applied'), 'pause is applied only once the process has ended' or diag $order;
+}
+
+# stop terminates gracefully and reports stopped
+{
+    my ($log, $env) = claude-env('hang');
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(claude-registry(%$env)), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-PROGRESS);
+    my %stop = directive(%wp<packageId>, 1, DIRECTIVE-STOP, 'enough');
+    $ch.send(%stop);
+    my %r = await $done;
+    check-receipt(%r);
+    ok %r<status> eq STATUS-STOPPED && %r<stop>.defined && %r<stop><directiveId> eq %stop<directiveId>, 'a stop attributed to the directive' or diag %r<status>;
+    ok %r<attempts>.elems == 1 && %r<attempts>[0]<endReason> eq 'cancelled', 'one attempt, ended by cancellation' or diag %r<attempts>.raku;
+    is read-lines($log).elems, 1, 'stop does not start another attempt';
+    ok is-in(%stop<directiveId>, %r<directives><applied>), 'the stop is applied once the process has ended';
+}
+
+done-testing;

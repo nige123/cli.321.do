@@ -1,0 +1,251 @@
+# The dp tool binding through the runner, with the unbranded operator
+# fixture and the recording fake engine.  Nothing here needs a model, a
+# network, or a real engine.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321RunTest;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Tool;
+use Do321::Adapter;
+use Do321::Run;
+
+my $bg = Cancel.new;
+
+#| Would be selected for any non-procedure request; selecting it fails the test.
+class ModelTrap does Adapter {
+    method name(--> Str) { 'modeltrap' }
+    method detect(--> Detection) { Detection.new(:available, :version<trap>) }
+    method enforcement(--> Hash) { %( features().map({ $_ => True }) ) }
+    method run(Cancel $, Spec $spec, Control $ --> Outcome) { flunk "a model adapter was selected for objective {$spec.package<objective>}"; Outcome.new }
+}
+
+sub tool-registry(*%extra --> List) {
+    my $log = temp-dir().add('engine.log');
+    my %env = %*ENV, FAKE_ENGINE_LOG => $log.Str, |%extra;
+    my $de = DP.new(:bin(fake-engine().Str), :%env, :timeout(30));
+    (Registry.new.register-hidden(new-procedure(:tools({ dp => $de }))).register(ModelTrap.new), $log);
+}
+
+sub op-pkg(Loaded $agent, Str $objective, *@grants --> Hash) {
+    my %wp = pkg-for($agent, $objective);
+    %wp<capabilities><granted> = @grants ?? [ |@grants ] !! [CAP-DEPLOY-READ, CAP-DEPLOY-PLAN];
+    %wp;
+}
+
+my $agent = operator();
+
+# status is a deterministic tool call with no model
+{
+    my ($reg, $log) = tool-registry();
+    my $col = Collector.new;
+    my %r = runner($reg).run($bg, op-pkg($agent, 'status alpha.web live'), $agent, Options.new(:sink($col)));
+    check-receipt(%r);
+    is %r<status>, STATUS-COMPLETED, 'status completes' or diag %r<evidence><errors>.raku;
+    ok $col.count(EVENT-ADAPTER-SELECTED) == 0 && $col.count(EVENT-PROCEDURE-SELECTED) == 1, 'a procedure, never an adapter';
+    ok %r<cost><usd> == 0 && %r<cost><basis> eq COST-NONE, 'no model cost, and the receipt says so';
+    is read-lines($log).join('|'), 'status alpha.web live --json', 'the argv';
+    ok %r<evidence><toolCalls>.elems == 1 && %r<evidence><toolCalls>[0]<capability> eq CAP-DEPLOY-READ && %r<evidence><toolCalls>[0]<ok>, 'the tool call is recorded';
+    ok %r<summary>.contains('alpha.web running'), 'the summary reads the status';
+    ok !%r<evidence><proposal>.defined, 'status makes no proposal';
+}
+
+# plan binds an exact revision and yields a valid proposal
+{
+    my ($reg, $log) = tool-registry();
+    my %wp = op-pkg($agent, 'plan alpha.web live revision 0f94b03cf776c9b4ca9fe028d6879557f8d06bb3');
+    my %r = runner($reg).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    is %r<status>, STATUS-COMPLETED, 'plan completes' or diag %r<blockedOn>;
+    my $p = %r<evidence><proposal>;
+    ok $p.defined, 'a proposal is on the receipt';
+    ok !validate-deployment-proposal($p), 'and it validates' or diag validate-deployment-proposal($p).Str;
+    ok $p<service> eq 'alpha.web' && $p<target> eq 'live' && $p<revision><sha> eq '0f94b03cf776c9b4ca9fe028d6879557f8d06bb3' && $p<revision><source> eq 'requested', 'the binding';
+    ok $p<packageId> eq %wp<packageId> && $p<agent><id> eq 'example.test/operator' && $p<agent><digest> eq $agent.digest, 'the provenance';
+    is $p<unperformed>.join(','), 'tests,apt_deps', 'unperformed checks stay visible';
+    is proposal-digest($p), $p<proposalDigest>, 'the digest recomputes';
+    ok read-lines($log)[0].starts-with('plan alpha.web live --revision 0f94b03'), 'the argv';
+}
+
+# ambiguous targets block with a question, never a guess
+{
+    my ($reg, $log) = tool-registry();
+    for ('plan live' => 'Which service', 'plan alpha.web' => 'Which target', 'plan alpha.web stage' => "no target 'stage'",
+         'plan gamma.web live' => 'No service is named exactly') -> (:key($objective), :value($want)) {
+        my %r = runner($reg).run($bg, op-pkg($agent, $objective), $agent, Options.new);
+        ok %r<status> eq STATUS-BLOCKED && %r<blockedOn>.contains($want), "$objective blocks mentioning $want" or diag "{%r<status>} {%r<blockedOn>}";
+        ok %r<evidence><proposal>.defined && %r<evidence><proposal><status> eq 'blocked', "$objective: the blocked plan is recorded as a blocked proposal";
+    }
+    ok read-lines($log).all.starts-with('plan '), 'only plan reached the engine';
+}
+
+# unknown and injected requests never reach the engine
+{
+    my ($reg, $log) = tool-registry();
+    for 'deploy alpha.web to live now', 'restart alpha.web', 'status alpha.web; rm -rf /', 'plan alpha.web live --force',
+        'plan alpha.web live revision master', 'go alpha.web live && touch /tmp/x' -> $objective {
+        my %r = runner($reg).run($bg, op-pkg($agent, $objective), $agent, Options.new);
+        ok %r<status> eq STATUS-BLOCKED && %r<blockedOn>.contains('Unsupported request'), "'$objective' is an explicit unsupported answer" or diag "{%r<status>} {%r<blockedOn>}";
+    }
+    ok !$log.e, 'the engine was not invoked';
+}
+
+# go prepares the proposal and reports execution unavailable
+{
+    my ($reg, $log) = tool-registry();
+    my %wp = op-pkg($agent, 'go alpha.web live revision 0f94b03', CAP-DEPLOY-READ, CAP-DEPLOY-PLAN, CAP-DEPLOY-INVOKE);
+    %wp<approval> = doc('Approval', proposalRef => 'p', approvalRef => 'a', approvedBy => 'user:1', action => 'deploy',
+        target => 'alpha.web@live', params => {}, paramsHash => params-hash({}));
+    my %r = runner($reg).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    ok %r<status> eq STATUS-BLOCKED && %r<blockedOn>.contains('execution is unavailable') && %r<blockedOn>.contains('nothing was deployed'), 'blocked: execution unavailable' or diag %r<blockedOn>;
+    ok %r<evidence><proposal>.defined && %r<evidence><proposal><status> eq 'planned', 'the proposal is still prepared';
+    ok %r<blockedOn>.contains(%r<evidence><proposal><proposalId>), 'the answer names the proposal';
+    my @calls = @(%r<evidence><toolCalls>);
+    ok @calls.elems == 2 && @calls[1]<op> eq 'execute' && @calls[1]<unavailable> ne '' && !@calls[1]<argv>.defined, 'the execute call is recorded as not performed' or diag @calls.raku;
+    ok read-lines($log).elems == 1 && read-lines($log)[0].starts-with('plan '), 'only plan reached the engine';
+    ok !%r<evidence><externalAction>.defined, 'no external action is recorded';
+}
+
+{
+    my ($reg, $log) = tool-registry();
+    my %r = runner($reg).run($bg, op-pkg($agent, 'go alpha.web live revision 0f94b03'), $agent, Options.new);
+    ok %r<status> eq STATUS-BLOCKED && %r<blockedOn>.contains('execution is unavailable') && %r<blockedOn>.contains('deploy.invoke is not granted'), 'without the invoke grant: still prepared, still not executed' or diag %r<blockedOn>;
+    ok %r<evidence><proposal>.defined && %r<evidence><proposal><status> eq 'planned', 'the proposal is prepared';
+    ok read-lines($log).elems == 1, 'one plan reached the engine';
+}
+
+# grants are checked per operation
+{
+    my ($reg, $log) = tool-registry();
+    my %r = runner($reg).run($bg, op-pkg($agent, 'status', CAP-DEPLOY-READ), $agent, Options.new);
+    is %r<status>, STATUS-DENIED, 'a missing required capability is denied before any procedure runs';
+    ok !$log.e, 'nothing runs under a denial';
+}
+
+# stop during a tool call preserves evidence and runs nothing more
+{
+    my ($reg, $log) = tool-registry(FAKE_ENGINE_SLEEP => '3');
+    my %wp = op-pkg($agent, 'go alpha.web live');
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner($reg), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-TOOL-CALL);
+    my $deadline = now + 10;
+    while read-lines($log).elems == 0 { die 'the engine never started' if now > $deadline; sleep 0.005 }
+    my %stop = directive(%wp<packageId>, 1, DIRECTIVE-STOP, 'stop planning');
+    $ch.send(%stop);
+    my %r = await $done;
+    check-receipt(%r);
+    ok %r<status> eq STATUS-STOPPED && %r<stop>.defined && %r<stop><directiveId> eq %stop<directiveId>, 'a stop' or diag %r<status>;
+    ok %r<evidence><toolCalls>.elems == 1 && %r<evidence><toolCalls>[0]<op> eq 'plan', 'the interrupted call is preserved and nothing after it ran' or diag %r<evidence><toolCalls>.raku;
+    is read-lines($log).elems, 1, 'one engine invocation';
+    ok !%r<evidence><proposal>.defined, 'an interrupted plan yields no proposal';
+    is receipt-digest(%r), %r<receiptDigest>, 'the receipt is sealed';
+}
+
+# a replacement proposal names its predecessor and leaves it historical
+{
+    my ($reg, $) = tool-registry();
+    my %first = op-pkg($agent, 'plan alpha.web live');
+    my %r1 = runner($reg).run($bg, %first, $agent, Options.new);
+    ok %r1<status> eq STATUS-COMPLETED && %r1<evidence><proposal>.defined, 'first plan';
+    my $sealed = %r1<receiptDigest>;
+    my $old = %r1<evidence><proposal><proposalDigest>;
+    my %second = op-pkg($agent, 'plan alpha.web live revision 0f94b03');
+    %second<supersedesPackageId> = %first<packageId>;
+    my %r2 = runner($reg).run($bg, %second, $agent, Options.new);
+    ok %r2<status> eq STATUS-COMPLETED && %r2<evidence><proposal>.defined, 'second plan';
+    my $p2 = %r2<evidence><proposal>;
+    ok $p2<supersedesPackageId> eq %first<packageId> && $p2<packageId> eq %second<packageId>, 'the replacement names its predecessor';
+    ok $p2<proposalDigest> ne $old && $p2<proposalId> ne %r1<evidence><proposal><proposalId>, 'a replacement is a new proposal';
+    ok %r1<receiptDigest> eq $sealed && %r1<evidence><proposal><proposalDigest> eq $old && %r1<supersedesPackageId> eq '', 'the superseded receipt and proposal are untouched';
+}
+
+# ---- the execution boundary with a RECORDING executor bound -------------------
+
+sub bound-registry(*%extra --> List) {
+    my $log = temp-dir().add('engine.log');
+    my %env = %*ENV, FAKE_ENGINE_LOG => $log.Str, |%extra;
+    my $ex = RecordingExecutor.new;
+    my $de = DP.new(:bin(fake-engine().Str), :%env, :timeout(30), :exec($ex));
+    (Registry.new.register-hidden(new-procedure(:tools({ dp => $de }))).register(ModelTrap.new), $log, $ex);
+}
+
+sub approved-plan(Registry $reg --> List) {
+    my %r = runner($reg).run($bg, op-pkg($agent, 'plan alpha.web live revision 0f94b03'), $agent, Options.new);
+    die "plan: {%r<status>}" unless %r<status> eq STATUS-COMPLETED && %r<evidence><proposal>.defined;
+    my $p = %r<evidence><proposal>;
+    my %params = approval-params($p);
+    ($p, doc('Approval', proposalRef => 'entry:1', approvalRef => 'reaction:1', approvedBy => 'user:1', action => 'deploy',
+        target => $p<service> ~ '@' ~ $p<target>, params => %params, paramsHash => params-hash(%params), proposal => $p));
+}
+
+{
+    my ($reg, $log, $ex) = bound-registry();
+    my ($approved, $approval) = approved-plan($reg);
+    my %wp = op-pkg($agent, 'go alpha.web live revision 0f94b03', CAP-DEPLOY-READ, CAP-DEPLOY-PLAN, CAP-DEPLOY-INVOKE);
+    %wp<approval> = $approval;
+    ok !validate-work-package(%wp), 'a package with an embedded proposal validates' or diag validate-work-package(%wp).Str;
+    my %r = runner($reg).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    is %r<status>, STATUS-COMPLETED, 'an approved go executes' or diag "{%r<evidence><errors>.raku} {%r<blockedOn>}";
+    ok $ex.calls.elems == 1 && $ex.calls[0].starts-with($approved<proposalId>), 'executed exactly once for the approved proposal';
+    ok %r<evidence><externalAction>.defined && %r<evidence><externalAction><target> eq 'alpha.web@live' && %r<evidence><externalAction><approvalRef> eq 'reaction:1', 'the external action';
+    ok %r<evidence><approvalCheck>.defined && %r<evidence><approvalCheck><operationMatched> && %r<evidence><approvalCheck><paramsHashMatched>, 'the approval check';
+    ok %r<evidence><proposal>.defined && %r<evidence><proposal><proposalId> ne $approved<proposalId>, 'the fresh plan is its own proposal';
+    my @log = read-lines($log);
+    ok @log.elems == 2 && @log[1].starts-with('plan '), 'the engine saw only plans; execution went to the executor' or diag @log.raku;
+}
+
+{
+    my ($reg, $, $) = bound-registry();
+    my ($, $approval) = approved-plan($reg);
+    my ($reg2, $, $ex) = bound-registry(FAKE_ENGINE_DEPLOYED => '9' x 40);
+    my %wp = op-pkg($agent, 'go alpha.web live revision 0f94b03', CAP-DEPLOY-READ, CAP-DEPLOY-PLAN, CAP-DEPLOY-INVOKE);
+    %wp<approval> = $approval;
+    my %r = runner($reg2).run($bg, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-FAILED && @(%r<evidence><errors>).join(' ').contains('deployed revision has changed'), 'execution refuses when the state moved since approval' or diag %r<evidence><errors>.raku;
+    is $ex.calls.elems, 0, 'the executor is not called';
+    ok %r<evidence><approvalCheck>.defined && !%r<evidence><approvalCheck><operationMatched>, 'the check is recorded as failed';
+}
+
+{
+    my ($reg, $, $ex) = bound-registry();
+    my ($, $approval) = approved-plan($reg);
+    for 'go alpha.web live revision 1234567', 'go alpha.web dev revision 0f94b03', 'go beta.web live revision 0f94b03' -> $objective {
+        my %wp = op-pkg($agent, $objective, CAP-DEPLOY-READ, CAP-DEPLOY-PLAN, CAP-DEPLOY-INVOKE);
+        %wp<approval> = $approval;
+        my %r = runner($reg).run($bg, %wp, $agent, Options.new);
+        ok %r<status> eq STATUS-FAILED && %r<endedAt> ne '', "'$objective' is refused under an approval for another revision or target" or diag %r<status>;
+    }
+    is $ex.calls.elems, 0, 'nothing executes';
+}
+
+{
+    my ($reg, $, $ex) = bound-registry();
+    my %r = runner($reg).run($bg, op-pkg($agent, 'go alpha.web live revision 0f94b03', CAP-DEPLOY-READ, CAP-DEPLOY-PLAN, CAP-DEPLOY-INVOKE), $agent, Options.new);
+    ok %r<status> eq STATUS-BLOCKED && %r<blockedOn>.contains("needs a person's approval"), 'no approval: blocked' or diag "{%r<status>} {%r<blockedOn>}";
+    my ($, $approval) = approved-plan($reg);
+    my %wp = op-pkg($agent, 'go alpha.web live revision 0f94b03');
+    %wp<approval> = $approval;
+    %r = runner($reg).run($bg, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-FAILED && @(%r<evidence><errors>).join(' ').contains('deploy.invoke'), 'no grant: failed naming deploy.invoke' or diag %r<evidence><errors>.raku;
+    is $ex.calls.elems, 0, 'nothing executes';
+}
+
+{
+    my ($reg, $, $) = bound-registry();
+    my ($, $approval) = approved-plan($reg);
+    my %tampered = load('DeploymentProposal', $approval<proposal>);
+    %tampered<revision> = { sha => '9' x 40, source => 'requested' };
+    $approval<proposal> = %tampered;
+    my %wp = op-pkg($agent, 'go alpha.web live revision 0f94b03', CAP-DEPLOY-READ, CAP-DEPLOY-PLAN, CAP-DEPLOY-INVOKE);
+    %wp<approval> = $approval;
+    ok so validate-work-package(%wp), 'an embedded proposal whose digest no longer matches does not validate';
+}
+
+done-testing;

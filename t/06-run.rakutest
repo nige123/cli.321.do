@@ -1,0 +1,452 @@
+# The runner: procedures, denials, approvals, ordered directives with a
+# live adapter, boundaries with a print-mode adapter, budgets, timeouts,
+# continuation and receipt digests.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Adapter;
+use Do321::Run;
+
+use Do321RunTest;
+my $bg = Cancel.new;
+
+# ---- procedures, denials and approvals ------------------------------------------
+
+my $agent = helper();
+{
+    my %wp = pkg-for($agent, 'note: remember the milk', 'a note was taken');
+    my %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new(:history-dir(temp-dir().Str)));
+    check-receipt(%r);
+    is %r<status>, STATUS-COMPLETED, 'a procedure runs without a model';
+    is %r<harness><adapter>, 'procedure', 'through the procedure executor';
+    is %r<harness><procedure>, 'note', 'naming the procedure';
+    ok %r<conditions>.elems == 1 && %r<conditions>[0]<met> && %r<conditions>[0]<proof> eq 'the note procedure ran', 'conditions come from the procedure';
+    ok %r<agent><digest> eq $agent.digest && %r<agent><id> eq 'example.test/helper', 'the receipt pins the agent digest and identity';
+    ok %r<instructionHistory><uri>.starts-with('file://'), 'history is written to the history dir';
+}
+
+# conditions align by index and are never reordered
+{
+    my $stub = new-stub(False);
+    my %wp = pkg-for($agent, 'do three things', 'one', 'two', 'three');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my %r = runner(stub-registry($stub)).run($bg, %wp, $agent, Options.new);
+    is %r<conditions>.elems, 3, 'three conditions';
+    my $script = [ %( kind => 'assert', condition => 2, met => True, proof => 'only the second' ), ];
+    %r = runner(fake-registry($script)).run($bg, %wp, $agent, Options.new(:adapter<fake>));
+    ok !%r<conditions>[0]<met> && %r<conditions>[1]<met> && !%r<conditions>[2]<met> && %r<conditions>[0]<proof>.contains('no answer'),
+        'fewer answers than conditions: the missing ones are unmet with a reason';
+}
+
+# denials name their reason and never fall back
+sub deny(%wp, Registry $reg, Str $want) {
+    my %r = runner($reg).run($bg, %wp, $agent, Options.new);
+    is %r<status>, STATUS-DENIED, "denied for $want";
+    my $all = (%r<denied><reason> // '') ~ ' ' ~ @(%r<denied><details> // []).join(' ');
+    ok $all.contains($want), "the denial mentions $want" or diag $all;
+    is %r<attempts>.elems, 0, 'a denied run makes no attempt';
+    ok !validate-run-receipt(%r), 'the denial receipt is valid';
+}
+{
+    my %wp = pkg-for($agent, 'anything'); %wp<capabilities><granted> = [];
+    deny(%wp, stub-registry(new-stub(False)), 'missing: repo.read');
+    %wp = pkg-for($agent, 'anything'); %wp<capabilities><granted> = [CAP-REPO-READ, CAP-SHELL-RUN];
+    deny(%wp, stub-registry(new-stub(False)), FEAT-NETWORK-DENY);
+    %wp = pkg-for($agent, 'anything'); %wp<expiresAt> = '2020-01-01T00:00:00Z';
+    deny(%wp, stub-registry(new-stub(False)), 'expired');
+    %wp = pkg-for($agent, 'anything'); %wp<agent><digest> = 'sha256:' ~ '1' x 64;
+    deny(%wp, stub-registry(new-stub(False)), 'digest does not match');
+    %wp = pkg-for($agent, 'anything'); %wp<agent><id> = 'example.test/other';
+    deny(%wp, stub-registry(new-stub(False)), 'different agent');
+    my $local = load-path(fixture('local/helper'));
+    my %wpl = pkg-for($local, 'anything'); %wpl<capabilities><granted> = []; %wpl<placement> = PLACEMENT-SERVER;
+    my %r = runner(stub-registry(new-stub(False))).run($bg, %wpl, $local, Options.new);
+    ok %r<status> eq STATUS-DENIED && %r<denied><reason>.contains('placement'), 'a placement the package does not allow is denied';
+    %wp = pkg-for($agent, '');
+    deny(%wp, stub-registry(new-stub(False)), 'invalid');
+    %wp = pkg-for($agent, 'anything'); %wp<capabilities><granted> = [CAP-REPO-READ, CAP-NET-FETCH]; %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $stub = new-stub(False);
+    %r = runner(stub-registry($stub)).run($bg, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-COMPLETED && !is-in(CAP-NET-FETCH, $stub.attempts[0].grants), 'a package-denied capability is stripped, even if granted';
+}
+
+# policy ceiling bounds grants
+{
+    my %wp = pkg-for($agent, 'anything'); %wp<capabilities><granted> = [CAP-REPO-READ, CAP-REPO-WRITE];
+    my $stub = new-stub(False);
+    my %r = runner(stub-registry($stub)).run($bg, %wp, $agent, Options.new(:policy(load('Policy', { capabilityCeiling => [CAP-REPO-READ] }))));
+    ok %r<status> eq STATUS-COMPLETED && !is-in(CAP-REPO-WRITE, $stub.attempts[0].grants), 'policy strips repo.write';
+    %r = runner(stub-registry(new-stub(False))).run($bg, %wp, $agent, Options.new(:policy(load('Policy', { capabilityCeiling => [] }))));
+    is %r<status>, STATUS-DENIED, 'a policy that removes a required capability denies the run';
+}
+
+# an approved action is checked against the approval itself
+{
+    my %params = subject => 'Quote request', to => 'supplier@example.test';
+    my %approval = doc('Approval', proposalRef => 'entry:9', approvalRef => 'reaction:3', approvedBy => 'user:7',
+        action => 'send_email', target => 'supplier@example.test', params => %params, paramsHash => params-hash(%params));
+    my %wp = pkg-for($agent, 'approved-send: the quote', 'the email was sent'); %wp<approval> = %approval;
+    my %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    ok %r<status> eq STATUS-COMPLETED && %r<evidence><externalAction>.defined && %r<evidence><approvalCheck>.defined, 'a recorded external action';
+    ok %r<evidence><approvalCheck><paramsHashMatched> && %r<evidence><approvalCheck><operationMatched>, 'both checks matched';
+    is %r<evidence><externalAction><approvalRef>, 'reaction:3', 'the external action cites the approval';
+    my %wrong = load('Approval', %approval); %wrong<target> = 'other@example.test';
+    my %wp2 = pkg-for($agent, 'approved-send: the quote', 'the email was sent'); %wp2<approval> = %wrong;
+    %r = runner(fake-registry()).run($bg, %wp2, $agent, Options.new);
+    ok %r<status> eq STATUS-FAILED && !%r<evidence><externalAction>.defined && %r<evidence><approvalCheck>.defined && !%r<evidence><approvalCheck><operationMatched>,
+        'a mismatched operation is refused before it happens';
+    my %other = subject => 'Order', to => 'supplier@example.test';
+    my %wp3 = pkg-for($agent, 'approved-send: the quote', 'the email was sent');
+    %wp3<approval> = doc('Approval', proposalRef => 'p', approvalRef => 'a', approvedBy => 'u', action => 'send_email',
+        target => 'supplier@example.test', params => %other, paramsHash => params-hash(%other));
+    %r = runner(fake-registry()).run($bg, %wp3, $agent, Options.new);
+    ok %r<status> eq STATUS-FAILED && !%r<evidence><externalAction>.defined, 'different approved params refuse the operation';
+    my %wp4 = pkg-for($agent, 'approved-send: the quote', 'the email was sent');
+    %r = runner(fake-registry()).run($bg, %wp4, $agent, Options.new);
+    ok %r<status> eq STATUS-FAILED && !%r<evidence><externalAction>.defined, 'an external action with no approval fails';
+    my %bad = load('Approval', %approval); %bad<paramsHash> = 'sha256:' ~ 'f' x 64;
+    my %wp5 = pkg-for($agent, 'approved-send: the quote', 'the email was sent'); %wp5<approval> = %bad;
+    %r = runner(fake-registry()).run($bg, %wp5, $agent, Options.new);
+    is %r<status>, STATUS-DENIED, 'a tampered paramsHash is invalid and denied';
+}
+
+# a procedure writes only with the grant and inside the workspace
+{
+    my $ws = temp-dir();
+    my %wp = pkg-for($agent, 'write-file: please', 'the file exists');
+    %wp<workspace> = load('Workspace', { kind => 'git', path => $ws.Str, ownership => 'caller' });
+    %wp<capabilities><granted> = [CAP-REPO-READ, CAP-REPO-WRITE];
+    my $listed = False;
+    my %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new(:list-changed-files(-> $ { $listed = True; ('helper-output.txt',) })));
+    ok %r<status> eq STATUS-COMPLETED && $listed && %r<evidence><filesChanged>.elems == 1, 'a completed write with evidence' or diag %r<evidence>.raku;
+    %wp<capabilities><granted> = [CAP-REPO-READ];
+    %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-FAILED && %r<evidence><denials>, 'a write without the grant is denied, not silently done';
+}
+
+# a blocked procedure reports its question
+{
+    my %r = runner(fake-registry()).run($bg, pkg-for($agent, 'ask: what now', 'something'), $agent, Options.new);
+    ok %r<status> eq STATUS-BLOCKED && %r<blockedOn> eq 'Which file should I change?', 'blocked with the question';
+}
+
+# ---- directives with a live adapter (the fake) --------------------------------
+
+{
+    my %wp = pkg-for($agent, 'steer me', 'done');
+    my $script = [ %( kind => 'await_directive' ), %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' ) ];
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    $ch.send(directive(%wp<packageId>, 2, DIRECTIVE-STEER, 'second'));
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'first'));
+    my %r = runner(fake-registry($script)).run($bg, %wp, $agent, Options.new(:adapter<fake>, :directives($ch), :sink($col)));
+    check-receipt(%r);
+    is %r<status>, STATUS-COMPLETED, 'ordered directives complete the run';
+    is %r<directives><applied>.join(','), 'd1-steer,d2-steer', 'applied order follows seq whatever order they arrived';
+    ok %r<directives><received>.elems == 2 && $col.count(EVENT-DIRECTIVE-RECEIVED) == 2 && $col.count(EVENT-DIRECTIVE-APPLIED) == 2,
+        'received and applied are distinct acknowledgements, one each per directive';
+}
+
+{
+    my %wp = pkg-for($agent, 'steer me', 'done');
+    my $script = [ %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' ) ];
+    my $ch = Mailbox.new;
+    my %d = directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'once');
+    $ch.send(%d); $ch.send(%d);
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'again'));
+    my $col = Collector.new;
+    my %r = runner(fake-registry($script)).run($bg, %wp, $agent, Options.new(:adapter<fake>, :directives($ch), :sink($col)));
+    ok %r<directives><applied>.elems == 1 && %r<directives><duplicates>.elems == 2, 'duplicates are applied once' or diag %r<directives>.raku;
+    is $col.count(EVENT-DIRECTIVE-DUPLICATE), 2, 'each duplicate is acknowledged as one';
+}
+
+{
+    my %wp = pkg-for($agent, 'steer me', 'done');
+    my $script = [ %( kind => 'sleep', duration => '30ms' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' ) ];
+    my $ch = Mailbox.new;
+    $ch.send(directive(%wp<packageId>, 2, DIRECTIVE-STEER, 'orphan'));
+    my %r = runner(fake-registry($script)).run($bg, %wp, $agent, Options.new(:adapter<fake>, :directives($ch)));
+    ok %r<status> eq STATUS-COMPLETED && %r<directives><applied>.elems == 0, 'an out-of-order directive does not apply';
+    ok %r<directives><rejected>.elems == 1 && %r<directives><rejected>[0]<reason>.contains('sequence 1 never arrived'), 'a gap that never fills is rejected, not dropped';
+}
+
+{
+    my %wp = pkg-for($agent, 'wait forever', 'done');
+    my $script = [ %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'never' ) ];
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my %stop = directive(%wp<packageId>, 5, DIRECTIVE-STOP, 'operator said stop');
+    $ch.send(%stop);
+    my %r = runner(fake-registry($script)).run($bg, %wp, $agent, Options.new(:adapter<fake>, :directives($ch), :sink($col)));
+    check-receipt(%r);
+    ok %r<status> eq STATUS-STOPPED && %r<stop>.defined && %r<stop><directiveId> eq %stop<directiveId> && %r<stop><issuer><id> eq 'person', 'a stop attributed to the directive';
+    ok %r<directives><gaps>.elems == 1 && %r<directives><gaps>[0]<expectedSeq> == 1 && %r<directives><gaps>[0]<receivedSeq> == 5, 'the gap is recorded';
+    ok is-in(%stop<directiveId>, %r<directives><applied>), 'stop is acknowledged as applied';
+    ok !%r<conditions>[0]<met>, 'a stopped run does not claim its conditions';
+    my @seq = $col.kinds.grep({ $_ eq EVENT-DIRECTIVE-RECEIVED || $_ eq EVENT-STOPPING || $_ eq EVENT-DIRECTIVE-APPLIED });
+    is @seq.join(','), 'directive_received,stopping,directive_applied', 'acknowledgements: received, stopping, applied';
+}
+
+{
+    my %wp = pkg-for($agent, 'wait', 'done');
+    my $ch = Mailbox.new;
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-STOP, 'one'));
+    $ch.send(directive(%wp<packageId>, 2, DIRECTIVE-STOP, 'two'));
+    my %r = runner(fake-registry([ %( kind => 'await_directive' ), ])).run($bg, %wp, $agent, Options.new(:adapter<fake>, :directives($ch)));
+    ok %r<status> eq STATUS-STOPPED && %r<stop><directiveId> eq 'd1-stop', 'the first stop wins';
+    is %r<directives><applied>.elems, 1, 'only one stop applies';
+}
+
+# live pause is applied only when paused, and resume continues
+{
+    my %wp = pkg-for($agent, 'pause me', 'done');
+    my $script = [ %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'after resume' ) ];
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(fake-registry($script)), %wp, $agent, Options.new(:adapter<fake>, :directives($ch), :sink($col)));
+    $col.wait(EVENT-ATTEMPT-STARTED);
+    my %pause = directive(%wp<packageId>, 1, DIRECTIVE-PAUSE, 'hold');
+    $ch.send(%pause);
+    $col.wait(EVENT-PAUSED);
+    $col.wait(EVENT-DIRECTIVE-APPLIED, -> %e { %e<payload><directiveId> eq %pause<directiveId> });
+    sleep 0.05;
+    ok $done.status ~~ Planned, 'the run stays paused';
+    $ch.send(directive(%wp<packageId>, 2, DIRECTIVE-RESUME, 'go'));
+    my %r = await $done;
+    ok %r<status> eq STATUS-COMPLETED && %r<conditions>[0]<met>, 'completion after resume';
+    is %r<directives><applied>.join(','), 'd1-pause,d2-resume', 'pause then resume applied';
+}
+
+{
+    my %wp = pkg-for($agent, 'pause then stop', 'done');
+    my $script = [ %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'never' ) ];
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(fake-registry($script)), %wp, $agent, Options.new(:adapter<fake>, :directives($ch), :sink($col)));
+    $col.wait(EVENT-ATTEMPT-STARTED);
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-PAUSE, 'hold'));
+    $col.wait(EVENT-PAUSED);
+    $ch.send(directive(%wp<packageId>, 2, DIRECTIVE-STOP, 'enough'));
+    my %r = await $done;
+    ok %r<status> eq STATUS-STOPPED && !%r<conditions>[0]<met>, 'stop while paused ends the run';
+}
+
+{
+    my %wp = pkg-for($agent, 'x', 'done');
+    my $script = [ %( kind => 'sleep', duration => '10ms' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' ) ];
+    my $ch = Mailbox.new;
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-RESUME, ''));
+    my %r = runner(fake-registry($script)).run($bg, %wp, $agent, Options.new(:adapter<fake>, :directives($ch)));
+    ok %r<directives><rejected>.elems == 1 && %r<directives><rejected>[0]<reason>.contains('not paused'), 'a resume when not paused is rejected';
+}
+
+{
+    my %wp = pkg-for($agent, 'x', 'done');
+    my $script = [ %( kind => 'sleep', duration => '20ms' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' ) ];
+    my $ch = Mailbox.new;
+    $ch.send(directive(new-ulid(), 1, DIRECTIVE-STOP, 'wrong package'));
+    my %tampered = directive(%wp<packageId>, 1, DIRECTIVE-STOP, 'tampered');
+    %tampered<payload><reason> = 'changed after signing';
+    $ch.send(%tampered);
+    my %r = runner(fake-registry($script)).run($bg, %wp, $agent, Options.new(:adapter<fake>, :directives($ch)));
+    is %r<status>, STATUS-COMPLETED, 'neither a foreign nor a tampered directive stops the run';
+    ok %r<directives><rejected>.elems == 2 && %r<directives><received>.elems == 0, 'two rejections and no receipt of them';
+}
+
+# ---- directives with a print-mode adapter: boundaries -----------------------------
+
+{
+    my $stub = new-stub(True, :release(Promise.new));
+    my %wp = pkg-for($agent, 'build it', 'built'); %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(stub-registry($stub)), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-PROGRESS);
+    my %steer = directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'use the existing helper');
+    $ch.send(%steer);
+    my %r = await $done;
+    check-receipt(%r);
+    ok %r<status> eq STATUS-COMPLETED && %r<attempts>.elems == 2, 'two attempts and completion' or diag %r<attempts>.raku;
+    is %r<attempts>[0]<endReason>, 'ended_for_instructions', 'attempt 1 ends for instructions';
+    my @specs = @($stub.attempts);
+    ok @specs[1].session-ref eq 'sess-1' && @specs[1].instructions.elems == 1 && @specs[1].instructions[0] eq 'use the existing helper',
+        'attempt 2 resumes the session with the instruction';
+    ok @specs[1].prompt.contains('use the existing helper'), 'the instruction reaches the prompt';
+    ok is-in(%steer<directiveId>, %r<directives><applied>) && is-in(%steer<directiveId>, %r<directives><received>), 'the steer is received and then applied';
+    ok is-in('sess-1', %r<harness><sessionRefs>), 'session refs are recorded';
+    my $order = $col.kinds.grep({ is-in($_, [EVENT-DIRECTIVE-RECEIVED, EVENT-DIRECTIVE-APPLIED, EVENT-ATTEMPT-ENDED, EVENT-ATTEMPT-STARTED]) }).join(',');
+    ok $order.contains('directive_received,attempt_ended,attempt_started,directive_applied'), 'acknowledgement follows the boundary' or diag $order;
+}
+
+{
+    my $stub = new-stub(False, :release(Promise.new));
+    my %wp = pkg-for($agent, 'build it', 'built'); %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(stub-registry($stub)), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-PROGRESS);
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'also add a test'));
+    sleep 0.05;
+    is $stub.attempts.elems, 1, 'without session continuation the attempt is not interrupted';
+    $stub.release.keep(True);
+    my %r = await $done;
+    ok %r<status> eq STATUS-COMPLETED && %r<attempts>.elems == 2, 'a continuation attempt follows';
+    is $stub.attempts[1].session-ref, '', 'no session continuation means a fresh attempt';
+    is %r<directives><applied>.elems, 1, 'the late steer still applies';
+}
+
+{
+    my $stub = new-stub(True, :release(Promise.new));
+    my %wp = pkg-for($agent, 'build it', 'built'); %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(stub-registry($stub)), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-PROGRESS);
+    my %pause = directive(%wp<packageId>, 1, DIRECTIVE-PAUSE, 'hold on');
+    $ch.send(%pause);
+    $col.wait(EVENT-PAUSED);
+    $col.wait(EVENT-DIRECTIVE-APPLIED, -> %e { %e<payload><directiveId> eq %pause<directiveId> });
+    is $stub.attempts.elems, 1, 'paused: no new attempt yet';
+    $ch.send(directive(%wp<packageId>, 2, DIRECTIVE-STEER, 'and rename it'));
+    $ch.send(directive(%wp<packageId>, 3, DIRECTIVE-RESUME, ''));
+    my %r = await $done;
+    ok %r<status> eq STATUS-COMPLETED && %r<attempts>.elems == 2 && %r<attempts>[0]<endReason> eq 'paused', 'paused then a second attempt' or diag %r<attempts>.raku;
+    ok is-in(%r<directives><applied>.join(','), ['d1-pause,d3-resume,d2-steer', 'd1-pause,d2-steer,d3-resume']), 'applied in a sane order' or diag %r<directives><applied>.raku;
+    ok $stub.attempts[1].session-ref eq 'sess-1' && $stub.attempts[1].instructions.elems == 1, 'resume continues the session with the queued steer';
+}
+
+# budgets are cumulative across attempts
+{
+    my $stub = new-stub(True, :release(Promise.new), :cost({ usd => 0.6, turns => 3 }));
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><limits> = load('Limits', { maxUsd => 1.0, maxTurns => 10, network => NETWORK-OPEN });
+    my $ch = Mailbox.new;
+    my $col = Collector.new;
+    my $done = run-in-background(runner(stub-registry($stub)), %wp, $agent, Options.new(:directives($ch), :sink($col)));
+    $col.wait(EVENT-PROGRESS);
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'more'));
+    my %r = await $done;
+    my @specs = @($stub.attempts);
+    is @specs.elems, 2, 'two attempts';
+    ok @specs[0].limits<maxUsd> == 1.0 && 0.39 <= @specs[1].limits<maxUsd> <= 0.41 && @specs[1].limits<maxTurns> == 7, 'the remaining budget is passed to the next attempt' or diag @specs[1].limits.raku;
+    ok %r<cost><usd> >= 1.19 && %r<cost><turns> == 6, 'receipt cost is cumulative' or diag %r<cost>.raku;
+    my $stub2 = new-stub(True, :release(Promise.new), :cost({ usd => 0.6 }));
+    my %wp2 = pkg-for($agent, 'build it', 'built');
+    %wp2<capabilities><limits> = load('Limits', { maxUsd => 0.5, network => NETWORK-OPEN });
+    my $ch2 = Mailbox.new;
+    my $col2 = Collector.new;
+    my $done2 = run-in-background(runner(stub-registry($stub2)), %wp2, $agent, Options.new(:directives($ch2), :sink($col2)));
+    $col2.wait(EVENT-PROGRESS);
+    $ch2.send(directive(%wp2<packageId>, 1, DIRECTIVE-STEER, 'more'));
+    my %r2 = await $done2;
+    ok %r2<status> eq STATUS-FAILED && %r2<summary>.contains('budget') && $stub2.attempts.elems == 1, 'a budget failure after one attempt' or diag %r2<summary>;
+}
+
+# a timeout ends the run as failed, not stopped
+{
+    my $stub = new-stub(False, :release(Promise.new));
+    my %wp = pkg-for($agent, 'hang', 'done');
+    %wp<capabilities><limits> = load('Limits', { timeout => '40ms', network => NETWORK-OPEN });
+    my %r = runner(stub-registry($stub)).run($bg, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-FAILED && %r<attempts>[0]<endReason> eq 'timeout', 'timeout failure' or diag %r<attempts>.raku;
+}
+
+# caller cancellation is a stop from the runtime
+{
+    my $stub = new-stub(False, :release(Promise.new));
+    my %wp = pkg-for($agent, 'hang', 'done'); %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $ctx = Cancel.new;
+    Promise.in(0.02).then({ $ctx.cancel });
+    my %r = runner(stub-registry($stub)).run($ctx, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-STOPPED && %r<stop>.defined && %r<stop><issuer><kind> eq 'runtime', 'a runtime stop' or diag %r<stop>.raku;
+}
+
+# a directive arriving after the run is ignored and the receipt is sealed
+{
+    my %wp = pkg-for($agent, 'note: quick', 'done');
+    my $ch = Mailbox.new;
+    my %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new(:directives($ch)));
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-STEER, 'too late'));
+    sleep 0.01;
+    is receipt-digest(%r), %r<receiptDigest>, 'the receipt did not change after sealing';
+    my $ch2 = Mailbox.new;
+    my %wp2 = pkg-for($agent, 'note: quick', 'done');
+    $ch2.send(directive(%wp2<packageId>, 1, DIRECTIVE-STOP, 'late stop'));
+    my %r2 = runner(fake-registry()).run($bg, %wp2, $agent, Options.new(:directives($ch2)));
+    if %r2<status> eq STATUS-STOPPED { ok is-in('d1-stop', %r2<directives><applied>), 'a stop that won the race is applied' }
+    else {
+        is %r2<status>, STATUS-COMPLETED, 'or the run completed';
+        ok %r2<directives><rejected>.elems == 1 && %r2<directives><rejected>[0]<reason>.contains('after the run ended'), 'and the late stop is rejected as late';
+    }
+}
+
+# the prompt carries the contract but claims no authority
+{
+    my %wp = pkg-for($agent, 'fix the thing', 'tests pass', 'no new warnings');
+    %wp<authority> = load('Authority', { may => [ %( capability => 'edit', scope => 'src/ only' ), ], mayNot => ['touch prod'], approvalRequired => ['deploy'] });
+    %wp<context><lines> = ['someone: the failing test is in pkg/x'];
+    my $p = render-prompt(%wp, $agent, [CAP-REPO-READ], ['prefer the helper']);
+    for 'example.test/helper', '1. tests pass', '2. no new warnings', 'may: edit (src/ only)', 'may not: touch prod',
+        "needs a person's approval first: deploy", 'the failing test is in pkg/x', '1. prefer the helper', 'do not widen', 'Absence of a grant is denial' -> $want {
+        ok $p.contains($want), "prompt carries '$want'";
+    }
+}
+
+# ---- continuation and receipt digests --------------------------------------------
+
+{
+    my %wp = pkg-for($agent, 'note: quick', 'a', 'b');
+    my %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new);
+    is %r<packageDigest>, package-digest(%wp), 'the receipt names the package it answers';
+    is %r<conditionsDigest>, conditions-digest(%wp<completion><conditions>), 'and its conditions';
+    isnt conditions-digest(['b', 'a']), %r<conditionsDigest>, 'reordered conditions do not share a digest';
+}
+
+{
+    my $first = new-stub(True, :status(STATUS-BLOCKED.Str), :cost({ usd => 0.4, turns => 2 }));
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><limits> = load('Limits', { maxUsd => 1.0, network => NETWORK-OPEN });
+    my %r1 = runner(stub-registry($first)).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r1);
+    ok %r1<status> eq STATUS-BLOCKED && %r1<attempts>.elems == 1, 'the first run is blocked after one attempt';
+    my $second = new-stub(True, :cost({ usd => 0.3, turns => 1 }));
+    my $ch = Mailbox.new;
+    $ch.send(directive(%wp<packageId>, 1, DIRECTIVE-CLARIFY, 'change calc.go'));
+    my %r2 = runner(stub-registry($second)).run($bg, %wp, $agent, Options.new(:directives($ch), :continue(%r1)));
+    check-receipt(%r2);
+    is %r2<status>, STATUS-COMPLETED, 'the continuation completes' or diag %r2<summary>;
+    ok %r2<continues>.defined && %r2<continues><runId> eq %r1<runId> && %r2<continues><receiptDigest> eq %r1<receiptDigest> && %r2<continues><attempts> == 1, 'the continuation link' or diag %r2<continues>.raku;
+    ok %r2<attempts>.elems == 1 && %r2<attempts>[0]<n> == 2, 'attempt numbering continues';
+    my $spec = $second.attempts[0];
+    ok $spec.session-ref eq 'sess-1' && $spec.instructions.elems == 1 && $spec.instructions[0] eq 'change calc.go', 'the continuation resumes the session with the answer';
+    ok 0.59 <= $spec.limits<maxUsd> <= 0.61, 'the remaining budget reflects the earlier run';
+    ok 0.69 <= %r2<cost><usd> <= 0.71 && %r2<cost><turns> == 3, 'cost is cumulative across the chain' or diag %r2<cost>.raku;
+    is %r2<packageDigest>, %r1<packageDigest>, 'same package, same digest';
+    is receipt-digest(%r1), %r1<receiptDigest>, 'the old receipt is untouched';
+    my %other = pkg-for($agent, 'other'); %other<capabilities><limits><network> = NETWORK-OPEN;
+    my %r3 = runner(stub-registry(new-stub(True))).run($bg, %other, $agent, Options.new(:continue(%r1)));
+    ok %r3<status> eq STATUS-DENIED && %r3<denied><reason>.contains('different package'), 'a different package cannot be continued';
+    my %tampered = load('RunReceipt', %r1); %tampered<summary> = 'edited';
+    my %r4 = runner(stub-registry(new-stub(True))).run($bg, %wp, $agent, Options.new(:continue(%tampered)));
+    ok %r4<status> eq STATUS-DENIED && %r4<denied><reason>.contains('digest'), 'a tampered receipt cannot be continued';
+}
+
+{
+    my $first = new-stub(True, :status(STATUS-BLOCKED.Str));
+    my %wp = pkg-for($agent, 'build it', 'built'); %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my %r1 = runner(stub-registry($first)).run($bg, %wp, $agent, Options.new);
+    %r1<harness><adapter> = 'other-harness';
+    %r1<receiptDigest> = receipt-digest(%r1);
+    my $second = new-stub(True);
+    runner(stub-registry($second)).run($bg, %wp, $agent, Options.new(:continue(%r1)));
+    is $second.attempts[0].session-ref, '', 'a session from another harness is not resumed';
+}
+
+done-testing;

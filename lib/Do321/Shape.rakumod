@@ -220,7 +220,7 @@ sub load(Str $type, Any $data, Str :$path = $type --> Hash) is export {
             when 'anys' {
                 next unless $v.defined;
                 shape-error("cannot unmarshal {json-type($v)} into $here of type []interface") unless $v ~~ Positional;
-                %out{$name} = [ @$v ];
+                %out{$name} = [ |@$v ];   # Raku++: [ @$v ] nests
             }
             when 'any' {
                 next unless $v.defined;

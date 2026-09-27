@@ -78,7 +78,9 @@ sub render-prompt(%wp, Loaded $agent, @grants, @instructions --> Str) is export 
     $b ~= "Expected evidence: {@ev.join('; ')}\n" if @ev;
     $b ~= "\nYou may use: {@grants.join(', ')}. Nothing else is available to you.\n" if @grants;
     my %a = %wp<authority>;
-    my (@may, @may-not, @approval) = @(%a<may> // []), @(%a<mayNot> // []), @(%a<approvalRequired> // []);
+    my @may = @(%a<may> // []);
+    my @may-not = @(%a<mayNot> // []);
+    my @approval = @(%a<approvalRequired> // []);
     if @may || @may-not || @approval {
         $b ~= "\nAuthority for this task:\n";
         for @may -> %g { $b ~= %g<scope> ne '' ?? "- may: {%g<capability>} ({%g<scope>})\n" !! "- may: {%g<capability>}\n" }
@@ -481,10 +483,10 @@ class Session {
     has Options $.opts;
     has &.now;
     has %.receipt;
-    has @.grants;
-    has $.adapter;
-    has $.procedure;
-    has %.captures;
+    has @.grants is rw;
+    has $.adapter is rw;
+    has $.procedure is rw;
+    has %.captures is rw;
     has Lock $!mu = Lock.new;
     has Int $!event-seq = 0;
     has %.spent;

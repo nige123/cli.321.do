@@ -578,7 +578,7 @@ class ProcedureAdapter does Adapter is export {
         my %check = doc('ApprovalCheck', paramsHashMatched => params-hash($approval<params>) eq $approval<paramsHash>);
         my $err;
         if $fresh<service> ne $approved<service> || $fresh<target> ne $approved<target> {
-            $err = "the fresh plan is for {$fresh<service>}@{$fresh<target>}, the approval for {$approved<service>}@{$approved<target>}";
+            $err = "the fresh plan is for {$fresh<service> ~ '@' ~ $fresh<target>}, the approval for {$approved<service> ~ '@' ~ $approved<target>}";
         }
         my $result = '';
         without $err {
@@ -588,7 +588,7 @@ class ProcedureAdapter does Adapter is export {
         with $err {
             %check<operationMatched> = False; %check<detail> = $err;
             $out.approval-check = %check;
-            $out.denials.push("execute {$approved<service>}@{$approved<target>}");
+            $out.denials.push('execute ' ~ $approved<service> ~ '@' ~ $approved<target>);
             %call<unavailable> = 'refused: ' ~ $err;
             $out.tool-calls.push(%call);
             $out.status = STATUS-FAILED; $out.end-reason = 'approval_mismatch';
@@ -602,7 +602,7 @@ class ProcedureAdapter does Adapter is export {
         %call<ok> = True; %call<exitCode> = 0; %call<summary> = $result;
         $out.tool-calls.push(%call);
         $out.external-action = doc('ExternalAction', proposalRef => $approval<proposalRef>, approvalRef => $approval<approvalRef>,
-            action => 'deploy', target => "{$approved<service>}@{$approved<target>}", params => $approval<params>,
+            action => 'deploy', target => $approved<service> ~ '@' ~ $approved<target>, params => $approval<params>,
             performedAt => now-stamp(), result => "$result (executor: {$ex.name})");
         $ctl.emit.(EVENT-TOOL-RESULT, %( tool => %step<tool>, op => %step<op>, ok => True, executor => $ex.name, result => $result ));
         $out.summary = "executed under approval {$approval<approvalRef>}: $result";
