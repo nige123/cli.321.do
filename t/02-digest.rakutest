@@ -25,8 +25,9 @@ is blob2hex(sign($priv3, hex2blob('af82'))), '6291d657deec24024827e69c3abe01a30c
 
 # ---- the package digest -------------------------------------------------------
 my $dir = copy-fixture('example.test/helper');
-my ($d1, @entries) = compute($dir);
-my ($d2, @) = compute($dir);
+my ($d1, $entries) = compute($dir);
+my @entries = @$entries;
+my ($d2, $) = compute($dir);
 is $d1, $d2, 'the digest is deterministic';
 is read-digest-file($dir), $d1, 'and matches the recorded DIGEST file';
 ok !@entries.grep({ .path eq DIGEST-FILE || .path eq SIGNATURE-FILE }), 'DIGEST and SIGNATURE are excluded from the listing';

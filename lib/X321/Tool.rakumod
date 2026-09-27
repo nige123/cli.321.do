@@ -297,7 +297,7 @@ class DP does Tool is export {
     #| metacharacter; the vector goes to exec directly, never to a shell.
     method argv(Str $op, %params --> List) {
         for %params.keys -> $k {
-            tool-error("dp: unsupported parameter \"$k\"") unless so $k eq any(<service target revision>);
+            tool-error("dp: unsupported parameter \"$k\"") unless is-in($k, <service target revision>);
         }
         my ($service, $target, $revision) = %params<service> // '', %params<target> // '', %params<revision> // '';
         tool-error("dp: service \"$service\" is not a group.name service name") if $service ne '' && $service !~~ m:P5/$SERVICE_RE/;
@@ -414,7 +414,7 @@ class EngineExecutor does Executor is export {
     has %.env;
 
     method name(--> Str) { 'dp go' }
-    method allowed(Str $target --> Bool) { so $target eq any(@!allowed-targets) }
+    method allowed(Str $target --> Bool) { is-in($target, @!allowed-targets) }
 
     method execute($p, $a --> Str) {
         tool-error("execution on target \"{$p<target>}\" is not enabled here (DP_EXECUTE lists: {@!allowed-targets.join(', ')})")

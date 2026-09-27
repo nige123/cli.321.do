@@ -88,7 +88,7 @@ sub write-digest-file(IO() $root, Str $digest) is export {
 #| want is given, with the caller's pinned digest.  Returns the computed
 #| digest; throws with it in the message otherwise.
 sub verify-digest(IO() $root, Str $want = '' --> Str) is export {
-    my ($computed, @) = compute($root);
+    my ($computed, $) = compute($root);
     my $recorded = try read-digest-file($root);
     digest-error("digest: " ~ $!.message) if $!;
     digest-error("digest: DIGEST says $recorded but the content is $computed") if $recorded ne $computed;

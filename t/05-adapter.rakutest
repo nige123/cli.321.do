@@ -1,0 +1,142 @@
+# Adapters: requirements from grants, selection that denies rather than
+# weakens, the Claude Code surface, and the procedure executor's refusals.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use X321Test;
+use X321::Shape;
+use X321::Protocol;
+use X321::Async;
+use X321::Tool;
+use X321::Adapter;
+
+class Stub does Adapter {
+    has Str $.name;
+    has %.enf;
+    has Bool $.ok = True;
+    method detect(--> Detection) { $!ok ?? Detection.new(:available, :version<t>) !! Detection.new(:reason<missing>) }
+    method enforcement(--> Hash) { %!enf }
+    method run(Cancel $, Spec $, Control $ --> Outcome) { Outcome.new(:status(STATUS-COMPLETED)) }
+}
+
+sub manifest(*@requires) { doc('AgentManifest', harness => { requires => @requires }) }
+sub pkg(@grants, Str $network) {
+    doc('WorkPackage', capabilities => { granted => @grants, limits => { network => $network, maxTurns => 5, maxUsd => 1 } });
+}
+sub names(@reqs) { @reqs.map(*.feature).join(',') }
+
+# ---- requirements follow from grants, not prose ------------------------------
+my $got = names(requirements(manifest(), pkg([CAP-SHELL-RUN], ''), [CAP-SHELL-RUN]));
+for FEAT-TOOL-ALLOWLIST, FEAT-NETWORK-DENY, FEAT-TURN-LIMIT, FEAT-SPEND-LIMIT -> $want {
+    ok $got.contains($want), "shell.run under provider_only requires $want";
+}
+$got = names(requirements(manifest(), pkg([CAP-SHELL-RUN], NETWORK-OPEN), [CAP-SHELL-RUN]));
+ok !$got.contains(FEAT-NETWORK-DENY), 'an open network needs no network_deny';
+$got = names(requirements(manifest(FEAT-REPO-SCOPE), pkg([], ''), []));
+ok $got.contains(FEAT-REPO-SCOPE) && !$got.contains(FEAT-TOOL-ALLOWLIST), 'package requirements are honoured and no tools means no allowlist';
+
+# ---- selection denies what cannot be enforced and never picks hidden adapters --
+my $llm = Stub.new(:name<llm>, :enf(%( FEAT-TOOL-ALLOWLIST, True, FEAT-STRUCTURED-OUTPUT, True, FEAT-TURN-LIMIT, True, FEAT-SPEND-LIMIT, True )));
+my $r = Registry.new;
+$r.register-hidden(new-fake());
+$r.register($llm);
+my @reqs = requirements(manifest(), pkg([CAP-SHELL-RUN], ''), [CAP-SHELL-RUN]);
+my ($a, $rej) = $r.select(@reqs, {}, ''); my @rej = @$rej;
+ok !$a.defined, 'nothing qualifies for a shell under provider_only';
+is @rej.elems, 1, 'one rejection';
+ok @rej[0].Str.contains(FEAT-NETWORK-DENY), 'and it names network_deny' or diag @rej[0].Str;
+($a, $rej) = $r.select(@reqs, {}, 'fake'); @rej = @$rej;
+is $a.name, 'fake', 'the fake is selectable by name';
+($a, $rej) = $r.select(@reqs, { preferred => ['fake'] }, ''); @rej = @$rej;
+is $a.name, 'fake', 'and by policy preference';
+my @open = requirements(manifest(), pkg([CAP-SHELL-RUN], NETWORK-OPEN), [CAP-SHELL-RUN]);
+($a, $rej) = $r.select(@open, {}, ''); @rej = @$rej;
+is $a.name, 'llm', 'llm qualifies once the network is open';
+($a, $rej) = $r.select(@open, { denied => ['llm'] }, ''); @rej = @$rej;
+ok !$a.defined && @rej && @rej[0].denied, 'policy denial is honoured';
+($a, $rej) = $r.select(@open, {}, 'nope'); @rej = @$rej;
+ok !$a.defined, 'an unknown adapter name selects nothing';
+ok @rej.grep({ .adapter eq 'nope' && .unavailable eq 'no such adapter' }), 'and is reported as no such adapter';
+
+my $gone = Registry.new.register(Stub.new(:name<gone>, :!ok, :enf(%( FEAT-STRUCTURED-OUTPUT, True ))));
+($a, $rej) = $gone.select([Requirement.new(:feature(FEAT-STRUCTURED-OUTPUT), :reason<x>)], {}, ''); @rej = @$rej;
+ok !$a.defined && @rej.elems == 1 && @rej[0].unavailable ne '', 'an unavailable adapter is reported, not chosen';
+
+# ---- claude code args derive tools from grants and report honestly -------------
+my $c = ClaudeCode.new;
+my $spec = Spec.new(:prompt<p>, :grants([CAP-REPO-READ, CAP-REPO-WRITE]), :limits({ maxTurns => 7, maxUsd => 2.5 }),
+    :output-schema('{"type":"object"}'), :session-ref<sess-1>, :overlay('{"model":"claude-sonnet-5"}'));
+my $args = $c.args($spec).join(' ');
+for '--permission-mode dontAsk', '--allowedTools Read,Glob,Grep,Edit,Write,TodoWrite', '--max-turns 7', '--max-budget-usd 2.50',
+    '--resume sess-1', '--json-schema', '--model claude-sonnet-5', '--output-format stream-json' -> $want {
+    ok $args.contains($want), "args carry $want" or diag $args;
+}
+ok !$args.contains('Bash') && !$args.contains('WebFetch'), 'ungranted tools do not appear';
+my %enf = $c.enforcement;
+ok !enforces(%enf, FEAT-NETWORK-DENY) && !enforces(%enf, FEAT-REPO-SCOPE) && !enforces(%enf, FEAT-LIVE-STEER) && !enforces(%enf, FEAT-PAUSE),
+    'claude_code does not claim network_deny, repo_scope, live_steer or pause';
+ok enforces(%enf, FEAT-TOOL-ALLOWLIST) && enforces(%enf, FEAT-SESSION-CONTINUE) && enforces(%enf, FEAT-GRACEFUL-STOP), 'and claims what it enforces';
+my $det = ClaudeCode.new(:binary(fake-claude().Str)).detect;
+ok $det.available && $det.version eq 'fake-claude 0.0.1', 'detection reads the version';
+ok !ClaudeCode.new(:binary<no-such-harness-xyz>).detect.available, 'a missing binary is unavailable';
+
+# ---- envelope parsing ---------------------------------------------------------
+my $line = Q[{"type":"result","is_error":false,"result":"{\"status\":\"blocked\"}","session_id":"s","total_cost_usd":0.3,"num_turns":2,"permission_denials":[{"tool_name":"Bash"},"WebFetch",{"odd":1}],"structured_output":{"status":"blocked","summary":"need a file","blocked_on":"which file?","conditions":[{"met":true,"proof":"x"}]}}];
+my $s = parse-envelope($line);
+ok $s.defined && $s.blocked && $s.blocked-on eq 'which file?' && $s.summary eq 'need a file' && $s.session-ref eq 's' && $s.turns == 2, 'the envelope is read';
+is $s.denials.join(','), 'Bash,WebFetch,{"odd":1}', 'denials in every shape';
+ok $s.conditions.elems == 1 && $s.conditions[0]<met>, 'conditions are carried';
+ok !parse-envelope('just prose').defined, 'prose is not an envelope';
+ok !parse-envelope('{"type":"assistant"}').defined, 'a non-result object is not an envelope';
+my $s2 = parse-envelope('{"type":"result","is_error":true,"result":"boom","errors":["Reached maximum budget"]}');
+ok $s2.is-error && $s2.errors[0] eq 'Reached maximum budget' && $s2.summary eq 'boom', 'an error envelope is read';
+
+# ---- the stream consumer --------------------------------------------------------
+my @stream =
+    '{"type":"system","subtype":"init","session_id":"init-session"}',
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"Looking"},{"type":"tool_use","name":"Read","input":{"file_path":"/a/b/main.go"}}]}}',
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"StructuredOutput","input":{}}]}}',
+    '{"type":"rate_limit_event"}',
+    '{"type":"result","result":"done","session_id":"z","num_turns":1}';
+my $tfile = temp-dir().add('transcript');
+my $th = $tfile.open(:w);
+my @kinds;
+my ($env, $session) = consume-stream(@stream, $th, Control.new(:emit(-> $k, % { @kinds.push($k) })));
+$th.close;
+ok $env.defined && $env.session-ref eq 'z', 'the envelope is returned';
+is $session, 'init-session', 'the init event\'s session id is read so an interrupted attempt can resume';
+my $t = $tfile.slurp;
+ok $t.contains('Read main.go') && $t.contains('Looking') && $t.contains('rate limited'), 'the transcript is readable' or diag $t;
+ok !$t.contains('StructuredOutput'), 'plumbing does not appear';
+is @kinds.join(','), 'progress,tool_call', 'events are emitted';
+ok !consume-stream(['{"type":"assistant"}'], Any, Control.new)[0].defined, 'no result means no envelope';
+
+# ---- the procedure executor refuses ungranted writes and escapes ---------------
+my $ws = temp-dir();
+my %wp = doc('WorkPackage', completion => { conditions => ['c1'] });
+my $bg = Cancel.new;
+my $ctl = Control.new;
+my $p = new-fake([ %( kind => 'write', path => 'out.txt', content => 'x' ), ]);
+my $out = $p.run($bg, Spec.new(:package(%wp), :workspace($ws.Str)), $ctl);
+ok $out.status eq STATUS-FAILED && $out.denials, 'a write without a grant is denied';
+$out = $p.run($bg, Spec.new(:package(%wp), :workspace($ws.Str), :grants([CAP-REPO-WRITE])), $ctl);
+is $out.status, STATUS-COMPLETED, 'a granted write completes';
+is $ws.add('out.txt').slurp, 'x', 'and wrote the file';
+my $esc = new-fake([ %( kind => 'write', path => '../outside.txt', content => 'x' ), ]);
+$out = $esc.run($bg, Spec.new(:package(%wp), :workspace($ws.Str), :grants([CAP-REPO-WRITE])), $ctl);
+is $out.status, STATUS-FAILED, 'an escaping path fails';
+my $ext = new-fake([ %( kind => 'external_action', action => 'send', target => 'x' ), ]);
+$out = $ext.run($bg, Spec.new(:package(doc('WorkPackage', completion => { conditions => [] }))), $ctl);
+is $out.status, STATUS-FAILED, 'no gate means no external action';
+
+# the default script asserts every condition and the executor enforces everything
+$out = new-fake().run($bg, Spec.new(:package(doc('WorkPackage', completion => { conditions => ['a', 'b'] }))), $ctl);
+is $out.status, STATUS-COMPLETED, 'the default script completes';
+is $out.conditions.elems, 2, 'with every condition answered';
+is $out.cost<basis>, COST-NONE, 'and no model cost';
+ok enforces(new-fake().enforcement, $_), "the executor enforces $_" for features();
+throws-like { inside-workspace($ws.Str, '/etc/passwd') }, X::X321::Adapter, 'an absolute path is refused';
+is substitute('{{service}} at {{target}}', { service => 'a.b', target => 'live' }), 'a.b at live', 'captures substitute';
+is substitute('{{service}}', {}), '', 'an unresolved placeholder is not a value';
+is cap-tail('abcdef', 3), '[…truncated…]def', 'cap-tail keeps the tail';
+
+done-testing;

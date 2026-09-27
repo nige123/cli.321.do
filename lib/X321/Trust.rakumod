@@ -80,7 +80,7 @@ class Config is export {
                     if %pin<path> eq '' || %pin<version> eq '' || %pin<digest> eq '';
                 trust-error("publisher $dom package $name digest must be sha256:<hex>") unless is-digest(%pin<digest>);
                 trust-error("publisher $dom package $name trust must be verified or development")
-                    unless so %pin<trust> eq any('', LEVEL-VERIFIED, LEVEL-DEVELOPMENT);
+                    unless is-in(%pin<trust>, ['', LEVEL-VERIFIED, LEVEL-DEVELOPMENT]);
                 trust-error("publisher $dom package $name is pinned as verified but the publisher has no keys")
                     if (%pin<trust> eq '' || %pin<trust> eq LEVEL-VERIFIED) && !@(%p<keys> // []);
             }
@@ -91,7 +91,7 @@ class Config is export {
         }
         for self.aliases.sort(*.key) -> (:key($alias), :value($target)) {
             trust-error("alias \"$alias\" is not an agent name") unless is-agent-name($alias);
-            trust-error("alias \"$alias\" shadows a reserved command") if so $alias eq any(RESERVED);
+            trust-error("alias \"$alias\" shadows a reserved command") if is-in($alias, RESERVED);
             my $r = try self!find($target);
             trust-error("alias $alias -> $target: {$!.message}") if $!;
         }

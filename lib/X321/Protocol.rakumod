@@ -118,6 +118,10 @@ class X::X321::Protocol is Exception is export {
 
 sub protocol-error(Str $m) { X::X321::Protocol.new(message => $m).throw }
 
+#| Membership without a junction: under Raku++, `$x eq any()` over an
+#| empty list is True, so every membership test goes through this.
+sub is-in($x, @list --> Bool) is export { so @list.grep({ $_ eq $x }) }
+
 sub is-agent-name(Str $s --> Bool) is export { so $s ~~ m:P5/^[a-z0-9]{2,32}$/ }
 sub is-domain(Str $s --> Bool) is export {
     so $s ~~ m:P5/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
@@ -248,7 +252,7 @@ class Problems is export {
         }
     }
     method one-of(Str $path, Str $value, *@allowed) {
-        return if so $value eq any(@allowed);
+        return if is-in($value, @allowed);
         self.add($path, "must be one of {@allowed.join(', ')} (got \"$value\")");
     }
 }
@@ -454,7 +458,7 @@ sub validate-work-directive(%d --> Problems) is export {
     $c.require('issuer.id', %d<issuer><id>);
     $c.timestamp('issuedAt', %d<issuedAt>, True);
     $c.one-of('kind', %d<kind>, DIRECTIVE-CLARIFY, DIRECTIVE-STEER, DIRECTIVE-PAUSE, DIRECTIVE-RESUME, DIRECTIVE-STOP);
-    $c.require('payload.text', %d<payload><text>) if so %d<kind> eq any(DIRECTIVE-CLARIFY, DIRECTIVE-STEER);
+    $c.require('payload.text', %d<payload><text>) if is-in(%d<kind>, [DIRECTIVE-CLARIFY, DIRECTIVE-STEER]);
     if $c.require('digest', %d<digest>) {
         $c.add('digest', "does not match the directive's content") if directive-digest(%d) ne %d<digest>;
     }
