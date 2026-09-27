@@ -188,4 +188,17 @@ for (
     is @nofield.join(','), '', "$file: every top-level schema property has a field";
 }
 
+subtest 'within: containment by path, on every platform' => {
+    ok within('/a/b/c'.IO, '/a/b'.IO), 'a child is within';
+    ok within('/a/b'.IO, '/a/b'.IO), 'a directory is within itself';
+    nok within('/a/bc'.IO, '/a/b'.IO), 'a sibling sharing a prefix is not';
+    ok within('/x'.IO, '/'.IO), 'everything is within the root';
+    # Windows can resolve one directory with different separators, drive
+    # letter case or a \\?\ prefix; they must compare as the same place.
+    is path-key('C:\\pkg\\prompts\\identity.md', :win), 'c:/pkg/prompts/identity.md', 'separators and case';
+    is path-key('\\\\?\\C:\\pkg', :win), 'c:/pkg', 'the long-path prefix';
+    is path-key('D:/Pkg/x', :win), 'd:/pkg/x', 'forward slashes';
+    is path-key('/A/B'), '/A/B', 'unchanged elsewhere';
+}
+
 done-testing;

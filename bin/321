@@ -7,9 +7,4 @@ use Do321::CLI;
 # DO321_INTERACTIVE=1 is a test seam: it treats stdin as a terminal so the
 # suite can exercise the interactive operator path without one.
 my $interactive = $*IN.t || so %*ENV<DO321_INTERACTIVE>;
-my $code = cli-main(Env.new(:stdin(LineSource.new(:handle($*IN))), :stdout($*OUT), :stderr($*ERR), :args(@*ARGS), :$interactive, :signals));
-# Flush before exiting: a Raku++ binary on Windows dropped buffered stdout
-# on a non-zero exit into a pipe, so a failure's own message was lost.
-try $*OUT.flush;
-try $*ERR.flush;
-exit $code;
+exit cli-main(Env.new(:stdin(LineSource.new(:handle($*IN))), :stdout($*OUT), :stderr($*ERR), :args(@*ARGS), :$interactive, :signals));

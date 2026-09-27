@@ -134,11 +134,22 @@ sub on-path(Str $name --> IO::Path) is export {
     IO::Path;
 }
 
-#| Whether $inner is $outer or lies below it, comparing resolved paths
-#| with the platform's separator.
+#| Whether $inner is $outer or lies below it, comparing resolved paths.
+#| On Windows the two sides can come back with different separators, drive
+#| letter case or a \\?\ prefix for the same directory, so both are put
+#| in one form first; Windows paths are case-insensitive.
 sub within(IO::Path $inner, IO::Path $outer --> Bool) is export {
-    my $sep = $*SPEC.dir-sep;
-    $inner.Str eq $outer.Str || $inner.Str.starts-with($outer.Str ~ $sep);
+    my $i = path-key($inner.Str);
+    my $o = path-key($outer.Str);
+    $i eq $o || $i.starts-with($o.ends-with('/') ?? $o !! $o ~ '/');
+}
+
+#| The comparable form of a path; :win is a test seam.
+sub path-key(Str $p, Bool :$win = $*DISTRO.is-win --> Str) is export {
+    return $p unless $win;
+    my $s = $p.trans('\\' => '/');
+    $s = $s.substr(4) if $s.starts-with('//?/');
+    $s.lc;
 }
 
 #| Membership without a junction: under Raku++, `$x eq any()` over an
