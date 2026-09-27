@@ -1,0 +1,116 @@
+# Harness hooks: wiring a hook command into Claude Code's settings, merging
+# and idempotent, and the doctor's JSON that says what each adapter enforces.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Hooks;
+use Do321::Wire;
+
+my $ws = temp-dir();
+my $settings = $ws.add('.claude/settings.json');
+
+# ---- install, idempotent, strict, remove ---------------------------------------
+is install-claude-hooks($ws, 'iz4 hook'), 'installed', 'a fresh install';
+my $parsed = parse-json($settings.slurp);
+is $parsed<hooks><SessionStart>[0]<hooks>[0]<command>, 'iz4 hook session-start', 'session start is wired';
+is $parsed<hooks><SessionStart>[0]<matcher>, 'startup|resume|compact', 'for startup, resume and compaction';
+ok !$parsed<hooks><PreToolUse>.defined && !$parsed<hooks><Stop>.defined, 'without --strict the refusing hooks are not wired';
+is install-claude-hooks($ws, 'iz4 hook'), 'unchanged', 'a second install changes nothing';
+is install-claude-hooks($ws, 'iz4 hook', :strict), 'updated', 'strict adds the refusing hooks';
+$parsed = parse-json($settings.slurp);
+is $parsed<hooks><PreToolUse>[0]<matcher>, 'Edit|Write|MultiEdit|NotebookEdit', 'pre-edit on the editing tools';
+is $parsed<hooks><PreToolUse>[0]<hooks>[0]<command>, 'iz4 hook pre-edit', 'calling the command with the event';
+is $parsed<hooks><Stop>[0]<hooks>[0]<command>, 'iz4 hook stop', 'and stop';
+is install-claude-hooks($ws, 'iz4 hook', :strict), 'unchanged', 'strict twice changes nothing';
+my %status = claude-hooks-status($ws, 'iz4 hook');
+ok %status<session-start> && %status<pre-edit> && %status<stop>, 'status sees all three';
+
+# entries that are not ours survive, and only ours are removed
+my %other = parse-json($settings.slurp);
+%other<permissions> = { allow => ['Bash(ls:*)'] };
+# foreign entries ahead of ours: a reinstall re-appends ours, so ours must already be last
+%other<hooks><Stop>.unshift(%( hooks => [ %( type => 'command', command => 'other-tool stop' ), ] ));
+%other<hooks><PreToolUse>.unshift(%( matcher => 'Bash', hooks => [ %( type => 'command', command => 'lint' ), ] ));
+$settings.spurt(settings-json(%other));
+is install-claude-hooks($ws, 'iz4 hook', :strict), 'unchanged', 'a reinstall over foreign entries changes nothing';
+is remove-claude-hooks($ws, 'iz4 hook'), 'removed', 'remove takes ours away';
+$parsed = parse-json($settings.slurp);
+is $parsed<permissions><allow>[0], 'Bash(ls:*)', 'other settings stay';
+is $parsed<hooks><Stop>.elems, 1, 'the other stop hook stays';
+is $parsed<hooks><Stop>[0]<hooks>[0]<command>, 'other-tool stop', 'and it is theirs';
+is $parsed<hooks><PreToolUse>[0]<hooks>[0]<command>, 'lint', 'so does the other pre-edit hook';
+ok !$parsed<hooks><SessionStart>.defined, 'ours is gone';
+is remove-claude-hooks($ws, 'iz4 hook'), 'unchanged', 'a second remove changes nothing';
+%status = claude-hooks-status($ws, 'iz4 hook');
+ok !%status<session-start> && !%status<pre-edit> && !%status<stop>, 'status sees nothing of ours';
+
+# an unparseable settings file is never touched
+$settings.spurt('{ not json');
+throws-like { install-claude-hooks($ws, 'iz4 hook') }, Exception, message => /'not valid JSON'/, 'a broken file is refused';
+is $settings.slurp, '{ not json', 'and left alone';
+$settings.unlink;
+
+# ---- the records ------------------------------------------------------------------
+my @recs = install-all($ws, 'iz4 hook', :strict);
+is @recs.elems, 1, 'one known harness';
+my %r = @recs[0];
+is %r<harness>, 'claude_code', 'claude_code';
+is %r<action>, 'installed', 'installed';
+is %r<events><stop>, 'wired', 'stop wired';
+is %r<enforced>.join(','), 'pre-edit,stop', 'pre-edit and stop refuse';
+is %r<advisory>.join(','), 'session-start', 'session start only injects';
+my @st = status-all($ws, 'iz4 hook');
+ok !@st[0]<action>.defined && @st[0]<events><pre-edit> eq 'wired', 'status records carry no action';
+my @rm = remove-all($ws, 'iz4 hook');
+is @rm[0]<action>, 'removed', 'remove records';
+is @rm[0]<enforced>.elems, 0, 'and nothing is enforced afterwards';
+
+# ---- the same shape iz4 writes for itself ---------------------------------------
+my $iz4 = (%*ENV<PATH> // '').split(':').map({ .IO.add('iz4') }).first(*.x);
+if $iz4.defined {
+    my $theirs = temp-dir();
+    my $p = run $iz4.Str, 'init', '--for-what=Hooks parity.', '--for-who=Testers.', '--/agents', :cwd($theirs.Str), :out, :err;
+    $p.out.slurp(:close); $p.err.slurp(:close);
+    $p = run $iz4.Str, 'agent', 'install', '--hooks', '--strict', :cwd($theirs.Str), :out, :err;
+    $p.out.slurp(:close); $p.err.slurp(:close);
+    my $mine = temp-dir();
+    install-claude-hooks($mine, 'iz4 hook', :strict);
+    is canonical(parse-json($mine.add('.claude/settings.json').slurp)), canonical(parse-json($theirs.add('.claude/settings.json').slurp)),
+        '321 hooks install writes exactly what iz4 agent install --hooks --strict writes';
+}
+else { skip 'iz4 is not on PATH here', 1 }
+
+# ---- through the CLI -----------------------------------------------------------
+my $cws = temp-dir();
+my ($rc, $out, $err) = x321('hooks', 'install', '--workspace', $cws.Str, '--command', 'iz4 hook', '--strict', '--json');
+is $rc, 0, 'hooks install --json exits 0' or diag $err;
+my $doc = parse-json($out);
+is $doc<schema>, 'hooks.v1', 'a hooks.v1 document';
+is $doc<harnesses>[0]<action>, 'installed', 'installed';
+is $doc<harnesses>[0]<events><stop>, 'wired', 'stop wired';
+($rc, $out, $err) = x321('hooks', 'status', '--workspace', $cws.Str, '--command', 'iz4 hook');
+ok $rc == 0 && $out.contains('claude_code') && $out.contains('stop: wired') && $out.contains('enforced: pre-edit, stop'), 'status in text' or diag $out;
+($rc, $out, $err) = x321('hooks', 'remove', '--workspace', $cws.Str, '--command', 'iz4 hook');
+ok $rc == 0 && $out.contains('claude_code: removed'), 'remove in text';
+($rc, $out, $err) = x321('hooks', 'install', '--workspace', $cws.Str);
+ok $rc == EXIT-USAGE && $err.contains('--command'), 'the command is required';
+($rc, $out, $err) = x321('hooks', 'bogus', '--workspace', $cws.Str, '--command', 'x');
+is $rc, EXIT-USAGE, 'an unknown subcommand is a usage error';
+
+# ---- doctor --json ---------------------------------------------------------------
+($rc, $out, $err) = x321('doctor', '--json');
+is $rc, 0, 'doctor --json exits 0' or diag $err;
+$doc = parse-json($out);
+is $doc<schema>, 'doctor.v1', 'a doctor.v1 document';
+my %by = $doc<adapters>.map({ .<name> => $_ });
+ok %by<claude_code>.defined, 'claude_code is listed';
+ok %by<claude_code><enforces><tool_allowlist> && !%by<claude_code><enforces><network_deny>, 'with what it enforces and what it does not';
+is %by<claude_code><hooks><stop>, 'refuses', 'and which hook events refuse';
+is %by<claude_code><hooks><session-start>, 'advises', 'or only advise';
+ok %by<procedure><hooks>.elems == 0, 'the procedure executor is not a harness people drive';
+ok $doc<tools>.elems == 1 && $doc<tools>[0].starts-with('dp:'), 'the tool bindings';
+ok $doc<trust><path>.defined && $doc<iz4><binary>.defined, 'trust and iz4 are reported';
+
+done-testing;

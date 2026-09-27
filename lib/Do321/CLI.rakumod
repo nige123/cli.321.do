@@ -19,9 +19,10 @@ use Do321::Tool;
 use Do321::Adapter;
 use Do321::Run;
 use Do321::Wire;
+use Do321::Hooks;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.2.0';
+constant VERSION is export = '0.3.0';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
@@ -71,7 +72,14 @@ constant USAGE = q:to/END/;
       321 packages validate <dir>   check a package directory against agent-package.v1
       321 packages digest <dir> [--write]
       321 trust show | check
-      321 doctor                    installed adapters and what each actually enforces, and bound tools
+      321 doctor [--json]           installed adapters and what each actually enforces, and bound tools
+
+    Harness hooks (for a hook command such as 'iz4 hook'):
+      321 hooks install --workspace <dir> --command <cmd> [--strict] [--json]
+                                    wire <cmd> session-start|pre-edit|stop into every harness
+                                    321 knows, in that workspace; --strict wires the two that refuse
+      321 hooks status  --workspace <dir> --command <cmd> [--json]
+      321 hooks remove  --workspace <dir> --command <cmd> [--json]
 
     Tool bindings (procedures only, by explicit path, never by PATH lookup):
       DP_BIN             the deployment engine entry point a package's dp
@@ -208,7 +216,8 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'agents'   { return cmd-agents($env) }
         when 'packages' { return cmd-packages($env, @rest[1 .. *]) }
         when 'trust'    { return cmd-trust($env, @rest[1 .. *]) }
-        when 'doctor'   { return cmd-doctor($env) }
+        when 'doctor'   { return cmd-doctor($env, @rest[1 .. *]) }
+        when 'hooks'    { return cmd-hooks($env, $g, @rest[1 .. *]) }
     }
     cmd-agent($env, $g, @rest[0], @rest[1 .. *]);
 }
@@ -350,7 +359,18 @@ sub cmd-trust(Env $env, @args --> Int) {
     EXIT-USAGE;
 }
 
-sub cmd-doctor(Env $env --> Int) {
+sub cmd-doctor(Env $env, @args --> Int) {
+    my $json = is-in('--json', @args);
+    if $json {
+        my $cfg = try trust-of($env);
+        my %trust = $! ?? %( error => $!.message ) !! %( path => $cfg.path, exists => $cfg.path.IO.e, packages => $cfg.configured.elems, policy => $cfg.policy );
+        my @bindings;
+        with $env.adapters.get('procedure') -> $p { @bindings = $p.bindings if $p ~~ ProcedureAdapter }
+        my %d = doctor-document($env.adapters, @bindings, %trust);
+        %d<iz4> = %( binary => iz4-binary(), applied => iz4-binary() ne '' );
+        $env.stdout.say(encode-json-pretty(%d));
+        return $! ?? EXIT-FAILED !! 0;
+    }
     $env.stdout.say('adapters and what each actually enforces:');
     for $env.adapters.all -> $a {
         my $det = $a.detect;
@@ -370,12 +390,69 @@ sub cmd-doctor(Env $env --> Int) {
             $env.stdout.say('  ' ~ $_) for @b;
         }
     }
+    my $iz4 = iz4-binary();
+    $env.stdout.say($iz4 ne ''
+        ?? "iz4: $iz4 (the IZ4 protocol is applied to model-driven runs in a workspace that keeps an IZ4)"
+        !! 'iz4: not on PATH (an IZ4 in a workspace is reported on the receipt, not applied)');
     my $cfg = try trust-of($env);
     if $! { $env.stdout.say("trust: {$!.message}"); return EXIT-FAILED }
     if $cfg.path.IO.e { $env.stdout.say("trust: {$cfg.path}, {$cfg.configured.elems} configured package(s)") }
     else { $env.stdout.say("trust: no file at {$cfg.path} (only --package-dir packages can run)") }
     $env.stdout.say("policy: {to-wire('Policy', $cfg.policy)}");
     0;
+}
+
+# ----------------------------------------------------------------- hooks
+
+sub cmd-hooks(Env $env, Global $g, @args --> Int) {
+    my $usage = 'usage: 321 hooks install|status|remove --workspace <dir> --command <cmd> [--strict] [--json]';
+    if !@args { $env.stderr.say($usage); return EXIT-USAGE }
+    my $sub = @args[0];
+    my ($workspace, $command, $strict, $json) = $g.workspace, '', False, $g.json-out;
+    my $i = 1;
+    while $i < @args {
+        my $a = @args[$i];
+        my ($name, $value, $has-value) = $a.contains('=') ?? (|$a.split('=', 2), True) !! ($a, '', False);
+        my sub need() {
+            return $value if $has-value;
+            X::Do321::Usage.new(message => "$name needs a value").throw if $i + 1 >= @args;
+            $i++;
+            @args[$i];
+        }
+        my $err = try {
+            given $name {
+                when '--workspace' { $workspace = need() }
+                when '--command'   { $command = need() }
+                when '--strict'    { $strict = True }
+                when '--json'      { $json = True }
+                default { X::Do321::Usage.new(message => "unknown option $name for hooks").throw }
+            }
+            Str;
+        };
+        if $! { $env.stderr.say("321 hooks: {$!.message}"); return EXIT-USAGE }
+        $i++;
+    }
+    $workspace = $*CWD.Str if $workspace eq '';
+    if $command eq '' { $env.stderr.say('321 hooks: --command names the hook command, such as "iz4 hook"'); return EXIT-USAGE }
+    unless $workspace.IO.d { $env.stderr.say("321 hooks: no such directory {$workspace}"); return EXIT-USAGE }
+    my @records = do given $sub {
+        when 'install' { install-all($workspace.IO, $command, :$strict) }
+        when 'status'  { status-all($workspace.IO, $command) }
+        when 'remove'  { remove-all($workspace.IO, $command) }
+        default { $env.stderr.say($usage); return EXIT-USAGE }
+    };
+    if $json { $env.stdout.say(encode-json-pretty(%( schema => 'hooks.v1', workspace => $workspace.IO.absolute, command => $command, harnesses => [ |@records ] ))) }
+    else {
+        for @records -> %r {
+            my $head = %r<harness> ~ (%r<available> ?? '' !! ' (not on PATH here)') ~ (%r<action>:exists ?? ": {%r<action>}" !! '');
+            $env.stdout.say($head);
+            $env.stdout.say("  {%r<settings>}");
+            for EVENTS -> $e { $env.stdout.say("  {$e}: {%r<events>{$e}}") }
+            $env.stdout.say("  enforced: {@(%r<enforced>).join(', ') || 'nothing'}; advisory: {@(%r<advisory>).join(', ') || 'nothing'}");
+            $env.stdout.say("  ! {%r<error>}") with %r<error>;
+        }
+    }
+    @records.grep({ .<error>.defined }) ?? EXIT-FAILED !! 0;
 }
 
 # -------------------------------------------------------------- operator

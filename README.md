@@ -388,6 +388,69 @@ continuation handle.
 - `fake`: the same executor with a script, for tests and dry runs. Hidden:
   selected only by `--adapter fake` or `policy.adapters.preferred`.
 
+## Harness hooks
+
+A harness that runs a command before a session starts, before an edit and
+before a turn ends can insist on a protocol's mechanical steps. The command
+is somebody else's (iz4's `iz4 hook`, say: JSON on stdin, text for the model
+on stdout, exit 2 to refuse). 321 knows the harnesses' settings files, event
+names and quirks, so it writes the wiring and keeps up with them:
+
+```
+321 hooks install --workspace . --command "iz4 hook" [--strict] [--json]
+321 hooks status  --workspace . --command "iz4 hook" [--json]
+321 hooks remove  --workspace . --command "iz4 hook" [--json]
+```
+
+Install merges: every setting and every hook that is not ours is kept, ours
+are replaced, and a second install changes nothing. Session start is always
+wired; `--strict` wires pre-edit and stop, the two that refuse. The record
+each command prints, one per harness, says which events are wired and
+whether the harness enforces them (pre-edit and stop can refuse) or only
+advises (session start can only inject). Only Claude Code is known in this
+release, and the wiring it writes is exactly what `iz4 agent install
+--hooks --strict` writes, so the two agree. `321 doctor --json` reports the
+same per adapter, beside what each enforces.
+
+## The IZ4 protocol on a run
+
+When a package's workspace keeps an IZ4 (the file, in the workspace or a
+parent up to the repository root) and `iz4` is on PATH (or named by
+`X321_IZ4`), every model-driven run is under the IZ4 protocol:
+
+- before the first attempt, the packet `iz4 agent packet` prints goes into
+  the prompt, under "Project intent (IZ4)", ahead of the work, marked as
+  project data and not instructions; if the IZ4 changes between attempts
+  it is re-read, and the history records both;
+- a run that ends completed or no_change is checked with `iz4 hook stop`
+  against its summary: a run that changed files and gave no per-invariant
+  report ends **blocked**, not completed, with the reason in `blockedOn`;
+- the invariants the report itself marks uncertain or conflicting are
+  listed under `uncertain` on the receipt.
+
+Procedures (no model) are outside it. When the workspace keeps an IZ4 and
+iz4 is not installed, the run is not blocked, and the receipt says under
+`uncertain` that the protocol was not applied. The runtime never reads the
+IZ4 itself: it runs `iz4` and treats its output as data.
+
+## Prompt-only runs
+
+`packages/prompt` is a local package for asking a question about a
+repository and getting text back with nothing changed: it requires
+`repo.read` and `model.text`, denies every write, shell and network
+capability, and answers in `summary`. Under Claude Code the tool allowlist
+enforces that (no Edit, Write or Bash), and with no shell granted the
+default `provider_only` network is enforceable, so the run is admitted; a
+harness that could not enforce it would be refused, never given a weaker
+run. This is what iz4 hands 321 for suggest, review and test drafting:
+
+```
+321 --package-dir packages/prompt --non-interactive --json prompt <the question>
+```
+
+The answer is the receipt's `summary`; a `blocked` status carries what was
+missing in `blockedOn`.
+
 ## Layout
 
 ```
@@ -404,7 +467,9 @@ lib/Do321/Tool         the bounded tool interface, dp, redaction, the execution 
 lib/Do321/Adapter      adapter interface, selection, procedure/fake, claude_code
 lib/Do321/Run          the runner: grants, attempts, directives, receipts
 lib/Do321/Wire         the NDJSON machine protocol
+lib/Do321/Hooks        harness hook wiring and the doctor's JSON
 lib/Do321/CLI          the front door
+packages/prompt        the local package for prompt-only runs
 t/                     the suite; t/lib holds its helpers and the binary seam
 testdata/packages      unbranded fixture packages
 ```

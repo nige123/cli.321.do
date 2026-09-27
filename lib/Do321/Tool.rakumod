@@ -214,7 +214,7 @@ sub state-from($fresh, $approved --> CurrentState) is export {
 #| as Go's cmd.Env does.  An empty %env inherits.
 sub spawn-argv(Str $bin, @argv, %env --> List) is export {
     return ($bin, |@argv) unless %env.elems;
-    my $env-bin = %*ENV<PATH>.split(':').map({ .IO.add('env') }).first(*.x) // '/usr/bin/env'.IO;
+    my $env-bin = on-path('env') // '/usr/bin/env'.IO;
     ($env-bin.Str, '-i', |%env.keys.sort.map({ "$_={%env{$_}}" }), $bin, |@argv);
 }
 

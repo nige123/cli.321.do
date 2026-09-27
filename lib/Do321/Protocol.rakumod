@@ -118,6 +118,29 @@ class X::Do321::Protocol is Exception is export {
 
 sub protocol-error(Str $m) { X::Do321::Protocol.new(message => $m).throw }
 
+#| The directories on PATH, split on the platform's separator.
+sub path-dirs(--> List) is export {
+    (%*ENV<PATH> // '').split($*DISTRO.is-win ?? ';' !! ':').grep(* ne '').map(*.IO).List;
+}
+
+#| The executable of that name on PATH, or IO::Path:U.
+sub on-path(Str $name --> IO::Path) is export {
+    for path-dirs() -> $d {
+        for ($name, |($*DISTRO.is-win ?? ("$name.exe", "$name.cmd", "$name.bat") !! ())) -> $n {
+            my $f = $d.add($n);
+            return $f if $f.f && ($*DISTRO.is-win || $f.x);
+        }
+    }
+    IO::Path;
+}
+
+#| Whether $inner is $outer or lies below it, comparing resolved paths
+#| with the platform's separator.
+sub within(IO::Path $inner, IO::Path $outer --> Bool) is export {
+    my $sep = $*SPEC.dir-sep;
+    $inner.Str eq $outer.Str || $inner.Str.starts-with($outer.Str ~ $sep);
+}
+
 #| Membership without a junction: under Raku++, `$x eq any()` over an
 #| empty list is True, so every membership test goes through this.
 sub is-in($x, @list --> Bool) is export { so @list.grep({ $_ eq $x }) }

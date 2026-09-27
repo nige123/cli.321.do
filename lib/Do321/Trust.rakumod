@@ -246,8 +246,7 @@ sub read-inside(IO() $root, Str $rel --> Str) is export {
     my $resolved = try $full.resolve;
     trust-error("package: $rel: {$!.message}") if $!;
     my $root-resolved = $abs.resolve;
-    trust-error("package: \"$rel\" escapes the package root")
-        unless $resolved.Str eq $root-resolved.Str || $resolved.Str.starts-with($root-resolved.Str ~ '/');
+    trust-error("package: \"$rel\" escapes the package root") unless within($resolved, $root-resolved);
     trust-error("package: \"$rel\" is not a regular file") unless $full.f && !$full.l;
     $full.slurp;
 }

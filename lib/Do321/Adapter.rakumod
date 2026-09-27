@@ -203,15 +203,14 @@ sub inside-workspace(Str $ws, Str $rel --> IO::Path) is export {
     X::Do321::Adapter.new(message => "path \"$rel\" is not a safe relative path").throw unless safe-rel-path($rel);
     my $abs = $ws.IO.absolute.IO;
     my $full = $abs.add($rel);
-    X::Do321::Adapter.new(message => "path \"$rel\" escapes the workspace").throw
-        unless $full.Str eq $abs.Str || $full.Str.starts-with($abs.Str ~ '/');
+    X::Do321::Adapter.new(message => "path \"$rel\" escapes the workspace").throw unless within($full, $abs);
     my $parent = $full.parent;
     loop {
         if $parent.e {
             my $resolved = $parent.resolve;
             my $abs-resolved = $abs.resolve;
             X::Do321::Adapter.new(message => "path \"$rel\" resolves outside the workspace").throw
-                unless $resolved.Str eq $abs-resolved.Str || $resolved.Str.starts-with($abs-resolved.Str ~ '/');
+                unless within($resolved, $abs-resolved);
             last;
         }
         last if $parent.Str eq $abs.Str || $parent.parent.Str eq $parent.Str;
@@ -820,8 +819,7 @@ class ClaudeCode does Adapter is export {
 
     method detect(--> Detection) {
         my $bin = self!binary;
-        my $path = $bin.contains('/') ?? ($bin.IO.x ?? $bin.IO !! IO::Path)
-            !! (%*ENV<PATH> // '').split(':').map({ .IO.add($bin) }).first(*.x);
+        my $path = ($bin.contains('/') || $bin.contains('\\')) ?? ($bin.IO.f ?? $bin.IO !! IO::Path) !! on-path($bin);
         return Detection.new(:reason("$bin is not on PATH")) without $path;
         my $p = try run $path.Str, '--version', :out, :err;
         return Detection.new(:available, :version<unknown>) if $! || !$p.defined;

@@ -1,0 +1,22 @@
+{
+  "schema": "agent-package.v1",
+  "id": "local/prompt",
+  "name": "prompt",
+  "displayName": "Prompt",
+  "version": "0.1.0",
+  "publisher": { "domain": "" },
+  "licence": { "spdx": "Apache-2.0" },
+  "identity": {
+    "role": "a reader that answers one question about the files it can see, in text, and changes nothing",
+    "tone": "direct"
+  },
+  "prompts": ["prompts/identity.md"],
+  "capabilities": {
+    "required": ["repo.read", "model.text"],
+    "optional": [],
+    "denied": ["repo.write", "files.write", "shell.run", "net.fetch", "deploy.invoke"]
+  },
+  "harness": { "requires": ["tool_allowlist", "structured_output"] },
+  "placement": { "allowed": ["client", "server"] },
+  "outputSchemas": { "default": "schemas/outcome.json" }
+}

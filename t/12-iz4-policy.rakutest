@@ -1,0 +1,137 @@
+# The IZ4 protocol as a policy on a run: the packet goes into the prompt,
+# a completed run that changed files must carry the per-invariant report,
+# and a missing iz4 is said on the receipt.  iz4 is a stand-in script
+# here: the runtime only ever runs it and reads its answers.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321RunTest;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Adapter;
+use Do321::Run;
+
+my $bg = Cancel.new;
+my $agent = helper();
+
+#| A stand-in iz4: `agent packet` prints a packet; `hook stop` reads the
+#| harness JSON, reads the transcript it names, and refuses (exit 2) when
+#| the last assistant text carries no report.
+sub stub-iz4(--> Str) {
+    my $dir = temp-dir();
+    my $f = $dir.add('iz4');
+    $f.spurt(q:to/SH/);
+        #!/bin/sh
+        case "$1 $2" in
+          "agent packet") echo "IZ4 agent packet (stub)"; echo "INVARIANT 5"; echo "Nothing is deleted."; exit 0 ;;
+          "hook stop")
+            input=$(cat)
+            path=$(printf '%s' "$input" | sed -n 's/.*"transcript_path":"\([^"]*\)".*/\1/p')
+            if grep -qi 'invariant' "$path" && grep -qi 'assessment' "$path"; then exit 0; fi
+            echo "iz4: files changed in a repository that keeps an IZ4, and the reply gives no per-invariant report." >&2
+            exit 2 ;;
+          *) exit 0 ;;
+        esac
+        SH
+    $f.chmod(0o755);
+    $f.Str;
+}
+
+sub git-workspace(--> IO::Path) {
+    my $ws = temp-dir();
+    my $p = run 'git', 'init', '-q', $ws.Str, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close);
+    $ws.add('IZ4').spurt("IZ4\n\nIS FOR WHAT?\nA test.\n\nIS FOR WHO?\nTesters.\n");
+    $ws;
+}
+
+sub git-pkg(IO::Path $ws, Str $objective --> Hash) {
+    my %wp = pkg-for($agent, $objective, 'done');
+    %wp<workspace> = load('Workspace', { kind => 'git', path => $ws.Str, ownership => 'caller' });
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    %wp;
+}
+
+my $report = "Changed the file.\n\nInvariant:     5 Nothing is deleted.\nAssessment:    uncertain\nEvidence:      the diff was reviewed\nRemaining gap: no test covers it\n";
+
+#| A stub adapter that answers with a fixed summary and lets the test see
+#| the prompt it was given.
+class Answering does Adapter {
+    has Str $.summary;
+    has @.prompts;
+    method name(--> Str) { 'answering' }
+    method detect(--> Detection) { Detection.new(:available, :version<t>) }
+    method enforcement(--> Hash) { %( features().map({ $_ => True }) ) }
+    method run(Cancel $, Spec $spec, Control $ --> Outcome) {
+        @!prompts.push($spec.prompt);
+        Outcome.new(:status(STATUS-COMPLETED.Str), :end-reason<completed>, :summary($!summary),
+            :conditions([ %( met => True, proof => 'stub' ), ]), :cost(load('Cost', { basis => COST-HARNESS })));
+    }
+}
+sub reg(Answering $a --> Registry) { Registry.new.register-hidden(new-procedure()).register($a) }
+
+# ---- with iz4 present ------------------------------------------------------------
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    my $ws = git-workspace();
+    my $changed = -> { $ws.add('note.txt').spurt('changed') };
+
+    # a report satisfies the policy, and its uncertain invariants reach the receipt
+    my $a = Answering.new(:summary($report));
+    $changed();
+    my $col = Collector.new;
+    my %r = runner(reg($a)).run($bg, git-pkg($ws, 'change it'), $agent, Options.new(:sink($col), :list-changed-files(-> $ { ('note.txt',) })));
+    is %r<status>, STATUS-COMPLETED, 'a run with the report completes' or diag "{%r<blockedOn>} {%r<uncertain>.raku}";
+    ok $a.prompts[0].contains('## Project intent (IZ4)') && $a.prompts[0].contains('IZ4 agent packet (stub)'), 'the packet is in the prompt, before the work';
+    ok $a.prompts[0].index('Project intent (IZ4)') < $a.prompts[0].index('## The work'), 'and it comes before the work';
+    ok @(%r<uncertain>).grep(*.contains('Invariant 5 Nothing is deleted.: uncertain')), 'an invariant the report marks uncertain is on the receipt' or diag %r<uncertain>.raku;
+    ok $col.all.grep({ .<kind> eq EVENT-PROGRESS && (.<payload><text> // '').contains('IZ4 policy') }), 'the policy says what it did';
+    ok !validate-run-receipt(%r), 'the receipt validates';
+
+    # no report: the run is blocked, not completed
+    my $b = Answering.new(:summary('Changed the file. Done.'));
+    %r = runner(reg($b)).run($bg, git-pkg($ws, 'change it'), $agent, Options.new(:list-changed-files(-> $ { ('note.txt',) })));
+    is %r<status>, STATUS-BLOCKED, 'a run without the report is blocked' or diag %r<uncertain>.raku;
+    ok %r<blockedOn>.contains('per-invariant report'), 'blocked on the report' or diag %r<blockedOn>;
+    ok @(%r<uncertain>).grep(*.contains('no per-invariant report')), 'and the receipt says so';
+    ok !validate-run-receipt(%r), 'the blocked receipt validates';
+
+    # a procedure is outside the policy
+    my %wp = git-pkg($ws, 'note: a procedure');
+    %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new);
+    is %r<status>, STATUS-COMPLETED, 'a procedure run is not asked for a report';
+    ok !@(%r<uncertain> // []).grep(*.contains('IZ4')), 'and carries no IZ4 note';
+
+    # a package with no workspace is outside it too
+    my $c = Answering.new(:summary('nothing to report'));
+    my %none = pkg-for($agent, 'think', 'done'); %none<capabilities><limits><network> = NETWORK-OPEN;
+    %r = runner(reg($c)).run($bg, %none, $agent, Options.new);
+    is %r<status>, STATUS-COMPLETED, 'no workspace, no policy';
+    ok !$c.prompts[0].contains('Project intent (IZ4)'), 'and no packet';
+}
+
+# ---- without iz4 -------------------------------------------------------------------
+{
+    temp %*ENV<X321_IZ4> = temp-dir().add('missing').Str;
+    temp %*ENV<PATH> = temp-dir().Str;
+    my $ws = git-workspace();
+    my $a = Answering.new(:summary('Changed the file. Done.'));
+    my %r = runner(reg($a)).run($bg, git-pkg($ws, 'change it'), $agent, Options.new(:list-changed-files(-> $ { ('note.txt',) })));
+    is %r<status>, STATUS-COMPLETED, 'without iz4 the run is not blocked';
+    ok @(%r<uncertain>).grep(*.contains('protocol not applied: iz4 is not installed')), 'but the receipt says the protocol was not applied' or diag %r<uncertain>.raku;
+    ok !$a.prompts[0].contains('Project intent (IZ4)'), 'and no packet was injected';
+}
+
+# ---- the helpers --------------------------------------------------------------------
+is uncertain-invariants($report).join('|'), 'IZ4 Invariant 5 Nothing is deleted.: uncertain', 'uncertain invariants are read off the report';
+is uncertain-invariants("Invariant: 6\nAssessment: apparently consistent\n").elems, 0, 'consistent ones are not';
+my $nested = temp-dir(); $nested.add('IZ4').spurt("IZ4\n"); $nested.add('src').mkdir;
+is find-iz4($nested.add('src').Str).Str, $nested.add('IZ4').Str, 'the IZ4 is found up the tree';
+ok !find-iz4(temp-dir().Str).defined, 'and not invented';
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    ok iz4-binary() ne '', 'X321_IZ4 names the binary';
+}
+
+done-testing;
