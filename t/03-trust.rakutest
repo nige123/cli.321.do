@@ -1,0 +1,128 @@
+# Trust: configuration, alias resolution and package loading under the
+# three trust levels.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use X321Test;
+use X321::JSON;
+use X321::Shape;
+use X321::Protocol;
+use X321::Digest;
+use X321::Ed25519;
+use X321::Trust;
+
+sub helper-digest(IO::Path $dir) { compute($dir)[0] }
+
+sub dev-config(IO::Path $dir) {
+    trust-config({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => helper-digest($dir), trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { helper => 'example.test/helper' } });
+}
+
+# ---- local packages by path ---------------------------------------------------
+my $l = load-path(fixture('local/helper'));
+is $l.id, 'local/helper', 'a local package loads by path without any trust file';
+is $l.level, LEVEL-LOCAL, 'at local level';
+ok !$l.verified, 'and is not verified';
+ok $l.prompt.contains('Helper'), 'its prompt is loaded';
+throws-like { load-path(fixture('example.test/helper')) }, X::X321::Trust, message => /'declares publisher example.test'/,
+    'a self-declared publisher cannot be loaded by path';
+
+my $c = trust-config({ schema => SCHEMA-TRUST-CONFIG, local => { helper => { path => fixture('example.test/helper').Str } } });
+lives-ok { $c.check }, 'a local pin checks';
+throws-like { load-resolved($c.resolve('helper')) }, X::X321::Trust, message => /'pin it under publishers.example.test'/,
+    'a domain-claiming package pinned as local is refused with guidance';
+
+# ---- development pins ---------------------------------------------------------
+my $dir = fixture('example.test/helper');
+$c = dev-config($dir);
+lives-ok { $c.check }, 'a development pin checks';
+my $r = $c.resolve('helper');
+is $r.alias, 'helper', 'the alias is recorded';
+is $r.id.Str, 'example.test/helper', 'and resolves to the canonical id';
+my $loaded = load-resolved($r);
+ok !$loaded.verified, 'a development pin is never verified';
+ok $loaded.label.contains('unsigned') && $loaded.label.contains('administrator-pinned'), 'the label says unsigned and administrator-pinned';
+is $loaded.id, 'example.test/helper', 'identity is preserved';
+ok $loaded.warnings.elems == 1, 'and a warning is carried';
+
+my $wrong = dev-config($dir);
+$wrong.doc<publishers><example.test><packages><helper><digest> = 'sha256:' ~ '0' x 64;
+throws-like { load-resolved($wrong.resolve('example.test/helper')) }, X::X321::Trust, message => /'pinned digest'/, 'a wrong digest refuses';
+$wrong = dev-config($dir);
+$wrong.doc<publishers><example.test><packages><helper><version> = '9.9.9';
+throws-like { load-resolved($wrong.resolve('example.test/helper')) }, X::X321::Trust, message => /'pinned version'/, 'a wrong version refuses';
+
+# ---- verified pins ------------------------------------------------------------
+my $copy = copy-fixture('example.test/helper');
+my ($pub, $priv) = generate-key();
+my $d = helper-digest($copy);
+my $cfg = trust-config({ schema => SCHEMA-TRUST-CONFIG, publishers => { 'example.test' => {
+    keys => [ %( keyId => key-id($pub), publicKey => encode-public-key($pub) ), ],   # Raku++: [ { } ] flattens a lone hash literal
+    packages => { helper => { path => $copy.Str, version => '1.2.0', digest => $d } } } } });
+lives-ok { $cfg.check }, 'a verified pin with keys checks';
+$r = $cfg.resolve('example.test/helper');
+throws-like { load-resolved($r) }, X::X321::Trust, message => /'no SIGNATURE'/, 'an unsigned package under a verified pin refuses';
+write-signature-file($copy, sign-digest($d, $priv));
+$loaded = load-resolved($r);
+ok $loaded.verified && $loaded.label.contains('verified'), 'a signed package verifies';
+my ($, $other) = generate-key();
+write-signature-file($copy, sign-digest($d, $other));
+throws-like { load-resolved($r) }, X::X321::Trust, message => /'not a pinned key'/, 'a signature under an unpinned key does not inherit trust';
+write-signature-file($copy, sign-digest($d, $priv));
+$copy.add('prompts/identity.md').spurt('evil');
+throws-like { load-resolved($r) }, X::X321::Trust, 'tampering after signing breaks the digest first';
+
+my $nokeys = trust-config({ schema => SCHEMA-TRUST-CONFIG, publishers => { 'example.test' => {
+    packages => { helper => { path => '/x', version => '1.0.0', digest => 'sha256:' ~ 'a' x 64 } } } } });
+throws-like { $nokeys.check }, X::X321::Trust, message => /'no keys'/, 'a verified pin with no keys is a configuration error';
+
+# ---- aliases are explicit ------------------------------------------------------
+$c = dev-config($dir);
+$c.doc<aliases>:delete;
+throws-like { $c.resolve('helper') }, X::X321::Trust, message => /'not an alias'/, 'a bare name that is only a publisher package does not resolve';
+throws-like { $c.resolve('nobody') }, X::X321::Trust, message => /'no agent'/, 'unknown names say so';
+lives-ok { $c.resolve('example.test/helper') }, 'a canonical id resolves';
+$c.doc<local> = { helper => { path => fixture('local/helper').Str } };
+throws-like { $c.resolve('helper') }, X::X321::Trust, message => /ambiguous/, 'a local and a publisher package of one name is an error, never a guess';
+$c.doc<aliases> = { b => 'example.test/nothing' };
+throws-like { $c.check }, X::X321::Trust, 'a dangling alias fails the check';
+$c.doc<aliases> = { run => 'example.test/helper' };
+throws-like { $c.check }, X::X321::Trust, message => /reserved/, 'an alias may not shadow a command';
+
+# ---- the file on disk ---------------------------------------------------------
+$c = dev-config($dir);
+my $path = temp-dir().add('trust.json');
+$path.spurt(to-wire('TrustConfig', $c.doc));
+my $from-disk = load-trust($path);
+is $from-disk.path, $path.Str, 'the path is recorded';
+my @list = $from-disk.configured;
+is @list.elems, 1, 'one configured package';
+is @list[0].alias, 'helper', 'with its alias';
+is @list[0].level, LEVEL-DEVELOPMENT, 'and its level';
+my $empty = load-trust(temp-dir().add('missing.json'));
+is $empty.configured.elems, 0, 'a missing file is an empty configuration';
+my $bad-file = temp-dir().add('bad.json');
+$bad-file.spurt('{"schema":"trust-config.v1","aliases":{"run":"local/x"}}');
+throws-like { load-trust($bad-file) }, X::X321::Trust, message => /reserved/, 'a reserved alias is refused at load';
+
+# ---- reading inside the package ---------------------------------------------
+my $pkg = copy-fixture('local/helper');
+throws-like { read-inside($pkg, '../etc/passwd') }, X::X321::Trust, 'dotdot is refused';
+'/etc/hostname'.IO.symlink($pkg.add('prompts/out.md'));
+throws-like { read-inside($pkg, 'prompts/out.md') }, X::X321::Trust, message => /escapes/, 'a symlink out of the package is refused';
+ok read-inside($pkg, 'prompts/identity.md').chars > 0, 'a real file reads';
+throws-like { read-inside($pkg, 'prompts/none.md') }, X::X321::Trust, 'a missing file is an error';
+
+# ---- validate-package and manifests ----------------------------------------
+my ($m, $dg) = validate-package(fixture('example.test/operator'));
+is $m<id>, 'example.test/operator', 'validate-package reads the manifest';
+ok is-digest($dg), 'and returns the digest';
+my $broken = copy-fixture('local/helper');
+$broken.add('agent.json').spurt('{"schema":"agent-package.v1","id":"local/helper","name":"helper"}');
+throws-like { validate-package($broken) }, X::X321::Trust, 'an incomplete manifest is refused';
+$broken.add('agent.json').spurt('not json');
+throws-like { validate-package($broken) }, X::X321::Trust, message => /'agent.json'/, 'a non-JSON manifest names the file';
+is $l.output-schema.contains('"'), True, 'the output schema reads';
+ok !$l.overlay('claude_code').defined, 'no overlay means no overlay';
+
+done-testing;

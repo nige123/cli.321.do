@@ -1,0 +1,61 @@
+# Canonical JSON: the fixtures under testdata/canonical are the contract a
+# second implementation must reproduce, byte for byte and digest for digest.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use X321::JSON;
+
+my $dir = $?FILE.IO.parent.parent.add('testdata/canonical');
+my @inputs = $dir.dir(test => /'.json'$/).sort;
+ok @inputs >= 5, 'fixtures present';
+for @inputs -> $in {
+    my $base = $in.Str.subst(/'.json'$/, '');
+    my $got = canonicalize-json($in.slurp(:bin));
+    is $got, "$base.canonical".IO.slurp, "{$in.basename}: canonical bytes";
+    is digest-string($got), "$base.digest".IO.slurp.trim, "{$in.basename}: digest";
+}
+
+my %cases =
+    '{"b":1,"a":2}'                         => '{"a":2,"b":1}',
+    '{"é":1,"z":2,"Z":3}'                   => '{"Z":3,"z":2,"é":1}',
+    '"a\/b"'                                => '"a/b"',
+    '" "'                              => "\"\x[2028]\"",
+    '"\u0001\u001f\t"'                      => '"\u0001\u001f\t"',
+    '"é"'                              => '"é"',
+    '-0'                                    => '0',
+    '-0.0'                                  => '0',
+    '1.0'                                   => '1',
+    '1E2'                                   => '100',
+    '1e21'                                  => '1e+21',
+    '1e20'                                  => '100000000000000000000',
+    '1e-7'                                  => '1e-7',
+    '0.000001'                              => '0.000001',
+    '0.0000001'                             => '1e-7',
+    '-2.5e-3'                               => '-0.0025',
+    '0.30000000000000004'                   => '0.30000000000000004',
+    '9007199254740993'                      => '9007199254740993',
+    '[1, 2 ,3]'                             => '[1,2,3]',
+    '{"k": [{"b": 2, "a": 1}]}'             => '{"k":[{"a":1,"b":2}]}',
+    '{"a":{"c":null,"b":true,"a":false}}'   => '{"a":{"a":false,"b":true,"c":null}}',
+    '{"s":"café 😀"}'                        => '{"s":"café 😀"}',
+    '{"s":"quote \" and backslash \\\\ end"}' => '{"s":"quote \" and backslash \\\\ end"}';
+for %cases.sort -> (:key($in), :value($want)) {
+    is canonicalize-json-text($in), $want, "canonical of $in";
+}
+for '{"a":1} x', 'NaN', '{"a":' -> $bad {
+    throws-like { canonicalize-json-text($bad) }, X::X321::JSON, "$bad is rejected";
+}
+throws-like { canonicalize-json(Blob.new(0x22, 0xff, 0x22)) }, X::X321::JSON, 'invalid UTF-8 is rejected';
+is format-number(0.6), '0.6', '0.6';
+is format-number(123456789012345680000e0), '123456789012345680000', 'large';
+is format-number(1.5e300), '1.5e+300', 'exponent form';
+is format-number(-1e-10), '-1e-10', 'small negative';
+is format-number(5), '5', 'integer';
+throws-like { format-number(Inf) }, X::X321::JSON, 'infinity is an error';
+
+# wire encoding: sorted keys, U+2028 escaped, pretty form indented
+is encode-json({ b => 1, a => [True, Any, "x\n"] }), '{"a":[true,null,"x\n"],"b":1}', 'wire form';
+is encode-json({ s => "\x[2028]" }), '{"s":"\\u2028"}', 'wire escapes the line separator';
+is encode-json-pretty({ a => [1] }), "\{\n  \"a\": [\n    1\n  ]\n}", 'pretty form';
+is digest-of({ b => 1, a => { z => True, y => 'x' } }), digest-of({ a => { y => 'x', z => True }, b => 1 }), 'digest is order independent';
+
+done-testing;

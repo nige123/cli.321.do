@@ -1,0 +1,191 @@
+# The protocol layer: fixtures shared with the Perl consumer in
+# api.123.do, digests, identities, ULIDs and the validators.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use X321::JSON;
+use X321::Shape;
+use X321::Protocol;
+
+my $testdata = $?FILE.IO.parent.parent.add('testdata');
+
+# ---- the shared fixtures ------------------------------------------------------
+my @valid = $testdata.add('protocol/valid').dir(test => /'.json'$/).sort;
+my @invalid = $testdata.add('protocol/invalid').dir(test => /'.json'$/).sort;
+ok @valid >= 5 && @invalid >= 8, 'fixtures present';
+for @valid -> $f {
+    my $ps = validate-document(parse-json($f.slurp));
+    ok !$ps, "{$f.basename} is valid" or diag $ps.Str;
+}
+for @invalid -> $f {
+    my $fx = parse-json($f.slurp);
+    my $ps = validate-document($fx<document>);
+    ok so $ps, "{$f.basename} is invalid";
+    my $joined = $ps.Str;
+    for @($fx<expect>) -> $want {
+        ok $joined.contains($want), "{$f.basename}: a problem mentions $want" or diag $joined;
+    }
+}
+
+# every digest a valid fixture carries is the digest the canonical rules produce
+my $d = load('WorkDirective', parse-json($testdata.add('protocol/valid/work-directive-steer.json').slurp));
+is directive-digest($d), $d<digest>, 'the directive fixture carries its real digest';
+my $r = load('RunReceipt', parse-json($testdata.add('protocol/valid/run-receipt-completed.json').slurp));
+is receipt-digest($r), $r<receiptDigest>, 'the receipt fixture carries its real digest';
+my $w = load('WorkPackage', parse-json($testdata.add('protocol/valid/work-package-approval.json').slurp));
+is params-hash($w<approval><params>), $w<approval><paramsHash>, 'the approval fixture carries its real paramsHash';
+my $raw = $testdata.add('protocol/valid/work-package-minimal.json').slurp(:bin);
+is digest-string(canonicalize-json($raw)), $r<packageDigest>, 'the receipt names the package it answers, over the bytes as received';
+my $wp = load('WorkPackage', parse-json-bytes($raw));
+is conditions-digest($wp<completion><conditions>), $r<conditionsDigest>, 'and its ordered conditions';
+
+# the cross-language params hash vector produced by the Perl issuer
+is params-hash({
+    proposalId => '01PROPOSALFIXTURE0000000001', proposalDigest => 'sha256:' ~ 'a' x 64,
+    service => 'alpha.web', target => 'live', revision => '0f94b03cf776c9b4ca9fe028d6879557f8d06bb3',
+    manifestDigest => 'sha256:' ~ '3' x 64,
+}), 'sha256:60a5b36aea7f740cd0dcf05fec141e632b0ab7faa8517a9d58e1d102a9ed40a0', 'params hash matches the Perl issuer';
+
+# ---- digests ------------------------------------------------------------------
+is params-hash({ to => 'x', amount => 3 }), params-hash({ amount => 3, to => 'x' }), 'params hash is order independent';
+is params-hash(Any), params-hash({}), 'nil params hash as the empty object';
+ok is-digest(params-hash({ a => 1 })), 'a params hash is a digest';
+my %dir = doc('WorkDirective', schema => SCHEMA-WORK-DIRECTIVE, directiveId => 'd1', packageId => new-ulid(), seq => 1,
+    issuer => { kind => 'local', id => 't' }, issuedAt => now(), kind => DIRECTIVE-STEER, payload => { text => 'go left' });
+%dir<digest> = directive-digest(%dir);
+is directive-digest(%dir), %dir<digest>, 'the digest does not depend on the digest field';
+ok !validate-work-directive(%dir), 'a valid directive validates';
+%dir<payload><text> = 'go right';
+ok so validate-work-directive(%dir), 'a tampered directive fails its digest';
+my $wp1 = doc('WorkPackage', schema => SCHEMA-WORK-PACKAGE, packageId => new-ulid(), objective => 'x', completion => { conditions => ['b', 'a'] });
+my $wp2 = doc('WorkPackage', schema => SCHEMA-WORK-PACKAGE, packageId => $wp1<packageId>, objective => 'y', completion => { conditions => ['b', 'a'] });
+isnt package-digest($wp1), package-digest($wp2), 'different packages differ';
+isnt conditions-digest(['b', 'a']), conditions-digest(['a', 'b']), 'condition order is part of the mapping';
+is conditions-digest(Any), conditions-digest([]), 'nil and empty conditions digest alike';
+
+# ---- ULIDs and identities -------------------------------------------------
+my ($a, $b) = new-ulid(), new-ulid();
+ok is-ulid($a) && is-ulid($b), 'ULIDs are well formed';
+isnt $a, $b, 'and do not collide';
+ok $a.substr(0, 10) le $b.substr(0, 10), 'the time prefix never goes backwards';
+for <321.do/b1ll example.test/helper local/helper a.co.uk/1da> -> $g {
+    lives-ok { parse-agent-id($g) }, "$g parses";
+}
+for 'b1ll', '/b1ll', '321.do/', '321.do/B1LL', 'not a domain/x', '321.do/a', '321.do/with-dash' -> $bad {
+    throws-like { parse-agent-id($bad) }, X::X321::Protocol, "$bad is rejected";
+}
+ok parse-agent-id('local/helper').is-local, 'local/ is local';
+is parse-agent-id('example.test/helper').Str, 'example.test/helper', 'the canonical form round trips';
+
+# ---- validators ---------------------------------------------------------------
+my $min = doc('WorkPackage', schema => SCHEMA-WORK-PACKAGE, packageId => new-ulid(), issuer => { kind => 'local', id => 't' },
+    issuedAt => now(), agent => { id => 'local/helper' }, placement => PLACEMENT-CLIENT,
+    workspace => { kind => 'none', ownership => 'caller' }, objective => 'do', completion => { conditions => [] },
+    capabilities => { granted => [] });
+ok !validate-work-package($min), 'a minimal package validates' or diag validate-work-package($min).Str;
+my $bad = load('WorkPackage', $min); $bad<capabilities><granted> = ['root.everything'];
+ok so validate-work-package($bad), 'an unknown capability is rejected';
+$bad = load('WorkPackage', $min);
+$bad<approval> = load('Approval', { proposalRef => 'p', approvalRef => 'a', approvedBy => 'u', action => 'send', params => { x => 1 }, paramsHash => 'sha256:' ~ '0' x 64 });
+ok so validate-work-package($bad), 'a paramsHash that does not match params is rejected';
+$bad<approval><paramsHash> = params-hash($bad<approval><params>);
+ok !validate-work-package($bad), 'a matching paramsHash validates' or diag validate-work-package($bad).Str;
+$bad = load('WorkPackage', $min); $bad<workspace> = load('Workspace', { kind => 'git', ownership => 'caller' });
+ok so validate-work-package($bad), 'a git workspace needs a path';
+$bad = load('WorkPackage', $min); $bad<capabilities><limits><timeout> = 'soon';
+ok validate-work-package($bad).Str.contains('Go duration'), 'a timeout must be a Go duration';
+
+for <a a/b.md prompts/x.md> -> $ok { ok safe-rel-path($ok), "$ok is safe" }
+for '', '/a', '../a', 'a/../b', './a', 'a/./b', 'a\\b', 'a//b' -> $no { ok !safe-rel-path($no), "$no is unsafe" }
+
+for <example.test/helper local/helper example.test/operator> -> $dir {
+    my $m = load('AgentManifest', parse-json($testdata.add("packages/$dir/agent.json").slurp));
+    ok !validate-agent-manifest($m), "$dir manifest is valid" or diag validate-agent-manifest($m).Str;
+}
+my $m = doc('AgentManifest', schema => SCHEMA-AGENT-PACKAGE, id => 'local/xx', name => 'xx', displayName => 'X', version => '1.0.0',
+    licence => { spdx => 'MIT' }, identity => { role => 'r' }, prompts => ['../secret'],
+    capabilities => { required => ['repo.write'], denied => ['repo.write'] }, harness => { requires => ['magic'] },
+    placement => { allowed => ['client'] }, outputSchemas => { default => 's.json' });
+my $joined = validate-agent-manifest($m).Str;
+for 'prompts[0]', 'both required and denied', 'harness.requires[0]' -> $want {
+    ok $joined.contains($want), "manifest problems mention $want";
+}
+my $m2 = load('AgentManifest', $m);
+$m2<prompts> = ['p.md']; $m2<capabilities> = load('CapabilitySpec', { required => [] }); $m2<harness><requires>:delete;
+$m2<id> = 'example.test/xx'; $m2<publisher><domain> = 'other.test';
+ok validate-agent-manifest($m2).Str.contains('publisher.domain'), 'the publisher must equal the id domain';
+
+# ---- durations and timestamps -----------------------------------------------
+is parse-duration('30m'), 1800, '30m';
+is parse-duration('1h30m'), 5400, '1h30m';
+is parse-duration('500ms'), 0.5, '500ms';
+is parse-duration('1.5s'), 1.5, '1.5s';
+is parse-duration('0'), 0, '0';
+for '', 'soon', '10', '1x' -> $bad { ok !is-duration($bad), "'$bad' is not a duration" }
+ok is-timestamp('2026-09-05T10:00:00Z') && is-timestamp('2026-09-05T10:00:00.123456789Z') && is-timestamp('2026-09-05T10:00:00+01:00'), 'RFC 3339 forms parse';
+ok !is-timestamp('garbage') && !is-timestamp('') && !is-timestamp('2026-09-05 10:00:00'), 'other forms do not';
+ok is-timestamp(now()), 'now() is a timestamp';
+unlike now(), /'0Z'$/, 'now() trims trailing zeros';
+
+# ---- shapes match the schema documents ------------------------------------
+# Every field a shape can emit is a property the matching schema declares,
+# and every top-level schema property has a field.
+sub schema-props(Str $file, %seen = {}) {
+    my $doc = parse-json($?FILE.IO.parent.parent.add("schemas/$file").slurp);
+    my %props;
+    my sub walk($v) {
+        if $v ~~ Associative {
+            if $v<properties> ~~ Associative { %props{$_} = True for $v<properties>.keys }
+            if $v<$ref> ~~ Str && $v<$ref>.ends-with('.json') && $v<$ref> ne $file && !%seen{$v<$ref>} {
+                %seen{$v<$ref>} = True;
+                %props{$_} = True for schema-props($v<$ref>, %seen)[0].keys;
+            }
+            walk($_) for $v.values;
+        }
+        elsif $v ~~ Positional { walk($_) for @$v }
+    }
+    walk($doc);
+    (%props, $doc);
+}
+sub shape-tags(Str $type, %into, %seen) {
+    return if %seen{$type}; %seen{$type} = True;
+    for shape-fields($type) -> $f { %into{$f} = True }
+    # nested types, by walking the specs of a loaded empty document
+    my $empty = load($type, {});
+    for $empty.kv -> $k, $v { shape-tags(nested-type($type, $k), %into, %seen) if nested-type($type, $k) }
+}
+my %NESTED =
+    AgentManifest => { publisher => 'Publisher', owner => 'Owner', licence => 'Licence', provenance => 'Provenance', identity => 'Identity',
+        procedures => 'Procedure', capabilities => 'CapabilitySpec', harness => 'HarnessSpec', placement => 'PlacementSpec', outputSchemas => 'OutputSchemas' },
+    Procedure => { matches => 'ProcedureMatch', steps => 'ProcedureStep' },
+    WorkPackage => { issuer => 'Issuer', correlation => 'Correlation', agent => 'AgentRef', workspace => 'Workspace', context => 'Context',
+        completion => 'Completion', capabilities => 'Grants', authority => 'Authority', approval => 'Approval' },
+    Correlation => { refs => 'Ref' }, Context => { attachments => 'Attachment' }, Grants => { limits => 'Limits' },
+    Authority => { may => 'AuthorityGrant' }, Approval => { proposal => 'DeploymentProposal' },
+    WorkDirective => { issuer => 'Issuer', payload => 'DirectivePayload' },
+    RunReceipt => { issuer => 'Issuer', correlation => 'Correlation', continues => 'Continuation', agent => 'AgentRef', harness => 'HarnessInfo',
+        attempts => 'Attempt', directives => 'DirectiveSummary', instructionHistory => 'HistoryRef', events => 'EventSummary',
+        conditions => 'ConditionProof', evidence => 'Evidence', cost => 'Cost', stop => 'StopInfo', denied => 'DenialInfo', signature => 'Signature' },
+    Attempt => { cost => 'Cost' }, DirectiveSummary => { rejected => 'RejectedDirective', gaps => 'SequenceGap' },
+    Evidence => { artifacts => 'Artifact', externalAction => 'ExternalAction', approvalCheck => 'ApprovalCheck', toolCalls => 'ToolCall', proposal => 'DeploymentProposal' },
+    StopInfo => { issuer => 'Issuer' }, DeploymentProposal => { agent => 'AgentRef' };
+sub nested-type(Str $type, Str $field) { (%NESTED{$type} // {}){$field} }
+for (
+    'agent-package.v1.json' => ('AgentManifest', SCHEMA-AGENT-PACKAGE),
+    'work-package.v1.json' => ('WorkPackage', SCHEMA-WORK-PACKAGE),
+    'work-directive.v1.json' => ('WorkDirective', SCHEMA-WORK-DIRECTIVE),
+    'run-event.v1.json' => ('RunEvent', SCHEMA-RUN-EVENT),
+    'run-receipt.v1.json' => ('RunReceipt', SCHEMA-RUN-RECEIPT),
+    'protocol-error.v1.json' => ('ProtocolError', SCHEMA-PROTOCOL-ERROR),
+    'deployment-proposal.v1.json' => ('DeploymentProposal', SCHEMA-DEPLOYMENT-PROPOSAL),
+) -> (:key($file), :value(($type, $name))) {
+    my ($props, $doc) = schema-props($file);
+    is $doc<title>, $name, "$file: title";
+    ok $doc<$id>.ends-with("/$file"), "$file: \$id ends with the file name";
+    my %tags; shape-tags($type, %tags, {});
+    my @missing = %tags.keys.grep({ !$props{$_} }).sort;
+    is @missing.join(','), '', "$file: every shape field is declared in the schema";
+    my @nofield = ($doc<properties> // {}).keys.grep({ !%tags{$_} }).sort;
+    is @nofield.join(','), '', "$file: every top-level schema property has a field";
+}
+
+done-testing;

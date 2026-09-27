@@ -1,0 +1,86 @@
+# Package digests and ed25519 signatures.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use X321Test;
+use X321::Digest;
+use X321::Ed25519;
+
+sub hex2blob(Str $h) { Blob.new($h.comb(2).map({ :16($_) })) }
+sub blob2hex(Blob $b) { $b.list.map({ .fmt('%02x') }).join }
+
+# ---- RFC 8032 test vectors ----------------------------------------------------
+my ($pub, $priv) = key-from-seed(hex2blob('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60'));
+is blob2hex($pub), 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a', 'RFC 8032 test 1: public key';
+is blob2hex(sign($priv, Blob.new)), 'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b', 'RFC 8032 test 1: signature';
+my ($pub2, $priv2) = key-from-seed(hex2blob('4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb'));
+my $sig2 = sign($priv2, Blob.new(0x72));
+is blob2hex($sig2), '92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00', 'RFC 8032 test 2: signature';
+ok verify($pub2, Blob.new(0x72), $sig2), 'test 2 verifies';
+ok !verify($pub2, Blob.new(0x73), $sig2), 'a different message does not';
+ok !verify($pub, Blob.new(0x72), $sig2), 'a different key does not';
+ok !verify($pub2, Blob.new(0x72), Blob.new(0 xx 64)), 'garbage does not';
+my ($pub3, $priv3) = key-from-seed(hex2blob('c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7'));
+is blob2hex($pub3), 'fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025', 'RFC 8032 test 3: public key';
+is blob2hex(sign($priv3, hex2blob('af82'))), '6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a', 'RFC 8032 test 3: signature';
+
+# ---- the package digest -------------------------------------------------------
+my $dir = copy-fixture('example.test/helper');
+my ($d1, @entries) = compute($dir);
+my ($d2, @) = compute($dir);
+is $d1, $d2, 'the digest is deterministic';
+is read-digest-file($dir), $d1, 'and matches the recorded DIGEST file';
+ok !@entries.grep({ .path eq DIGEST-FILE || .path eq SIGNATURE-FILE }), 'DIGEST and SIGNATURE are excluded from the listing';
+is $d1, read-digest-file(fixture('example.test/helper')), 'the fixture on disk agrees with the Go-written DIGEST';
+for <local/helper example.test/operator> -> $rel {
+    is compute(fixture($rel))[0], read-digest-file(fixture($rel)), "$rel: the recorded digest is the content's digest";
+}
+
+my ($kpub, $kpriv) = generate-key();
+write-signature-file($dir, sign-digest($d1, $kpriv));
+write-digest-file($dir, $d1);
+is compute($dir)[0], $d1, 'writing SIGNATURE and DIGEST does not change the digest';
+ok $dir.add('SIGNATURE').slurp.contains('"algorithm": "ed25519"'), 'the signature file is pretty JSON';
+
+$dir.add('prompts/identity.md').spurt('changed');
+isnt compute($dir)[0], $d1, 'changed content changes the digest';
+throws-like { verify-digest($dir) }, X::X321::Digest, message => /'DIGEST says'/, 'verify notices DIGEST no longer matches';
+
+my $sym = copy-fixture('example.test/helper');
+'/etc/hostname'.IO.symlink($sym.add('prompts/link.md'));
+throws-like { compute($sym) }, X::X321::Digest, message => /symlink/, 'a symlink is refused, not skipped';
+
+my $git = copy-fixture('example.test/helper');
+my $before = compute($git)[0];
+$git.add('.git/objects').mkdir;
+$git.add('.git/HEAD').spurt('ref');
+is compute($git)[0], $before, '.git does not contribute';
+
+throws-like { compute(temp-dir().add('missing')) }, X::X321::Digest, 'a missing root is an error';
+my $file = temp-dir().add('f'); $file.spurt('x');
+throws-like { compute($file) }, X::X321::Digest, message => /'not a directory'/, 'a file is not a package root';
+
+# ---- signatures over digests ---------------------------------------------------
+my $digest = 'sha256:' ~ 'ab' x 32;
+my $sig = sign-digest($digest, $kpriv);
+is $sig<algorithm>, ALGORITHM-ED25519, 'the algorithm is named';
+is $sig<keyId>, key-id($kpub), 'the key id names the key';
+lives-ok { verify-signature($digest, $sig, $kpub) }, 'it verifies';
+my ($other, $) = generate-key();
+throws-like { verify-signature($digest, $sig, $other) }, X::X321::Digest, message => /'does not name this key'/, 'a different key does not';
+throws-like { verify-signature('sha256:' ~ 'cd' x 32, $sig, $kpub) }, X::X321::Digest, message => /'verification failed'/, 'a different digest does not';
+my %tampered = %$sig; %tampered<algorithm> = 'rsa';
+throws-like { verify-signature($digest, %tampered, $kpub) }, X::X321::Digest, message => /'unsupported algorithm'/, 'only ed25519 is accepted';
+my %bad = %$sig; %bad<value> = 'not base64!';
+throws-like { verify-signature($digest, %bad, $kpub) }, X::X321::Digest, message => /'not base64'/, 'a malformed value is refused';
+is parse-public-key(encode-public-key($kpub)), $kpub, 'the public key round trips through base64';
+throws-like { parse-public-key('AAAA') }, X::X321::Digest, message => /'32 bytes'/, 'a short key is refused';
+
+# ---- base64 -------------------------------------------------------------------
+for '', 'f', 'fo', 'foo', 'foob', 'fooba', 'foobar' -> $s {
+    is base64-decode(base64-encode($s.encode)).decode, $s, "base64 round trip of '$s'";
+}
+is base64-encode('foobar'.encode), 'Zm9vYmFy', 'RFC 4648 vector';
+is base64-encode('fo'.encode), 'Zm8=', 'padding';
+throws-like { base64-decode('Zm8') }, X::X321::Digest, 'bad length is refused';
+
+done-testing;
