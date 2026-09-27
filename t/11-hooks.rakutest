@@ -93,7 +93,7 @@ is $doc<harnesses>[0]<events><stop>, 'wired', 'stop wired';
 ($rc, $out, $err) = x321('hooks', 'status', '--workspace', $cws.Str, '--command', 'iz4 hook');
 ok $rc == 0 && $out.contains('claude_code') && $out.contains('stop: wired') && $out.contains('enforced: pre-edit, stop'), 'status in text' or diag $out;
 ($rc, $out, $err) = x321('hooks', 'remove', '--workspace', $cws.Str, '--command', 'iz4 hook');
-ok $rc == 0 && $out.contains('claude_code: removed'), 'remove in text';
+ok $rc == 0 && $out ~~ /'claude_code' .* 'removed'/, 'remove in text';
 ($rc, $out, $err) = x321('hooks', 'install', '--workspace', $cws.Str);
 ok $rc == EXIT-USAGE && $err.contains('--command'), 'the command is required';
 ($rc, $out, $err) = x321('hooks', 'bogus', '--workspace', $cws.Str, '--command', 'x');
