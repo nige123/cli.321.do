@@ -2,9 +2,9 @@
 # api.123.do, digests, identities, ULIDs and the validators.
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
-use X321::JSON;
-use X321::Shape;
-use X321::Protocol;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
 
 my $testdata = $?FILE.IO.parent.parent.add('testdata');
 
@@ -71,7 +71,7 @@ for <321.do/b1ll example.test/helper local/helper a.co.uk/1da> -> $g {
     lives-ok { parse-agent-id($g) }, "$g parses";
 }
 for 'b1ll', '/b1ll', '321.do/', '321.do/B1LL', 'not a domain/x', '321.do/a', '321.do/with-dash' -> $bad {
-    throws-like { parse-agent-id($bad) }, X::X321::Protocol, "$bad is rejected";
+    throws-like { parse-agent-id($bad) }, X::Do321::Protocol, "$bad is rejected";
 }
 ok parse-agent-id('local/helper').is-local, 'local/ is local';
 is parse-agent-id('example.test/helper').Str, 'example.test/helper', 'the canonical form round trips';

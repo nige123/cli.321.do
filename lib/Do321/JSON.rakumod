@@ -1,4 +1,4 @@
-unit module X321::JSON;
+unit module Do321::JSON;
 
 use Data::Native;
 
@@ -22,11 +22,11 @@ use Data::Native;
 #|
 #| A digest is "sha256:" followed by the lowercase hex sha256 of those bytes.
 
-class X::X321::JSON is Exception {
+class X::Do321::JSON is Exception {
     has Str $.message;
 }
 
-sub json-error(Str $m) { X::X321::JSON.new(message => $m).throw }
+sub json-error(Str $m) { X::Do321::JSON.new(message => $m).throw }
 
 #| An ordered set of pairs: what marshalling a document produces, so the
 #| wire form keeps the struct's field order.  The canonical form sorts it
@@ -45,7 +45,7 @@ class Ordered does Associative is export {
 # ------------------------------------------------------------- parsing
 
 #| Parse JSON text into plain data: Hash, Array, Str, Int, Rat/Num, Bool,
-#| and Any for null.  Throws X::X321::JSON on anything that is not one
+#| and Any for null.  Throws X::Do321::JSON on anything that is not one
 #| JSON value.
 sub parse-json(Str $text --> Any) is export {
     my $v = try from-json($text);
@@ -143,7 +143,7 @@ sub canonical(Any $v --> Str) is export {
 #| canonical form except that U+2028 and U+2029 are escaped, as Go's
 #| encoder does.  Hash keys come out sorted, as Go's map encoding sorts
 #| them; a document with a fixed field order is encoded through its shape
-#| (X321::Shape) before it gets here.
+#| (Do321::Shape) before it gets here.
 sub encode-json(Any $v --> Str) is export {
     my $out = '';
     write-value($v, $out);

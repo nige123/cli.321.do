@@ -1,4 +1,4 @@
-unit module X321::Protocol;
+unit module Do321::Protocol;
 
 #| The public 321 protocols: schema names, vocabularies, identity
 #| parsing, ULIDs, timestamps, the validators, and the digests every
@@ -10,8 +10,8 @@ unit module X321::Protocol;
 #| opaque strings that are echoed back verbatim.
 
 use Data::Native;
-use X321::JSON;
-use X321::Shape;
+use Do321::JSON;
+use Do321::Shape;
 
 # --------------------------------------------------------------- names
 
@@ -112,11 +112,11 @@ constant COST-MIXED      is export = 'mixed';
 #| particular: "local/helper".  Never a verified identity.
 constant LOCAL-DOMAIN is export = 'local';
 
-class X::X321::Protocol is Exception is export {
+class X::Do321::Protocol is Exception is export {
     has Str $.message;
 }
 
-sub protocol-error(Str $m) { X::X321::Protocol.new(message => $m).throw }
+sub protocol-error(Str $m) { X::Do321::Protocol.new(message => $m).throw }
 
 #| Membership without a junction: under Raku++, `$x eq any()` over an
 #| empty list is True, so every membership test goes through this.

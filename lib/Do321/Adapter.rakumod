@@ -1,4 +1,4 @@
-unit module X321::Adapter;
+unit module Do321::Adapter;
 
 #| What a harness adapter is, what it may honestly claim to enforce, and
 #| how one is chosen for a package.
@@ -11,12 +11,12 @@ unit module X321::Adapter;
 #| and an adapter that cannot enforce a required restriction is never
 #| selected.
 
-use X321::JSON;
-use X321::Shape;
-use X321::Protocol;
-use X321::Async;
-use X321::Tool;
-use X321::Trust;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Tool;
+use Do321::Trust;
 
 #| Whether an adapter can run here at all.
 class Detection is export {
@@ -32,7 +32,7 @@ sub enforces(%e, Str $feature --> Bool) is export { so %e{$feature} }
 #| One attempt's input.
 class Spec is export {
     has %.package;
-    has $.agent;                 # X321::Trust::Loaded
+    has $.agent;                 # Do321::Trust::Loaded
     has Int $.attempt = 0;
     has Str $.workspace = '';    # absolute path, or '' when the package has none
     has Str $.prompt = '';
@@ -191,26 +191,26 @@ sub tool-names(@grants, %table --> List) is export {
 
 # ------------------------------------------------------------ procedures
 
-class X::X321::Adapter is Exception is export {
+class X::Do321::Adapter is Exception is export {
     has Str $.message;
 }
 
-sub no-approval-error() is export { X::X321::Adapter.new(message => 'no approval is attached to this package') }
+sub no-approval-error() is export { X::Do321::Adapter.new(message => 'no approval is attached to this package') }
 
 #| A path inside the workspace, or an error.  Refuses escapes, including
 #| through a symlinked parent.
 sub inside-workspace(Str $ws, Str $rel --> IO::Path) is export {
-    X::X321::Adapter.new(message => "path \"$rel\" is not a safe relative path").throw unless safe-rel-path($rel);
+    X::Do321::Adapter.new(message => "path \"$rel\" is not a safe relative path").throw unless safe-rel-path($rel);
     my $abs = $ws.IO.absolute.IO;
     my $full = $abs.add($rel);
-    X::X321::Adapter.new(message => "path \"$rel\" escapes the workspace").throw
+    X::Do321::Adapter.new(message => "path \"$rel\" escapes the workspace").throw
         unless $full.Str eq $abs.Str || $full.Str.starts-with($abs.Str ~ '/');
     my $parent = $full.parent;
     loop {
         if $parent.e {
             my $resolved = $parent.resolve;
             my $abs-resolved = $abs.resolve;
-            X::X321::Adapter.new(message => "path \"$rel\" resolves outside the workspace").throw
+            X::Do321::Adapter.new(message => "path \"$rel\" resolves outside the workspace").throw
                 unless $resolved.Str eq $abs-resolved.Str || $resolved.Str.starts-with($abs-resolved.Str ~ '/');
             last;
         }
@@ -808,7 +808,7 @@ sub consume-stream(@lines, $transcript, Control $ctl --> List) is export {
 #| What it does not enforce, and says so: repo_scope, network_deny,
 #| live_steer, pause.
 class ClaudeCode does Adapter is export {
-    has Str $.binary = '';           # '' means "claude"; the CLI sets it from X321_CLAUDE_BINARY
+    has Str $.binary = '';           # '' means "claude"; the CLI sets it from DO321_CLAUDE_BINARY
     has Numeric $.kill-wait = 15;
     has $.stderr;                    # where the harness's stderr is teed; Any discards
     has $.transcript;                # readable transcript of the stream; Any discards

@@ -2,11 +2,11 @@
 # redaction, and the execution boundary with a recording executor.
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
-use X321Test;
-use X321::Shape;
-use X321::Protocol;
-use X321::Async;
-use X321::Tool;
+use Do321Test;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Tool;
 
 sub engine(*%extra --> List) {
     my $log = temp-dir().add('engine.log');
@@ -41,7 +41,7 @@ for (
     ('restart', { service => 'alpha.web' }),
     ('go', { service => 'alpha.web', target => 'live' }),
 ) -> ($op, %params) {
-    throws-like { $d.argv($op, %params) }, X::X321::Tool, "$op {%params.values.join(' ')} is refused";
+    throws-like { $d.argv($op, %params) }, X::Do321::Tool, "$op {%params.values.join(' ')} is refused";
 }
 
 # ---- status and plan run the bound engine --------------------------------------
@@ -68,10 +68,10 @@ ok $res.unavailable ne '' && !$res.ok && !$res.argv, 'execute is reported unavai
 ok !$log.e, 'the engine was not invoked';
 
 # ---- unbound and unknown are refused without running --------------------------
-throws-like { DP.new.run($bg, 'status', {}) }, X::X321::Tool, message => /'not configured'/, 'an unbound tool says so';
+throws-like { DP.new.run($bg, 'status', {}) }, X::Do321::Tool, message => /'not configured'/, 'an unbound tool says so';
 ($dp, $log) = engine();
-throws-like { $dp.run($bg, 'restart', { service => 'alpha.web' }) }, X::X321::Tool, 'restart is refused';
-throws-like { $dp.run($bg, 'plan', { service => 'alpha.web', target => 'live', revision => 'master' }) }, X::X321::Tool, 'a branch name is not a revision';
+throws-like { $dp.run($bg, 'restart', { service => 'alpha.web' }) }, X::Do321::Tool, 'restart is refused';
+throws-like { $dp.run($bg, 'plan', { service => 'alpha.web', target => 'live', revision => 'master' }) }, X::Do321::Tool, 'a branch name is not a revision';
 ok !$log.e, 'a refused call never reaches the engine';
 
 # ---- output is redacted and capped ----------------------------------------------
@@ -112,7 +112,7 @@ lives-ok { gate(%p, %a, $now, $ex) }, 'a matching approval against unchanged sta
 is $ex.calls.elems, 1, 'executed once';
 sub refuse(Str $name, $p2, $a2, CurrentState $st) {
     my $ex2 = RecordingExecutor.new;
-    throws-like { gate($p2, $a2, $st, $ex2) }, X::X321::Tool, "$name: refused";
+    throws-like { gate($p2, $a2, $st, $ex2) }, X::Do321::Tool, "$name: refused";
     is $ex2.calls.elems, 0, "$name: the executor is not called";
 }
 my %p2 = load('DeploymentProposal', %p); %p2<revision> = { sha => '9' x 40, source => 'requested' }; %p2<proposalDigest> = proposal-digest(%p2);
@@ -136,14 +136,14 @@ refuse('tampered digest', %pt, %a, $now);
 my $golog = temp-dir().add('engine.log');
 my %goenv = %*ENV, FAKE_ENGINE_LOG => $golog.Str, FAKE_ENGINE_ALLOW_GO => '1';
 my $eng = EngineExecutor.new(:bin(fake-engine().Str), :allowed-targets(['dev']), :env(%goenv), :timeout(20));
-throws-like { $eng.execute(%p, %a) }, X::X321::Tool, message => /'not enabled'/, 'live is refused before the engine is invoked';
+throws-like { $eng.execute(%p, %a) }, X::Do321::Tool, message => /'not enabled'/, 'live is refused before the engine is invoked';
 ok !$golog.e, 'and nothing ran';
 my %pd = load('DeploymentProposal', %p); %pd<target> = 'dev'; %pd<proposalDigest> = proposal-digest(%pd);
 my $out = $eng.execute(%pd, approval-for(%pd));
 ok $out.contains('completed'), 'dev executes' or diag $out;
 is read-lines($golog).join('|'), 'go alpha.web dev', 'the engine saw exactly go';
 my $failing = EngineExecutor.new(:bin(fake-engine().Str), :allowed-targets(['dev']), :env(%( |%goenv, FAKE_ENGINE_GO_FAILS => '1' )), :timeout(20));
-throws-like { $failing.execute(%pd, approval-for(%pd)) }, X::X321::Tool, message => /'rolled back'/, 'a rolled-back deploy is a failure whatever the exit code';
+throws-like { $failing.execute(%pd, approval-for(%pd)) }, X::Do321::Tool, message => /'rolled back'/, 'a rolled-back deploy is a failure whatever the exit code';
 
 # ---- cancellation and timeouts ------------------------------------------------
 my ($slow, $) = engine(FAKE_ENGINE_SLEEP => '5');

@@ -1,4 +1,4 @@
-unit module X321::Trust;
+unit module Do321::Trust;
 
 #| Resolves agent names to configured, pinned packages and loads them
 #| under the trust level the configuration grants.
@@ -17,10 +17,10 @@ unit module X321::Trust;
 #|   local        an unsigned package with a local/<name> identity, pinned
 #|                by path.  It has no publisher and claims none.
 
-use X321::JSON;
-use X321::Shape;
-use X321::Protocol;
-use X321::Digest;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
 
 constant LEVEL-VERIFIED    is export = 'verified';
 constant LEVEL-DEVELOPMENT is export = 'development';
@@ -31,11 +31,11 @@ constant MANIFEST-FILE is export = 'agent.json';
 #| Reserved names an alias may never shadow.
 constant RESERVED is export = <run agents packages trust doctor help version>;
 
-class X::X321::Trust is Exception is export {
+class X::Do321::Trust is Exception is export {
     has Str $.message;
 }
 
-sub trust-error(Str $m) { X::X321::Trust.new(message => $m).throw }
+sub trust-error(Str $m) { X::Do321::Trust.new(message => $m).throw }
 
 #| ~/.321/trust.json, or X321_TRUST.
 sub default-trust-path(--> IO::Path) is export {

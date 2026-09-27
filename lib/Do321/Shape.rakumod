@@ -1,4 +1,4 @@
-unit module X321::Shape;
+unit module Do321::Shape;
 
 #| The protocol documents as field tables, in the order and with the
 #| JSON semantics of the Go structs they replace.  Every document the
@@ -18,13 +18,13 @@ unit module X321::Shape;
 #| Field specs: str int num bool strs anys any map:str, obj:<Type>,
 #| ptr:<Type>, list:<Type>, map:<Type>; a trailing ? is omitempty.
 
-use X321::JSON;
+use Do321::JSON;
 
-class X::X321::Shape is Exception {
+class X::Do321::Shape is Exception {
     has Str $.message;
 }
 
-sub shape-error(Str $m) { X::X321::Shape.new(message => $m).throw }
+sub shape-error(Str $m) { X::Do321::Shape.new(message => $m).throw }
 
 # --------------------------------------------------------------- tables
 
@@ -174,7 +174,7 @@ sub json-type(Any $v --> Str) {
 
 #| Load plain data (as parse-json returns it, or as code built it) into a
 #| document of the named shape.  Unknown fields are dropped; a wrong type
-#| throws X::X321::Shape; scalars and nested structs are always present
+#| throws X::Do321::Shape; scalars and nested structs are always present
 #| afterwards, lists and maps only when given.  Idempotent.
 sub load(Str $type, Any $data, Str :$path = $type --> Hash) is export {
     shape-error("no shape named $type") unless %TYPES{$type}:exists;

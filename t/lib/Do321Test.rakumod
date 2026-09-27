@@ -1,7 +1,7 @@
-unit module X321Test;
+unit module Do321Test;
 
 #| Helpers the test suite shares: temp dirs, fixture copies, and one seam
-#| through which every CLI test runs the runtime, so X321_TEST_BIN can
+#| through which every CLI test runs the runtime, so DO321_TEST_BIN can
 #| point the suite at a compiled 321 (a Raku++ binary) and CI tests the
 #| executable it ships, not the source it came from.
 
@@ -52,9 +52,9 @@ sub read-lines(IO::Path $f --> List) is export {
 }
 
 #| The command that runs the runtime: the compiled binary named by
-#| X321_TEST_BIN, else the source through rakupp (or raku).
+#| DO321_TEST_BIN, else the source through rakupp (or raku).
 sub runtime-command(--> List) is export {
-    return (%*ENV<X321_TEST_BIN>,) if %*ENV<X321_TEST_BIN>;
+    return (%*ENV<DO321_TEST_BIN>,) if %*ENV<DO321_TEST_BIN>;
     my $root = repo-root();
     ($*EXECUTABLE, '-I', $root.add('lib').Str, $root.add('bin/321').Str);
 }

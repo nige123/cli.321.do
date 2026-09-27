@@ -1,9 +1,9 @@
 # Package digests and ed25519 signatures.
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
-use X321Test;
-use X321::Digest;
-use X321::Ed25519;
+use Do321Test;
+use Do321::Digest;
+use Do321::Ed25519;
 
 sub hex2blob(Str $h) { Blob.new($h.comb(2).map({ :16($_) })) }
 sub blob2hex(Blob $b) { $b.list.map({ .fmt('%02x') }).join }
@@ -44,11 +44,11 @@ ok $dir.add('SIGNATURE').slurp.contains('"algorithm": "ed25519"'), 'the signatur
 
 $dir.add('prompts/identity.md').spurt('changed');
 isnt compute($dir)[0], $d1, 'changed content changes the digest';
-throws-like { verify-digest($dir) }, X::X321::Digest, message => /'DIGEST says'/, 'verify notices DIGEST no longer matches';
+throws-like { verify-digest($dir) }, X::Do321::Digest, message => /'DIGEST says'/, 'verify notices DIGEST no longer matches';
 
 my $sym = copy-fixture('example.test/helper');
 '/etc/hostname'.IO.symlink($sym.add('prompts/link.md'));
-throws-like { compute($sym) }, X::X321::Digest, message => /symlink/, 'a symlink is refused, not skipped';
+throws-like { compute($sym) }, X::Do321::Digest, message => /symlink/, 'a symlink is refused, not skipped';
 
 my $git = copy-fixture('example.test/helper');
 my $before = compute($git)[0];
@@ -56,9 +56,9 @@ $git.add('.git/objects').mkdir;
 $git.add('.git/HEAD').spurt('ref');
 is compute($git)[0], $before, '.git does not contribute';
 
-throws-like { compute(temp-dir().add('missing')) }, X::X321::Digest, 'a missing root is an error';
+throws-like { compute(temp-dir().add('missing')) }, X::Do321::Digest, 'a missing root is an error';
 my $file = temp-dir().add('f'); $file.spurt('x');
-throws-like { compute($file) }, X::X321::Digest, message => /'not a directory'/, 'a file is not a package root';
+throws-like { compute($file) }, X::Do321::Digest, message => /'not a directory'/, 'a file is not a package root';
 
 # ---- signatures over digests ---------------------------------------------------
 my $digest = 'sha256:' ~ 'ab' x 32;
@@ -67,14 +67,14 @@ is $sig<algorithm>, ALGORITHM-ED25519, 'the algorithm is named';
 is $sig<keyId>, key-id($kpub), 'the key id names the key';
 lives-ok { verify-signature($digest, $sig, $kpub) }, 'it verifies';
 my ($other, $) = generate-key();
-throws-like { verify-signature($digest, $sig, $other) }, X::X321::Digest, message => /'does not name this key'/, 'a different key does not';
-throws-like { verify-signature('sha256:' ~ 'cd' x 32, $sig, $kpub) }, X::X321::Digest, message => /'verification failed'/, 'a different digest does not';
+throws-like { verify-signature($digest, $sig, $other) }, X::Do321::Digest, message => /'does not name this key'/, 'a different key does not';
+throws-like { verify-signature('sha256:' ~ 'cd' x 32, $sig, $kpub) }, X::Do321::Digest, message => /'verification failed'/, 'a different digest does not';
 my %tampered = %$sig; %tampered<algorithm> = 'rsa';
-throws-like { verify-signature($digest, %tampered, $kpub) }, X::X321::Digest, message => /'unsupported algorithm'/, 'only ed25519 is accepted';
+throws-like { verify-signature($digest, %tampered, $kpub) }, X::Do321::Digest, message => /'unsupported algorithm'/, 'only ed25519 is accepted';
 my %bad = %$sig; %bad<value> = 'not base64!';
-throws-like { verify-signature($digest, %bad, $kpub) }, X::X321::Digest, message => /'not base64'/, 'a malformed value is refused';
+throws-like { verify-signature($digest, %bad, $kpub) }, X::Do321::Digest, message => /'not base64'/, 'a malformed value is refused';
 is parse-public-key(encode-public-key($kpub)), $kpub, 'the public key round trips through base64';
-throws-like { parse-public-key('AAAA') }, X::X321::Digest, message => /'32 bytes'/, 'a short key is refused';
+throws-like { parse-public-key('AAAA') }, X::Do321::Digest, message => /'32 bytes'/, 'a short key is refused';
 
 # ---- base64 -------------------------------------------------------------------
 for '', 'f', 'fo', 'foo', 'foob', 'fooba', 'foobar' -> $s {
@@ -82,6 +82,6 @@ for '', 'f', 'fo', 'foo', 'foob', 'fooba', 'foobar' -> $s {
 }
 is base64-encode('foobar'.encode), 'Zm9vYmFy', 'RFC 4648 vector';
 is base64-encode('fo'.encode), 'Zm8=', 'padding';
-throws-like { base64-decode('Zm8') }, X::X321::Digest, 'bad length is refused';
+throws-like { base64-decode('Zm8') }, X::Do321::Digest, 'bad length is refused';
 
 done-testing;

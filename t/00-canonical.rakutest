@@ -2,7 +2,7 @@
 # second implementation must reproduce, byte for byte and digest for digest.
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
-use X321::JSON;
+use Do321::JSON;
 
 my $dir = $?FILE.IO.parent.parent.add('testdata/canonical');
 my @inputs = $dir.dir(test => /'.json'$/).sort;
@@ -42,15 +42,15 @@ for %cases.sort -> (:key($in), :value($want)) {
     is canonicalize-json-text($in), $want, "canonical of $in";
 }
 for '{"a":1} x', 'NaN', '{"a":' -> $bad {
-    throws-like { canonicalize-json-text($bad) }, X::X321::JSON, "$bad is rejected";
+    throws-like { canonicalize-json-text($bad) }, X::Do321::JSON, "$bad is rejected";
 }
-throws-like { canonicalize-json(Blob.new(0x22, 0xff, 0x22)) }, X::X321::JSON, 'invalid UTF-8 is rejected';
+throws-like { canonicalize-json(Blob.new(0x22, 0xff, 0x22)) }, X::Do321::JSON, 'invalid UTF-8 is rejected';
 is format-number(0.6), '0.6', '0.6';
 is format-number(123456789012345680000e0), '123456789012345680000', 'large';
 is format-number(1.5e300), '1.5e+300', 'exponent form';
 is format-number(-1e-10), '-1e-10', 'small negative';
 is format-number(5), '5', 'integer';
-throws-like { format-number(Inf) }, X::X321::JSON, 'infinity is an error';
+throws-like { format-number(Inf) }, X::Do321::JSON, 'infinity is an error';
 
 # wire encoding: sorted keys, U+2028 escaped, pretty form indented
 is encode-json({ b => 1, a => [True, Any, "x\n"] }), '{"a":[true,null,"x\n"],"b":1}', 'wire form';

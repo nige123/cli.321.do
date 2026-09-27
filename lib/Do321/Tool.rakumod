@@ -1,4 +1,4 @@
-unit module X321::Tool;
+unit module Do321::Tool;
 
 #| The bounded interface between a deterministic procedure and an external
 #| program the runtime binds by explicit configuration.
@@ -13,16 +13,16 @@ unit module X321::Tool;
 #| Nothing here knows which agent is calling.
 
 use Data::Native;
-use X321::JSON;
-use X321::Shape;
-use X321::Protocol;
-use X321::Async;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
 
-class X::X321::Tool is Exception is export {
+class X::Do321::Tool is Exception is export {
     has Str $.message;
 }
 
-sub tool-error(Str $m) { X::X321::Tool.new(message => $m).throw }
+sub tool-error(Str $m) { X::Do321::Tool.new(message => $m).throw }
 
 #| One operation a tool offers.
 class Op is export {
@@ -51,7 +51,7 @@ class Result is export {
 }
 
 #| A bound external program.  run returns a Result; it throws
-#| X::X321::Tool only for a refused call (unknown op, bad parameter, no
+#| X::Do321::Tool only for a refused call (unknown op, bad parameter, no
 #| binding); a process that ran and failed is a Result with ok False.
 role Tool is export {
     method name(--> Str) { ... }

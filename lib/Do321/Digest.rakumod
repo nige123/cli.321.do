@@ -1,4 +1,4 @@
-unit module X321::Digest;
+unit module Do321::Digest;
 
 #| The canonical content digest of a package directory, and ed25519
 #| signatures over it.
@@ -12,19 +12,19 @@ unit module X321::Digest;
 #| runtime should load.
 
 use Data::Native;
-use X321::JSON;
-use X321::Shape;
-use X321::Ed25519;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Ed25519;
 
 constant DIGEST-FILE    is export = 'DIGEST';
 constant SIGNATURE-FILE is export = 'SIGNATURE';
 constant ALGORITHM-ED25519 is export = 'ed25519';
 
-class X::X321::Digest is Exception is export {
+class X::Do321::Digest is Exception is export {
     has Str $.message;
 }
 
-sub digest-error(Str $m) { X::X321::Digest.new(message => $m).throw }
+sub digest-error(Str $m) { X::Do321::Digest.new(message => $m).throw }
 
 #| One file's contribution to the digest.
 class Entry is export {
@@ -113,7 +113,7 @@ sub base64-encode(Blob $b --> Str) is export {
     $out;
 }
 
-#| Standard base64 with padding; throws X::X321::Digest on anything else.
+#| Standard base64 with padding; throws X::Do321::Digest on anything else.
 sub base64-decode(Str $s --> Blob) is export {
     digest-error('not base64') unless $s ~~ m:P5/^[A-Za-z0-9+\/]*={0,2}$/ && $s.chars %% 4;
     my @out;

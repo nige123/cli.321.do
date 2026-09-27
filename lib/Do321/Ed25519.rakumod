@@ -1,4 +1,4 @@
-unit module X321::Ed25519;
+unit module Do321::Ed25519;
 
 #| Ed25519 (RFC 8032) in plain Raku on the compiler's big integers and its
 #| built-in SHA-512.  The runtime links no third-party library, and

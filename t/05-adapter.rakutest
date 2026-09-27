@@ -2,12 +2,12 @@
 # weakens, the Claude Code surface, and the procedure executor's refusals.
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
-use X321Test;
-use X321::Shape;
-use X321::Protocol;
-use X321::Async;
-use X321::Tool;
-use X321::Adapter;
+use Do321Test;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Tool;
+use Do321::Adapter;
 
 class Stub does Adapter {
     has Str $.name;
@@ -134,7 +134,7 @@ is $out.status, STATUS-COMPLETED, 'the default script completes';
 is $out.conditions.elems, 2, 'with every condition answered';
 is $out.cost<basis>, COST-NONE, 'and no model cost';
 ok enforces(new-fake().enforcement, $_), "the executor enforces $_" for features();
-throws-like { inside-workspace($ws.Str, '/etc/passwd') }, X::X321::Adapter, 'an absolute path is refused';
+throws-like { inside-workspace($ws.Str, '/etc/passwd') }, X::Do321::Adapter, 'an absolute path is refused';
 is substitute('{{service}} at {{target}}', { service => 'a.b', target => 'live' }), 'a.b at live', 'captures substitute';
 is substitute('{{service}}', {}), '', 'an unresolved placeholder is not a value';
 is cap-tail('abcdef', 3), '[…truncated…]def', 'cap-tail keeps the tail';
