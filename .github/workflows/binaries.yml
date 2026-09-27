@@ -101,20 +101,6 @@ jobs:
             fi
           fi
 
-      - name: windows diagnostics (temporary)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: |
-          set +e
-          bin="$PWD/dist/${{ matrix.exe }}"
-          echo "== version to a pipe:"; "$bin" version | cat; echo "rc=${PIPESTATUS[0]}"
-          echo "== validate to the console:"; "$bin" packages validate testdata/packages/local/helper; echo "rc=$?"
-          echo "== validate, stderr merged, to a pipe:"; "$bin" packages validate testdata/packages/local/helper 2>&1 | cat
-          echo "== digest:"; "$bin" packages digest testdata/packages/local/helper; echo "rc=$?"
-          echo "== CR bytes per fixture file:"
-          find testdata/packages/local/helper -type f | while read f; do printf '%s %s\n' "$(tr -cd '\r' < "$f" | wc -c)" "$f"; done
-          git config --get core.autocrlf; git ls-files --eol testdata/packages/local/helper
-
       - name: smoke test
         run: |
           bin="$PWD/dist/${{ matrix.exe }}"

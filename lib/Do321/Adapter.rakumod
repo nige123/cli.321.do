@@ -320,7 +320,7 @@ class ProcedureAdapter does Adapter is export {
                         $out.errors.push($!.message);
                         return finish($out, @conds, $touched, $turns);
                     }
-                    try { $full.parent.mkdir; $full.spurt(%step<content>) };
+                    try { mkdir-p($full.parent); $full.spurt(%step<content>) };
                     return failed($out, @conds, $!.message) if $!;
                     $touched = True;
                     $ctl.emit.(EVENT-TOOL-RESULT, %( tool => 'write', path => %step<path> ));

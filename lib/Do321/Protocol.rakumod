@@ -144,6 +144,22 @@ sub within(IO::Path $inner, IO::Path $outer --> Bool) is export {
     $i eq $o || $i.starts-with($o.ends-with('/') ?? $o !! $o ~ '/');
 }
 
+#| Create a directory and every missing parent, one level at a time.
+#| Every directory 321 makes goes through here, because Raku++ 4.0.1's
+#| mkdir calls mkdir() on each '/'-separated prefix from the root and fails
+#| on the drive: on Windows mkdir("C:") answers EACCES, not EEXIST, so any
+#| absolute path spelled with '/' is refused, even one level deep. Raku++
+#| uses the path string as given, so on Windows each level is spelled with
+#| backslashes: one mkdir() call for that level alone.
+sub mkdir-p(IO::Path $dir, Bool :$win = $*DISTRO.is-win --> IO::Path) is export {
+    return $dir if $dir.d;
+    my $parent = $dir.parent;
+    mkdir-p($parent, :$win) unless $parent.d || $parent.Str eq $dir.Str;
+    my $one = $win ?? $dir.absolute.trans('/' => '\\').IO !! $dir;
+    $one.mkdir unless $dir.d;
+    $dir;
+}
+
 #| The comparable form of a path; :win is a test seam.
 sub path-key(Str $p, Bool :$win = $*DISTRO.is-win --> Str) is export {
     return $p unless $win;

@@ -344,10 +344,10 @@ sub materialise-builtin(Str $name, IO::Path $home --> IO::Path) is export {
     my $dir = $home.add('packages').add($name);
     my $same = $dir.d && %files.kv.map(-> $rel, $text { $dir.add($rel).f && $dir.add($rel).slurp eq $text }).all.so;
     unless $same {
-        $dir.mkdir;
+        mkdir-p($dir);
         for %files.kv -> $rel, $text {
             my $f = $dir.add($rel);
-            $f.parent.mkdir;
+            mkdir-p($f.parent);
             $f.spurt($text);
         }
         write-digest-file($dir, compute($dir)[0]);
@@ -817,7 +817,7 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
 
     my $home = home-of($env);
     my $run-dir = $home.add('runs').add(%wp<packageId>);
-    try { $run-dir.mkdir; $run-dir.chmod(0o700) };
+    try { mkdir-p($run-dir); $run-dir.chmod(0o700) };
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
     my $raw-package = to-wire('WorkPackage', %wp);
     try $run-dir.add('work-package.json').spurt($raw-package ~ "\n");

@@ -5,6 +5,7 @@ use Test;
 use Do321::JSON;
 use Do321::Shape;
 use Do321::Protocol;
+use Do321Test;
 
 my $testdata = $?FILE.IO.parent.parent.add('testdata');
 
@@ -199,6 +200,15 @@ subtest 'within: containment by path, on every platform' => {
     is path-key('\\\\?\\C:\\pkg', :win), 'c:/pkg', 'the long-path prefix';
     is path-key('D:/Pkg/x', :win), 'd:/pkg/x', 'forward slashes';
     is path-key('/A/B'), '/A/B', 'unchanged elsewhere';
+}
+
+# ---- directories are made one level at a time ------------------------------------
+{
+    my $base = temp-dir();
+    my $deep = $base.add('a').add('b').add('c');
+    is mkdir-p($deep).Str, $deep.Str, 'mkdir-p returns the directory';
+    ok $deep.d, 'and every missing level is made';
+    is mkdir-p($deep).Str, $deep.Str, 'making it again is fine';
 }
 
 done-testing;

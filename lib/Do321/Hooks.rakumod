@@ -97,7 +97,7 @@ sub install-claude-hooks(IO::Path $workspace, Str $command, Bool :$strict = Fals
     %settings<hooks> = %hooks;
     my $after = canonical(%settings);
     return 'unchanged' if $after eq $before;
-    $target.parent.mkdir;
+    mkdir-p($target.parent);
     $target.spurt(settings-json(%settings));
     $before eq '{}' ?? 'installed' !! 'updated';
 }

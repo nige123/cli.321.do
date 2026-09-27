@@ -128,7 +128,7 @@ sub write-history(Str $dir, @lines --> List) is export {
     my $digest = digest-string($text);
     return ('', $digest, Str) if $dir eq '';
     my $d = $dir.IO;
-    try { $d.mkdir unless $d.d; $d.chmod(0o700) };
+    try { mkdir-p($d); $d.chmod(0o700) };
     return ('', $digest, $!.message) if $!;
     my $path = $d.add('instruction-history.ndjson');
     try { $path.spurt($text); $path.chmod(0o600) };
@@ -524,7 +524,7 @@ sub iz4-packet(Str $bin, Str $workspace --> List) {
 #| Returns (exit code, message).
 sub iz4-report-check(Str $bin, Str $workspace, Str $run-id, Str $summary --> List) {
     my $dir = $*TMPDIR.add("321-iz4-{$*PID}-{(^1_000_000).pick}");
-    $dir.mkdir;
+    mkdir-p($dir);
     LEAVE { try { .unlink for $dir.dir; $dir.rmdir } }
     my $transcript = $dir.add('transcript.jsonl');
     $transcript.spurt(encode-json(%( type => 'assistant', message => %( content => [ %( type => 'text', text => $summary ), ] ) )) ~ "\n");
