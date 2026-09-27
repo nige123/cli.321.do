@@ -1,0 +1,62 @@
+{
+  "schema": "agent-package.v1",
+  "id": "example.test/operator",
+  "name": "operator",
+  "displayName": "Operator",
+  "version": "0.1.0",
+  "publisher": { "domain": "example.test", "url": "https://example.test/agents" },
+  "owner": { "legalName": "Example Test Publisher" },
+  "licence": { "spdx": "Apache-2.0" },
+  "provenance": { "source": "cli.321.do/testdata", "builtBy": "fixture" },
+  "identity": {
+    "role": "an unbranded deployment operator used to test the dp tool binding",
+    "personality": "plain and literal",
+    "tone": "brief",
+    "decisionStyle": "asks rather than guesses; every operation is a deterministic procedure"
+  },
+  "prompts": ["prompts/identity.md"],
+  "skills": ["skills/targets/SKILL.md"],
+  "procedures": [
+    {
+      "name": "status",
+      "matches": { "objectiveRegex": "^status(?:\\s+(?P<service>[a-z0-9-]+\\.[a-z0-9-]+))?(?:\\s+(?P<target>[a-z][a-z0-9-]*))?\\s*$" },
+      "requires": ["deploy.read"],
+      "steps": [
+        { "kind": "tool", "tool": "dp", "op": "status", "params": { "service": "{{service}}", "target": "{{target}}" } }
+      ]
+    },
+    {
+      "name": "plan",
+      "matches": { "objectiveRegex": "^plan(?:\\s+(?P<service>[a-z0-9-]+\\.[a-z0-9-]+))?(?:\\s+(?P<target>[a-z][a-z0-9-]*))?(?:\\s+(?:revision|at)\\s+(?P<revision>[0-9a-f]{7,40}))?\\s*$" },
+      "requires": ["deploy.plan"],
+      "steps": [
+        { "kind": "tool", "tool": "dp", "op": "plan", "params": { "service": "{{service}}", "target": "{{target}}", "revision": "{{revision}}" } }
+      ]
+    },
+    {
+      "name": "go",
+      "matches": { "objectiveRegex": "^go(?:\\s+(?P<service>[a-z0-9-]+\\.[a-z0-9-]+))?(?:\\s+(?P<target>[a-z][a-z0-9-]*))?(?:\\s+(?:revision|at)\\s+(?P<revision>[0-9a-f]{7,40}))?\\s*$" },
+      "requires": ["deploy.plan"],
+      "steps": [
+        { "kind": "tool", "tool": "dp", "op": "plan", "params": { "service": "{{service}}", "target": "{{target}}", "revision": "{{revision}}" } },
+        { "kind": "tool", "tool": "dp", "op": "execute", "params": { "service": "{{service}}", "target": "{{target}}", "revision": "{{revision}}" } }
+      ]
+    },
+    {
+      "name": "unsupported",
+      "matches": { "objectiveRegex": "(?s)^.*$" },
+      "steps": [
+        { "kind": "blocked", "question": "Unsupported request. I do: status [service] [target]; plan <service> <target> [revision <sha>]; go <service> <target> [revision <sha>]." }
+      ]
+    }
+  ],
+  "capabilities": {
+    "required": ["deploy.read", "deploy.plan"],
+    "optional": ["deploy.invoke"],
+    "denied": ["shell.run", "net.fetch", "model.text", "repo.write", "files.write"]
+  },
+  "harness": { "requires": [] },
+  "placement": { "allowed": ["client", "server"] },
+  "outputSchemas": { "default": "schemas/outcome.json" },
+  "evaluations": ["evaluations/basic.json"]
+}

@@ -1,0 +1,197 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# Standalone 321 binaries, built with Raku++ (https://github.com/ash/rakupp).
+# Raku++ does not cross-compile, so each system builds its own file. On a
+# version tag (v*) the files are published as a GitHub release, which the
+# iz4 installer fetches; a manual run only keeps them as artifacts.
+# --aot, not --bundle: Raku++ 3.26's bundle stub declares the module blob length
+# as `unsigned long`, which is 32-bit on Windows, so MSVC cannot link it and a
+# MinGW build registers no modules. --aot parses at build time and avoids it.
+name: binaries
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+env:
+  RAKUPP_VERSION: v4.0.1
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # cxx: the compiler Raku++ drives, with link flags (it runs CXX through a
+          # shell). Linux: static libstdc++, so glibc is the only dependency.
+          # macOS: both architectures in one file (the Raku++ runtime is universal),
+          # and macOS 11 as the minimum, as the runtime itself was built for.
+          # Windows: the MSVC archive, whose file needs only system DLLs. (MinGW:
+          # a dynamic file needs MinGW DLLs, and a -static one crashes at start.)
+          - { os: ubuntu-24.04,     target: linux-x86_64,    archive: rakupp-linux-x86_64.tar.gz,    exe: 321-linux-x86_64,      cxx: 'c++ -static-libstdc++ -static-libgcc' }
+          - { os: ubuntu-24.04-arm, target: linux-aarch64,   archive: rakupp-linux-aarch64.tar.gz,   exe: 321-linux-aarch64,     cxx: 'c++ -static-libstdc++ -static-libgcc' }
+          - { os: macos-latest,     target: macos-universal, archive: rakupp-macos-universal.tar.gz, exe: 321-macos-universal,   cxx: 'c++ -arch arm64 -arch x86_64 -mmacosx-version-min=11.0' }
+          - { os: windows-latest,   target: windows-x64,     archive: rakupp-windows-x64.zip,        exe: 321-windows-x64.exe,   cxx: '' }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: fetch Raku++ and verify its checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$RAKUPP_VERSION" -R ash/rakupp -D dl \
+              -p "${{ matrix.archive }}" -p "${{ matrix.archive }}.sha256"
+          # the Windows checksum files are uppercase hex with CRLF endings
+          exp=$(tr -d '\r\n ' < "dl/${{ matrix.archive }}.sha256" | grep -o -i '^[0-9a-f]\{64\}' | tr 'A-F' 'a-f')
+          got=$( (sha256sum "dl/${{ matrix.archive }}" 2>/dev/null || shasum -a 256 "dl/${{ matrix.archive }}") | awk '{print $1}')
+          [ -n "$exp" ] && [ "$exp" = "$got" ] || { echo "checksum mismatch: expected $exp, got $got"; exit 1; }
+          mkdir -p tool
+          case "${{ matrix.archive }}" in
+            *.zip) if command -v unzip >/dev/null; then unzip -q "dl/${{ matrix.archive }}" -d tool; else 7z x -y -otool "dl/${{ matrix.archive }}" >/dev/null; fi ;;
+            *)     tar xzf "dl/${{ matrix.archive }}" -C tool ;;
+          esac
+          RAKUPP=$(find "$PWD/tool" -type f \( -name rakupp -o -name rakupp.exe \) -path '*/bin/*' | head -1)
+          [ -n "$RAKUPP" ] || { echo "rakupp not found in the archive"; find tool -maxdepth 3; exit 1; }
+          echo "RAKUPP=$RAKUPP" >> "$GITHUB_ENV"
+          "$RAKUPP" -e 'say "Raku++ ", $*RAKU.compiler.version'
+
+      - name: compile 321 into one file
+        run: |
+          mkdir -p dist
+          if [ -n "${{ matrix.cxx }}" ]; then export CXX="${{ matrix.cxx }}"; fi
+          "$RAKUPP" -I lib --aot --standalone bin/321 -o "dist/${{ matrix.exe }}"
+          ls -l dist
+          "$RAKUPP" --exe-info "dist/${{ matrix.exe }}"
+
+      - name: what the file depends on
+        run: |
+          case "$RUNNER_OS" in
+            macOS)   f="dist/${{ matrix.exe }}"
+                     lipo -info "$f"
+                     lipo "$f" -verify_arch arm64 x86_64
+                     otool -L "$f"
+                     m=$(otool -arch all -l "$f" | awk '/minos/ {print $2}' | sort -u)
+                     echo "minimum macOS: $m"
+                     [ "$m" = 11.0 ] || { echo "expected a minimum of macOS 11.0"; exit 1; } ;;
+            Windows) (objdump -p "dist/${{ matrix.exe }}" 2>/dev/null | grep 'DLL Name') || ldd "dist/${{ matrix.exe }}" || true ;;
+            *)       ldd "dist/${{ matrix.exe }}" || true ;;
+          esac
+
+      - name: the file runs alone, away from Raku++, the source and any toolchain
+        run: |
+          probe=$(mktemp -d)
+          cp "dist/${{ matrix.exe }}" "$probe/"
+          # only the system's own directories on PATH, so a DLL or shared
+          # library borrowed from the runner's toolchains shows up as a failure
+          case "$RUNNER_OS" in
+            Windows) sysp="/c/Windows/System32:/c/Windows" ;;
+            *)       sysp="/usr/bin:/bin" ;;
+          esac
+          cd "$probe" && env -u RAKUPP_HOME PATH="$sysp" "./${{ matrix.exe }}" version
+          # the Intel slice of the macOS file, where the runner has Rosetta
+          if [ "$RUNNER_OS" = macOS ]; then
+            if arch -x86_64 /usr/bin/true 2>/dev/null; then
+              arch -x86_64 env -u RAKUPP_HOME PATH="$sysp" "./${{ matrix.exe }}" version
+            else
+              echo "no Rosetta on this runner: the x86_64 slice was built and verified, not run"
+            fi
+          fi
+
+      - name: smoke test
+        run: |
+          bin="$PWD/dist/${{ matrix.exe }}"
+          "$bin" version
+          "$bin" doctor
+          "$bin" packages validate testdata/packages/local/helper | grep -q '^OK local/helper'
+          home=$(mktemp -d)
+          X321_HOME="$home" "$bin" --package-dir testdata/packages/local/helper --done 'a note exists' --non-interactive helper note: smoke test | grep -q COMPLETED
+          test -f "$home"/runs/*/receipt.json
+
+      - name: full test suite against the file
+        if: runner.os != 'Windows'
+        run: DO321_TEST_BIN="$PWD/dist/${{ matrix.exe }}" prove --ext .rakutest -e "$RAKUPP -Ilib" t/
+
+      - name: checksum
+        run: |
+          cd dist
+          (sha256sum "${{ matrix.exe }}" 2>/dev/null || shasum -a 256 "${{ matrix.exe }}") > "${{ matrix.exe }}.sha256"
+          cat "${{ matrix.exe }}.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: 321-${{ matrix.target }}
+          path: dist/
+
+  linux-portability:
+    name: which Linux systems run the Linux file
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: 321-linux-x86_64
+      - name: run it in bare containers (no toolchain, nothing installed)
+        run: |
+          mv 321-linux-x86_64 321 && chmod +x 321
+          # pull first, so docker's own progress lines never reach the result
+          try() {
+            docker pull -q "$1" >/dev/null || { echo "could not pull $1"; return 2; }
+            local out rc
+            out=$(docker run --rm -v "$PWD:/w:ro" "$1" /w/321 version 2>&1) && rc=0 || rc=$?
+            printf '%s\n' "$out" | head -1 | cut -c1-140 | tr '|' '/'
+            return $rc
+          }
+          { echo '| image | result |'; echo '|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
+          bad=0
+          # must run: glibc 2.38 or newer
+          for img in ubuntu:24.04 debian:trixie-slim fedora:41; do
+            if out=$(try "$img"); then r="runs: $out"; else r="FAILS: $out"; bad=1; fi
+            echo "| $img | $r |" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          # expected not to run: glibc older than 2.38, the floor set by the
+          # Raku++ 3.26 Linux runtime (it calls glibc 2.38's __isoc23_* functions)
+          for img in ubuntu:22.04 debian:bookworm-slim; do
+            if out=$(try "$img"); then r="runs, so the floor is lower than recorded: $out"; else r="does not run, as expected: $out"; fi
+            echo "| $img | $r |" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          exit $bad
+
+  release:
+    name: publish the files as a release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: check the files against their checksums, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist && ls -l
+          for f in 321-*; do
+            case "$f" in *.sha256) continue ;; esac
+            exp=$(grep -o -i '[0-9a-f]\{64\}' "$f.sha256" | head -1 | tr 'A-F' 'a-f')
+            got=$(sha256sum "$f" | awk '{print $1}')
+            [ "$exp" = "$got" ] || { echo "checksum mismatch for $f"; exit 1; }
+          done
+          cat > notes.md <<'NOTES'
+          Standalone 321 files, one per system, built with Raku++. Each needs nothing else installed.
+
+          | File | For |
+          |---|---|
+          | 321-linux-x86_64 | Linux on x86-64, glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39 and later) |
+          | 321-linux-aarch64 | Linux on arm64 |
+          | 321-macos-universal | macOS 11 or newer, Apple silicon and Intel in one file |
+          | 321-windows-x64.exe | Windows 10 or newer, 64-bit |
+
+          Put the file for your system on your PATH as `321`, or let the iz4 installer do it. Every file has a `.sha256` beside it.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "321 $GITHUB_REF_NAME" --notes-file notes.md 321-*

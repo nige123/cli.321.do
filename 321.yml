@@ -1,24 +1,16 @@
 # 321.yml - manifest for the 321 agent runtime binary.
 #
-# Not a daemon: no targets. The gobin: block drives `321 gobin` builds and
-# releases (see deploy.321.do docs/superpowers/specs/2026-07-20-321-gobin-design.md).
+# Not a daemon: no targets. Releases are built by .github/workflows/binaries.yml
+# with Raku++, one standalone file per system, published on a v* tag; the
+# earlier gobin block (Go builds signed into S3) went with the Go tree on
+# 2026-09-27.
 #
-# The binary is named `321`: this is the reclaim of the command for the Go
+# The binary is named `321`: this is the reclaim of the command for the
 # agent runtime — the front door `321 <agent> <request>`. Releasing it onto
 # PATH (and relegating the Perl deploy tool off the `321` command to its
 # engine + recovery role) is a deliberate cutover step, taken on its own
 # explicit go; declaring the manifest here does not ship anything.
 
 name: 321.cli
-entry: main.go
+entry: bin/321
 runner: script
-
-gobin:
-  name: 321                    # binary + artifact base name
-  main: .                      # Go package to build
-  version_var: cli.321.do/internal/cli.Version
-  s3:
-    bucket: 123do-releases
-    prefix: bin/321
-  sign_key: gobin_signing_key  # ed25519 private key name in conf/secrets.conf
-  retain: 5                    # past builds kept in version.json

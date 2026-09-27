@@ -1,0 +1,62 @@
+{
+  "schema": "agent-package.v1",
+  "id": "example.test/helper",
+  "name": "helper",
+  "displayName": "Helper",
+  "version": "1.2.0",
+  "publisher": { "domain": "example.test", "url": "https://example.test/agents" },
+  "owner": { "legalName": "Example Test Publisher" },
+  "licence": { "spdx": "Apache-2.0" },
+  "provenance": { "source": "cli.321.do/testdata", "builtBy": "fixture" },
+  "identity": {
+    "role": "a small general helper used in tests",
+    "personality": "plain and literal",
+    "tone": "brief",
+    "decisionStyle": "asks rather than guesses"
+  },
+  "prompts": ["prompts/identity.md"],
+  "skills": ["skills/checklist/SKILL.md"],
+  "procedures": [
+    {
+      "name": "note",
+      "matches": { "objectiveRegex": "^note: " },
+      "steps": [
+        { "kind": "emit", "text": "taking a note" },
+        { "kind": "assert", "condition": 1, "met": true, "proof": "the note procedure ran" }
+      ]
+    },
+    {
+      "name": "write-file",
+      "matches": { "objectiveRegex": "^write-file: " },
+      "requires": ["repo.write"],
+      "steps": [
+        { "kind": "write", "path": "helper-output.txt", "content": "written by the helper procedure\n" },
+        { "kind": "assert", "condition": 1, "met": true, "proof": "helper-output.txt exists in the workspace" }
+      ]
+    },
+    {
+      "name": "approved-send",
+      "matches": { "objectiveRegex": "^approved-send: " },
+      "steps": [
+        { "kind": "external_action", "action": "send_email", "target": "supplier@example.test", "params": { "subject": "Quote request", "to": "supplier@example.test" } },
+        { "kind": "assert", "condition": 1, "met": true, "proof": "the approved email was recorded" }
+      ]
+    },
+    {
+      "name": "ask",
+      "matches": { "objectiveRegex": "^ask: " },
+      "steps": [
+        { "kind": "blocked", "question": "Which file should I change?" }
+      ]
+    }
+  ],
+  "capabilities": {
+    "required": ["repo.read"],
+    "optional": ["repo.write", "shell.run"],
+    "denied": ["net.fetch", "deploy.invoke"]
+  },
+  "harness": { "requires": ["structured_output", "graceful_stop"] },
+  "placement": { "allowed": ["client", "server"] },
+  "outputSchemas": { "default": "schemas/outcome.json" },
+  "evaluations": ["evaluations/basic.json"]
+}

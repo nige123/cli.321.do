@@ -72,6 +72,13 @@ write-signature-file($copy, sign-digest($d, $priv));
 $copy.add('prompts/identity.md').spurt('evil');
 throws-like { load-resolved($r) }, X::Do321::Trust, 'tampering after signing breaks the digest first';
 
+# the listing carries the publisher's keys, so a verified pin can be checked from it
+my @listed = $cfg.configured;
+ok @listed.elems == 1 && @listed[0].keys.elems == 1, 'configured() carries the publisher keys';
+$copy.add('prompts/identity.md').spurt(fixture('example.test/helper').add('prompts/identity.md').slurp);
+write-signature-file($copy, sign-digest($d, $priv));
+lives-ok { load-resolved(@listed[0]) }, 'so a verified pin loads from the listing, as trust check does';
+
 my $nokeys = trust-config({ schema => SCHEMA-TRUST-CONFIG, publishers => { 'example.test' => {
     packages => { helper => { path => '/x', version => '1.0.0', digest => 'sha256:' ~ 'a' x 64 } } } } });
 throws-like { $nokeys.check }, X::Do321::Trust, message => /'no keys'/, 'a verified pin with no keys is a configuration error';

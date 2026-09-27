@@ -23,15 +23,24 @@ records.
 
 ## Building
 
-Go 1.26 or later, standard library only.
+The runtime is written in Raku and ships as one standalone file per
+system, built with Raku++ (`rakupp`, github.com/ash/rakupp), the same way
+`iz4` is. It links no third-party library and needs nothing installed on
+the machine that runs it.
 
 ```
-go build -o 321 .
-go test -race ./...
+rakupp -I lib bin/321 version                              # run from source
+prove --ext .rakutest -e 'rakupp -Ilib' t/                 # the suite
+rakupp -I lib --aot --standalone bin/321 -o dist/321       # one file
+DO321_TEST_BIN=$PWD/dist/321 prove --ext .rakutest -e 'rakupp -Ilib' t/   # the suite against it
 ```
 
-During development invoke the binary by its build path. Nothing here
-installs anything onto `PATH`.
+`.github/workflows/binaries.yml` builds `321-linux-x86_64`,
+`321-linux-aarch64`, `321-macos-universal` and `321-windows-x64.exe` with a
+pinned, checksum-verified Raku++, proves each file runs alone, runs the
+suite against it, and on a `v*` tag publishes them as a GitHub release with
+a `.sha256` beside each. During development invoke the binary by its build
+path. Nothing here installs anything onto `PATH`.
 
 ## Identity
 
@@ -305,7 +314,7 @@ of all of this; the official operator package lives in agents.321.do.
 ## Canonical JSON
 
 Every digest and every cross-language hash uses one canonical form, stated
-in full in `internal/protocol/canonical.go` and pinned by the fixtures under
+in full in `lib/Do321/JSON.rakumod` and pinned by the fixtures under
 `testdata/canonical/`: object members sorted by UTF-8 byte order, no
 whitespace, strings raw UTF-8 except `\"`, `\\`, `\b \f \n \r \t` and
 `\u00xx` for other control characters, integer literals as digits with `-0`
@@ -371,7 +380,7 @@ continuation handle.
     an attempt interrupted before its result object can still be resumed.
   - `X321_CLAUDE_BINARY` names the harness executable for an isolated test
     environment without touching PATH; `testdata/fakeclaude/claude` is a
-    controllable stand-in (`internal/run/claudecode_lifecycle_test.go`).
+    controllable stand-in (`t/08-claudecode.rakutest`).
 - `procedure`: the built-in executor for package procedures. Enforces
   everything by construction because it only performs the operations its
   steps name, each checked against the grants, the workspace boundary and
@@ -382,15 +391,22 @@ continuation handle.
 ## Layout
 
 ```
-schemas/            the canonical protocol documents (JSON Schema 2020-12)
-internal/protocol   Go types, validators, canonical JSON, identity, ULIDs
-internal/digest     package digest and ed25519 signatures
-internal/trust      trust configuration, alias resolution, package loading
-internal/adapter    adapter interface, selection, procedure/fake, claude_code
-internal/run        the runner: grants, attempts, directives, receipts
-internal/wire       the NDJSON machine protocol
-internal/cli        the front door
-testdata/packages   unbranded fixture packages
+schemas/               the canonical protocol documents (JSON Schema 2020-12)
+bin/321                the entry point
+lib/Do321/JSON         parsing, Go-shaped wire encoding, the canonical form, digests
+lib/Do321/Shape        the protocol documents as field tables, in struct order
+lib/Do321/Protocol     names, identity, ULIDs, timestamps, validators, document digests
+lib/Do321/Ed25519      RFC 8032 in plain Raku, pinned to its test vectors
+lib/Do321/Digest       package digest, DIGEST and SIGNATURE files
+lib/Do321/Trust        trust configuration, alias resolution, package loading
+lib/Do321/Async        a cancellation scope and a mailbox (context and channels)
+lib/Do321/Tool         the bounded tool interface, dp, redaction, the execution boundary
+lib/Do321/Adapter      adapter interface, selection, procedure/fake, claude_code
+lib/Do321/Run          the runner: grants, attempts, directives, receipts
+lib/Do321/Wire         the NDJSON machine protocol
+lib/Do321/CLI          the front door
+t/                     the suite; t/lib holds its helpers and the binary seam
+testdata/packages      unbranded fixture packages
 ```
 
 ## Decisions
@@ -403,12 +419,21 @@ testdata/packages   unbranded fixture packages
 - 2026-09-13: The runtime stays in Go. Raku++ (rakupp) was considered for
   building the `321` executable and rejected: it compiles Raku, so it would
   mean rewriting the runtime; Go builds static binaries for every release
-  target from one machine (`CGO_ENABLED=0`), while Raku++ cannot
-  cross-compile, needs glibc 2.38 on Linux and has a proven recipe only for
-  Linux x86_64, macOS and Windows x64; and the runtime's concurrency, child
-  processes, signal handling and signing are where a young, fast-moving
-  compiler is riskiest. Raku++ remains the route for tools written in Raku,
-  such as `iz4`.
+  target from one machine, while Raku++ cannot cross-compile and needs
+  glibc 2.38 on Linux; and the runtime's concurrency, child processes,
+  signal handling and signing are where a young compiler is riskiest.
+- 2026-09-27: Reversed by the owner: the runtime moves from Go to Raku++,
+  so that 321 and iz4 are built the same way and iz4 can install 321
+  beside itself. The port reached parity in one day: every Go test suite
+  ported, the shared fixtures and digests byte-identical, a package signed
+  by either binary verified by the other, a receipt from either continued
+  by the other, `help` and `doctor` byte-identical. Ed25519 is written in
+  plain Raku (Raku++ has none). The concerns of 2026-09-13 were met, each
+  with a recorded workaround: a process promise settles only inside an
+  await, Proc::Async takes no environment (an `env -i` wrapper carries
+  one), a Proc's stdin write blocks until the child exits, and `.lines` on
+  a pipe waits for EOF. The cost stands: one build per system, and the
+  Linux file needs glibc 2.38. The Go tree was removed in the same commit.
 
 ## Intent
 

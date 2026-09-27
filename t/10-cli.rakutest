@@ -8,6 +8,7 @@ use Do321::JSON;
 use Do321::Shape;
 use Do321::Protocol;
 use Do321::Digest;
+use Do321::Ed25519;
 use Do321::Trust;
 use Do321::Wire;
 
@@ -113,6 +114,16 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     ok $rc == 0 && $out.contains('alias helper -> example.test/helper'), 'trust show';
     ($rc, $out) = cli($tp, 'doctor');
     ok $rc == 0 && $out.contains('fake') && $out.contains('enforces:'), 'doctor' or diag $out;
+    # trust check verifies a signed pin (the Go runtime's listing lost the keys and never could)
+    my $signed = copy-fixture('example.test/helper');
+    my ($pub, $priv) = generate-key();
+    my ($d, $) = compute($signed);
+    write-signature-file($signed, sign-digest($d, $priv));
+    my $verified = trust-file({ schema => SCHEMA-TRUST-CONFIG, publishers => { 'example.test' => {
+        keys => [ %( keyId => key-id($pub), publicKey => encode-public-key($pub) ), ],
+        packages => { helper => { path => $signed.Str, version => '1.2.0', digest => $d } } } } });
+    ($rc, $out) = cli($verified, 'trust', 'check');
+    ok $rc == 0 && $out.contains('ok   example.test/helper (verified)'), 'trust check verifies a signed pin' or diag $out;
     my $bad = trust-file({ schema => SCHEMA-TRUST-CONFIG, aliases => { run => 'local/x' } });
     ($rc, $out, my $err) = cli($bad, 'agents');
     ok $rc == EXIT-INTERNAL && $err.contains('reserved'), 'a reserved alias is refused at load';
