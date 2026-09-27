@@ -1,0 +1,188 @@
+# The NDJSON machine protocol, through the real entry point: package on
+# stdin or from a file, directives on stdin, events then one receipt.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Trust;
+use Do321::Wire;
+use Do321::Tool;
+
+my $helper = fixture('local/helper');
+my $loaded = load-path($helper);
+
+sub pkg(Str $objective --> Hash) {
+    doc('WorkPackage', schema => SCHEMA-WORK-PACKAGE, packageId => new-ulid(), issuer => { kind => 'test', id => 't' }, issuedAt => now-stamp(),
+        agent => { id => $loaded.id, digest => $loaded.digest }, placement => PLACEMENT-CLIENT,
+        workspace => { kind => 'none', ownership => 'caller' }, objective => $objective,
+        completion => { conditions => ['done'] }, capabilities => { granted => [] });
+}
+
+sub directive-line(Str $pkg-id, Int $seq, Str $kind, Str $text --> Str) {
+    my %d = doc('WorkDirective', schema => SCHEMA-WORK-DIRECTIVE, directiveId => "w$seq", packageId => $pkg-id, seq => $seq,
+        issuer => { kind => 'test', id => 't' }, issuedAt => now-stamp(), kind => $kind, payload => { text => $text, reason => $text });
+    %d<digest> = directive-digest(%d);
+    to-wire('WorkDirective', %d) ~ "\n";
+}
+
+#| A script for the fake adapter, handed over as a package: the fake reads
+#| DO321_FAKE_SCRIPT when set (a test seam in the CLI).
+sub script-env(@steps --> Hash) {
+    my $f = temp-dir().add('script.json');
+    $f.spurt(encode-json([ |@steps ]));
+    %( DO321_FAKE_SCRIPT => '@' ~ $f.Str );
+}
+
+#| stdout split into decoded frames and their schemas.
+sub frames(Str $out --> List) {
+    my (@objs, @schemas);
+    for $out.lines -> $l {
+        next if $l.trim eq '';
+        my $m = try parse-json($l);
+        flunk "stdout carried a non-JSON line: $l" if $!;
+        @objs.push($m);
+        @schemas.push($m<schema>);
+    }
+    ([ |@objs ], [ |@schemas ]);
+}
+
+sub serve(Str $in, @args, :%env --> List) {
+    my ($rc, $out, $err) = x321('run', '--package-dir', $helper.Str, |@args, :$in, :%env);
+    my ($objs, $schemas) = frames($out);
+    ($rc, $objs, $schemas, $err);
+}
+
+# package on stdin, then directives, then one receipt last
+{
+    my %wp = pkg('steer me');
+    my $in = to-wire('WorkPackage', %wp) ~ "\n" ~ directive-line(%wp<packageId>, 1, DIRECTIVE-STEER, 'left');
+    my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
+    my ($rc, $objs, $schemas, $err) = serve($in, ['--adapter', 'fake'], :env(script-env(@script)));
+    is $rc, EXIT-COMPLETED, 'exit 0' or diag "$err\n{@$schemas.join(',')}";
+    is @$schemas.tail, SCHEMA-RUN-RECEIPT, 'the receipt is last';
+    is @$schemas.grep(* eq SCHEMA-RUN-RECEIPT).elems, 1, 'exactly one receipt';
+    ok @$schemas[0 ..^ *-1].all eq SCHEMA-RUN-EVENT, 'only run events before the receipt';
+    my $last = @$objs.tail;
+    is $last<status>, STATUS-COMPLETED, 'completed';
+    is $last<directives><applied>.join(','), 'w1', 'the directive was applied';
+}
+
+# package from a file with directives on stdin, and --receipt
+{
+    my %wp = pkg('steer me');
+    my $path = temp-dir().add('wp.json');
+    $path.spurt(to-wire('WorkPackage', %wp));
+    my $receipt = temp-dir().add('receipt.json');
+    my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
+    my ($rc, $objs, $schemas, $err) = serve(directive-line(%wp<packageId>, 1, DIRECTIVE-STEER, 'x'),
+        ['--package', $path.Str, '--adapter', 'fake', '--receipt', $receipt.Str], :env(script-env(@script)));
+    ok $rc == EXIT-COMPLETED && @$schemas.tail eq SCHEMA-RUN-RECEIPT, 'the file package runs' or diag $err;
+    my %r = load('RunReceipt', parse-json($receipt.slurp));
+    ok !validate-run-receipt(%r), 'the receipt file is valid' or diag validate-run-receipt(%r).Str;
+}
+
+# a malformed first frame is a protocol error, not a receipt
+{
+    my ($rc, $objs, $schemas) = serve("this is not json\n", []);
+    ok $rc == EXIT-MALFORMED && @$schemas.elems == 1 && @$schemas[0] eq SCHEMA-PROTOCOL-ERROR, 'exit 65 with one protocol error';
+    is @$objs[0]<code>, 'malformed_json', 'malformed_json';
+    ($rc, $objs, $schemas) = serve('{"schema":"work-directive.v1"}' ~ "\n", []);
+    ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'not_a_work_package', 'a directive first is not a package';
+    ($rc, $objs, $schemas) = serve('', []);
+    ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'no_package', 'empty stdin';
+    ($rc, $objs, $schemas) = serve('{"schema":"work-package.v1"}' ~ "\n", []);
+    ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'unidentified_package', 'a package with no id gets no receipt';
+}
+
+# an invalid but identified package gets a denied receipt
+{
+    my %wp = pkg('');
+    my ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", []);
+    ok $rc == EXIT-DENIED && @$objs.tail<status> eq STATUS-DENIED, 'denied receipt';
+}
+
+# a malformed directive line is reported and the run continues
+{
+    my %wp = pkg('go');
+    my $in = to-wire('WorkPackage', %wp) ~ "\n\{not json\n" ~ '{"schema":"run-event.v1"}' ~ "\n" ~ directive-line(%wp<packageId>, 1, DIRECTIVE-STEER, 'ok');
+    my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
+    my ($rc, $objs, $schemas) = serve($in, ['--adapter', 'fake'], :env(script-env(@script)));
+    is $rc, EXIT-COMPLETED, 'the run completes';
+    my @errs = @$objs.grep({ .<schema> eq SCHEMA-PROTOCOL-ERROR });
+    is @errs.elems, 2, 'two protocol errors';
+    ok @errs.all<line>.defined, 'each names its line';
+}
+
+# stdin closing is not a stop
+{
+    my %wp = pkg('go');
+    my @script = %( kind => 'sleep', duration => '30ms' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
+    my ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", ['--adapter', 'fake'], :env(script-env(@script)));
+    ok $rc == EXIT-COMPLETED && @$objs.tail<status> eq STATUS-COMPLETED, 'EOF does not stop the run';
+}
+
+# exit codes follow status
+# Raku++ auto-quotes even a parenthesised constant before =>, so pairs are built by hand
+for (STATUS-COMPLETED, 0, STATUS-NO-CHANGE, 0, STATUS-BLOCKED, 2, STATUS-STOPPED, 3, STATUS-FAILED, 4, STATUS-DENIED, 5).rotor(2) -> ($s, $want) {
+    is exit-for($s), $want, "$s exits $want";
+}
+
+# an unloadable agent yields a denied receipt naming the package
+{
+    my %wp = pkg('go'); %wp<agent><id> = 'example.test/nobody';
+    my $trust = temp-dir().add('trust.json');
+    $trust.spurt('{"schema":"trust-config.v1"}');
+    my ($rc, $out) = x321('run', '--package', '-', :in(to-wire('WorkPackage', %wp) ~ "\n"), :env({ X321_TRUST => $trust.Str }));
+    my ($objs) = frames($out);
+    ok $rc == EXIT-DENIED && @$objs.tail<status> eq STATUS-DENIED && @$objs.tail<packageId> eq %wp<packageId>, 'denied, naming the package';
+}
+
+# continue from a receipt file
+{
+    my %wp = pkg('ask me');
+    my $first = temp-dir().add('r1.json');
+    my ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", ['--adapter', 'fake', '--receipt', $first.Str],
+        :env(script-env([ %( kind => 'blocked', question => 'which file?' ), ])));
+    is $rc, EXIT-BLOCKED, 'the first run is blocked';
+    my $in = to-wire('WorkPackage', %wp) ~ "\n" ~ directive-line(%wp<packageId>, 1, DIRECTIVE-CLARIFY, 'calc.go');
+    my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'answered' );
+    ($rc, $objs) = serve($in, ['--adapter', 'fake', '--continue', $first.Str], :env(script-env(@script)));
+    is $rc, EXIT-COMPLETED, 'the continuation completes';
+    my $cont = @$objs.tail<continues>;
+    ok $cont.defined && $cont<attempts> == 1, 'the continuation link' or diag @$objs.tail<continues>.raku;
+    ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", ['--continue', temp-dir().add('missing.json').Str]);
+    ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'continue_unreadable', 'an unreadable continuation is a protocol error';
+}
+
+# stop arrives even when stdout is not drained, and the receipt file is still written
+{
+    my %wp = pkg('chatty');
+    my @steps = |(%( kind => 'emit', text => 'noise' ) xx (EVENT-BUFFER + 500)), %( kind => 'await_directive' );
+    my $dir = temp-dir();
+    my $outfile = $dir.add('stdout');
+    my $receipt = $dir.add('receipt.json');
+    my %env = %*ENV, |script-env(@steps);
+    # Under Raku++ a Proc's stdin write blocks until the child exits, so the
+    # runtime is driven through Proc::Async; its stdout goes through a shell
+    # pipeline whose reader stays away for four seconds, so the buffer fills
+    # and the writer blocks, which is the situation the stop must survive.
+    my sub q(Str $s) { "'" ~ $s.subst("'", "'\\''", :g) ~ "'" }
+    my @cmd = |runtime-command().map(*.Str), 'run', '--package', '-', '--package-dir', $helper.Str, '--adapter', 'fake', '--receipt', $receipt.Str;
+    my $shell = @cmd.map(&q).join(' ') ~ " | (sleep 4; cat > {q($outfile.Str)}); exit " ~ Q[${PIPESTATUS[0]}];
+    my $proc = Proc::Async.new(|spawn-argv('bash', ['-c', $shell], %env), :w);
+    $proc.stdout.tap({ }); $proc.stderr.tap({ });
+    my $started = $proc.start;
+    await $proc.print(to-wire('WorkPackage', %wp) ~ "\n");
+    sleep 2.5;   # the runtime is up and blocked on its full stdout by now
+    await $proc.print(directive-line(%wp<packageId>, 7, DIRECTIVE-STOP, 'stop now'));
+    my $result = try await $started;
+    is $result.defined ?? $result.exitcode !! -1, EXIT-STOPPED, 'exit 3';
+    ok $receipt.f, 'the receipt file is written even when stdout is slow';
+    my %r = load('RunReceipt', parse-json($receipt.slurp));
+    ok %r<status> eq STATUS-STOPPED && %r<events><coalesced> > 0, 'a stopped receipt with coalesced events' or diag %r<events>.raku;
+    is %r<directives><gaps>.elems, 1, 'stop bypassed the gap';
+}
+
+done-testing;

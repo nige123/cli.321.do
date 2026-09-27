@@ -1,0 +1,10 @@
+#!/usr/bin/env raku
+# 321 - the harness-agnostic agent runtime.  Arguments are passed through
+# untouched: the CLI parses them itself, so MAIN is not used.
+use Do321::Wire;
+use Do321::CLI;
+
+# DO321_INTERACTIVE=1 is a test seam: it treats stdin as a terminal so the
+# suite can exercise the interactive operator path without one.
+my $interactive = $*IN.t || so %*ENV<DO321_INTERACTIVE>;
+exit cli-main(Env.new(:stdin(LineSource.new(:handle($*IN))), :stdout($*OUT), :stderr($*ERR), :args(@*ARGS), :$interactive, :signals));

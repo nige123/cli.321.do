@@ -1,0 +1,233 @@
+# The front door, through the real entry point: usage, standalone
+# requests, aliases, grants and policy, inspection, and the operator
+# fixture with the fake engine.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+
+sub trust-file(%cfg --> IO::Path) {
+    my $p = temp-dir().add('trust.json');
+    $p.spurt(to-wire('TrustConfig', load('TrustConfig', %cfg)));
+    $p;
+}
+
+sub dev-trust(Bool :$prefer-fake = True --> IO::Path) {
+    my $dir = fixture('example.test/helper');
+    trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { helper => 'example.test/helper' },
+        policy => { adapters => { preferred => $prefer-fake ?? ['fake'] !! [] } } });
+}
+
+#| Run the CLI with a fresh home; returns (code, stdout, stderr, home).
+sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
+    my $home = temp-dir();
+    my %e = X321_HOME => $home.Str, |%env;
+    my ($rc, $out, $err) = x321(|($trust.defined ?? ('--trust', $trust.Str) !! ()), |@args, :env(%e), :$in);
+    ($rc, $out, $err, $home);
+}
+
+# ---- usage and reserved words ------------------------------------------------
+{
+    my ($rc, $out) = cli(IO::Path, 'help');
+    ok $rc == 0 && $out.contains('321 <agent> <request...>'), 'help';
+    ($rc, $out, my $err) = cli(IO::Path);
+    is $rc, EXIT-USAGE, 'no args is a usage error';
+    ($rc, $out, $err) = cli(IO::Path, '--bogus', 'helper', 'x');
+    ok $rc == EXIT-USAGE && $err.contains('unknown option'), 'an unknown option';
+    ($rc, $out) = cli(IO::Path, 'version');
+    ok $rc == 0 && $out.starts-with('321 '), 'version';
+}
+
+# ---- a standalone request runs a procedure through the same path -----------
+{
+    my ($rc, $out, $err, $home) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, '--done', 'a note exists', 'helper', 'note:', 'remember', 'the', 'milk; rm -rf /');
+    is $rc, 0, 'exit 0' or diag "$out\n$err";
+    ok $out.contains('COMPLETED') && $out.contains('✓ 1.'), 'the transcript' or diag $out;
+    my @runs = $home.add('runs').dir;
+    is @runs.elems, 1, 'one run directory';
+    my %wp = load('WorkPackage', parse-json(@runs[0].add('work-package.json').slurp));
+    is %wp<objective>, 'note: remember the milk; rm -rf /', 'the request is carried verbatim as text, never interpreted';
+    ok %wp<issuer><kind> eq 'local' && !%wp<approval>.defined, 'a standalone package is issued locally and carries no approval';
+    ok @runs[0].add('receipt.json').f, 'the receipt is written';
+    ok @runs[0].add('instruction-history.ndjson').f, 'the history is written';
+    my %r = load('RunReceipt', parse-json(@runs[0].add('receipt.json').slurp));
+    ok !validate-run-receipt(%r), 'and the receipt file validates' or diag validate-run-receipt(%r).Str;
+}
+
+# ---- alias resolution through the trust file -------------------------------------
+{
+    my $tp = dev-trust();
+    my ($rc, $out, $err) = cli($tp, 'helper', 'note: via alias');
+    is $rc, 0, 'an alias runs' or diag "$out\n$err";
+    ok $err.contains('administrator-pinned'), 'the trust label is shown';
+    ($rc, $out, $err) = cli($tp, 'example.test/helper', 'note: via canonical id');
+    is $rc, 0, 'a canonical id runs' or diag $err;
+    ($rc, $out, $err) = cli($tp, 'stranger', 'note: x');
+    ok $rc == EXIT-DENIED && $err.contains('no agent'), 'an unknown agent is denied';
+    ($rc, $out, $err) = cli($tp, 'helper');
+    ok $rc == EXIT-USAGE && $err.contains('what should helper do'), 'an empty request is a usage error';
+}
+
+# ---- a package dir must match the named agent ------------------------------------
+{
+    my ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'other', 'note: x');
+    ok $rc == EXIT-DENIED && $err.contains('is local/helper, not other'), 'a mismatched name is refused';
+    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('example.test/helper').Str, 'helper', 'note: x');
+    ok $rc == EXIT-DENIED && $err.contains('declares publisher'), 'a self-declared publisher does not load by path';
+}
+
+# ---- grants stay inside package and policy -------------------------------------
+{
+    my $tp = dev-trust();
+    my ($rc, $out, $err) = cli($tp, '--grant', 'deploy.invoke', 'helper', 'note: x');
+    ok $rc == EXIT-USAGE && $err.contains('does not list it as optional'), 'a grant the package does not offer is refused';
+    my $dir = fixture('example.test/helper');
+    my $strict = trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { helper => 'example.test/helper' }, policy => { capabilityCeiling => [CAP-MODEL-TEXT] } });
+    ($rc, $out, $err) = cli($strict, 'helper', 'note: x');
+    ok $rc == EXIT-USAGE && $err.contains('local policy does not allow repo.read'), 'the policy ceiling refuses up front';
+}
+
+# ---- inspection commands -----------------------------------------------------------
+{
+    my $tp = dev-trust();
+    my ($rc, $out) = cli($tp, 'agents');
+    ok $rc == 0 && $out.contains('example.test/helper') && $out.contains('development') && $out.contains('alias helper'), 'agents' or diag $out;
+    ($rc, $out) = cli($tp, 'packages', 'validate', fixture('example.test/helper').Str);
+    ok $rc == 0 && $out.starts-with('OK example.test/helper 1.2.0 sha256:'), 'packages validate' or diag $out;
+    ($rc, $out) = cli($tp, 'packages', 'digest', fixture('local/helper').Str);
+    ok $rc == 0 && $out.starts-with('sha256:') && $out.contains('files)'), 'packages digest';
+    ($rc, $out) = cli($tp, 'packages', 'show', 'helper');
+    ok $rc == 0 && $out.contains('administrator-pinned') && $out.contains('procedures:'), 'packages show' or diag $out;
+    ($rc, $out) = cli($tp, 'trust', 'check');
+    ok $rc == 0 && $out.contains('ok   example.test/helper'), 'trust check' or diag $out;
+    ($rc, $out) = cli($tp, 'trust', 'show');
+    ok $rc == 0 && $out.contains('alias helper -> example.test/helper'), 'trust show';
+    ($rc, $out) = cli($tp, 'doctor');
+    ok $rc == 0 && $out.contains('fake') && $out.contains('enforces:'), 'doctor' or diag $out;
+    my $bad = trust-file({ schema => SCHEMA-TRUST-CONFIG, aliases => { run => 'local/x' } });
+    ($rc, $out, my $err) = cli($bad, 'agents');
+    ok $rc == EXIT-INTERNAL && $err.contains('reserved'), 'a reserved alias is refused at load';
+    ($rc, $out, $err) = cli(IO::Path, 'run', '--nope');
+    ok $rc == EXIT-USAGE && $err.contains('unknown option'), 'run parses its options';
+}
+
+# ---- shell does not imply network, and the grant must be explicit ---------------
+{
+    my $tp = dev-trust(:!prefer-fake);   # the only visible adapter is claude_code, which cannot deny the network
+    my %env = X321_CLAUDE_BINARY => fake-claude().Str, FAKE_CLAUDE_MODE => 'complete';
+    my ($rc, $out, $err) = cli($tp, '--grant', 'shell.run', 'helper', 'build something', :%env);
+    ok $rc == EXIT-DENIED && $out.contains('network_deny'), 'a shell without a network grant is denied naming network_deny' or diag "$out\n$err";
+    ($rc, $out, $err) = cli($tp, '--grant', 'shell.run', '--network', 'open', '--adapter', 'claude_code', 'helper', 'build something', :%env);
+    is $rc, 0, 'an explicit open network grant runs (on the fake harness)' or diag "$out\n$err";
+    ($rc, $out, $err) = cli($tp, '--network', 'wide', 'helper', 'build something', :%env);
+    ok $rc == EXIT-USAGE && $err.contains('--network must be'), 'a bad network value';
+}
+
+# ---- tool bindings: the unbranded operator fixture through the CLI ----------------
+sub operator-trust(--> IO::Path) {
+    my $dir = fixture('example.test/operator');
+    trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { operator => { path => $dir.Str, version => '0.1.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { op => 'example.test/operator' } });
+}
+
+sub operator-env(Bool $bound, *%extra --> List) {
+    my $log = temp-dir().add('engine.log');
+    my %env = |%extra;
+    if $bound { %env<DP_BIN> = fake-engine().Str; %env<FAKE_ENGINE_LOG> = $log.Str }
+    ($%env, $log);
+}
+
+{
+    my $tp = operator-trust();
+    my ($env, $log) = operator-env(True);
+    my ($rc, $out, $err) = cli($tp, 'op', 'status', :env(%$env));
+    is $rc, 0, 'status by alias' or diag "$out\n$err";
+    ok $out.contains('COMPLETED') && $out.contains('Cost: none (no model was used)') && $out.contains('alpha.web running'), 'the transcript' or diag $out;
+    ($rc, $out, $err) = cli($tp, 'example.test/operator', 'status', 'alpha.web', 'live', :env(%$env));
+    ok $rc == 0 && $out.contains('Tool: dp status status alpha.web live --json (ok)'), 'status by canonical id' or diag $out;
+    is read-lines($log).join('|'), 'status --json|status alpha.web live --json', 'engine invocations';
+}
+
+{
+    my $tp = operator-trust();
+    my ($env, $log) = operator-env(True);
+    my ($rc, $out, $err, $home) = cli($tp, '--non-interactive', 'op', 'plan', 'alpha.web', 'live', 'revision', '0f94b03', :env(%$env));
+    ok $rc == 0 && $out.contains('Proposal: ') && $out.contains('it is a plan, not an approval, and nothing was deployed'), 'plan writes a proposal' or diag "$out\n$err";
+    my @runs = $home.add('runs').dir.sort;
+    my $pfile = @runs.tail.add('proposal.json');
+    ok $pfile.f, 'proposal.json is written beside the receipt';
+    my %p = load('DeploymentProposal', parse-json($pfile.slurp));
+    ok %p<status> eq 'planned' && %p<revision><sha> eq '0f94b03', 'the proposal';
+    ok !validate-deployment-proposal(%p), 'and it validates';
+    ($rc, $out) = cli($tp, '--non-interactive', 'op', 'plan', 'live', :env(%$env));
+    ok $rc == EXIT-BLOCKED && $out.contains('Which service'), 'ambiguity asks non-interactively';
+}
+
+{
+    my $tp = operator-trust();
+    my ($env, $log) = operator-env(True);
+    my ($rc, $out) = cli($tp, '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', 'revision', '0f94b03', :env(%$env));
+    is $rc, EXIT-BLOCKED, 'go is prepared, not executed, even with a grant';
+    for 'BLOCKED', 'execution is unavailable in this development slice', 'nothing was deployed', 'Tool: dp execute  (not performed)', 'Proposal: ' -> $want {
+        ok $out.contains($want), "the transcript carries '$want'" or diag $out;
+    }
+    ok !$out.lc.contains('deployed successfully'), 'it never reads as deployed';
+    my @lines = read-lines($log);
+    ok @lines.elems == 1 && @lines[0].starts-with('plan '), 'only plan reached the engine';
+}
+
+# operator go executes under assumed approval when execution is enabled and a person is at the terminal
+{
+    my $tp = operator-trust();
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live', DO321_INTERACTIVE => '1');
+    my ($rc, $out, $err, $home) = cli($tp, 'op', 'go', 'alpha.web', 'live', :env(%$env));
+    is $rc, 0, 'the go completes' or diag "$out\n$err";
+    ok $err.contains('operator approval assumed'), 'the assumed-approval note is on stderr' or diag $err;
+    ok $out.contains('COMPLETED') && $out.contains('Deployed alpha.web successfully'), 'and the transcript says it was deployed' or diag $out;
+    ok !$out.contains('nothing was deployed'), 'it does not read as prepared-not-executed';
+    ok read-lines($log).grep(*.starts-with('go ')), 'the engine\'s go ran';
+    my @runs = $home.add('runs').dir;
+    is @runs.elems, 1, 'exactly one go run dir';
+    my %r = load('RunReceipt', parse-json(@runs[0].add('receipt.json').slurp));
+    ok %r<evidence><externalAction>.defined && %r<evidence><externalAction><approvalRef>.starts-with('operator/'), 'an external action under an operator/ approval';
+    ok %r<evidence><approvalCheck>.defined && %r<evidence><approvalCheck><operationMatched>, 'the approval check matched the fresh plan';
+}
+
+# a non-interactive go does not self-approve
+{
+    my $tp = operator-trust();
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live');
+    my ($rc, $out) = cli($tp, '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', :env(%$env));
+    is $rc, EXIT-BLOCKED, 'blocked for want of an approval';
+    ok $out.contains('approval'), 'with a needs-approval message';
+    ok !$out.lc.contains('deployed successfully'), 'never reads as deployed';
+    ok !read-lines($log).grep(*.starts-with('go ')), 'the engine\'s go did not run';
+}
+
+{
+    my $tp = operator-trust();
+    my ($env, $) = operator-env(True);
+    my ($rc, $out) = cli($tp, '--non-interactive', 'op', 'restart', 'alpha.web', :env(%$env));
+    ok $rc == EXIT-BLOCKED && $out.contains('Unsupported request'), 'an unsupported request';
+    ($env, $) = operator-env(False);
+    ($rc, $out) = cli($tp, 'op', 'status', :env(%$env));
+    ok $rc == EXIT-FAILED && $out.contains('DP_BIN'), 'an unbound engine fails naming DP_BIN' or diag $out;
+}
+
+# doctor lists the tool binding
+{
+    my ($rc, $out) = cli(IO::Path, 'doctor', :env({ DP_BIN => '/opt/engine/bin/dp' }));
+    ok $out.contains('dp: /opt/engine/bin/dp; execute unavailable; operations: status (deploy.read), plan (deploy.plan), execute (deploy.invoke)'), 'doctor lists the tool binding' or diag $out;
+}
+
+done-testing;
