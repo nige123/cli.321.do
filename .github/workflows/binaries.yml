@@ -104,11 +104,18 @@ jobs:
       - name: smoke test
         run: |
           bin="$PWD/dist/${{ matrix.exe }}"
-          "$bin" version
-          "$bin" doctor
-          "$bin" packages validate testdata/packages/local/helper | grep -q '^OK local/helper'
+          # Each command's output is printed before it is checked, so a
+          # failure here says which command failed and what it said.
+          echo "== version";  "$bin" version
+          echo "== doctor";   "$bin" doctor
+          echo "== validate"
+          out=$("$bin" packages validate testdata/packages/local/helper); echo "$out"
+          grep -q '^OK local/helper' <<<"$out"
+          echo "== run"
           home=$(mktemp -d)
-          X321_HOME="$home" "$bin" --package-dir testdata/packages/local/helper --done 'a note exists' --non-interactive helper note: smoke test | grep -q COMPLETED
+          out=$(X321_HOME="$home" "$bin" --package-dir testdata/packages/local/helper --done 'a note exists' --non-interactive helper note: smoke test); echo "$out"
+          grep -q COMPLETED <<<"$out"
+          echo "== receipt"; ls -R "$home"
           test -f "$home"/runs/*/receipt.json
 
       - name: full test suite against the file
