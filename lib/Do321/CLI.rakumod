@@ -42,6 +42,7 @@ constant USAGE = q:to/END/;
 
       321 <agent> <request...>            ask a configured agent to do something here
       321 <publisher>/<agent> <request>   the same, by canonical id
+      321 <agent> -                       the request from standard input, to its end
 
     Options before the agent:
       --workspace <dir>       where the work happens (default: the enclosing git repo, else none)
@@ -71,6 +72,7 @@ constant USAGE = q:to/END/;
       321 agents                    configured packages, their trust and aliases
       321 packages validate <dir>   check a package directory against agent-package.v1
       321 packages digest <dir> [--write]
+      321 packages builtin prompt   write the built-in prompt-only package under ~/.321/packages and print its path
       321 trust show | check
       321 doctor [--json]           installed adapters and what each actually enforces, and bound tools
 
@@ -280,10 +282,91 @@ sub cmd-agents(Env $env --> Int) {
     0;
 }
 
+#| The packages built into the runtime, written out on request so a
+#| caller with only the binary can use them by path.  `prompt` is the
+#| prompt-only package (packages/prompt in the repository).
+sub builtin-packages(--> Hash) {
+    %( prompt => %(
+        'agent.json' => q:to/JSON/,
+            {
+              "schema": "agent-package.v1",
+              "id": "local/prompt",
+              "name": "prompt",
+              "displayName": "Prompt",
+              "version": "0.1.0",
+              "publisher": { "domain": "" },
+              "licence": { "spdx": "Apache-2.0" },
+              "identity": {
+                "role": "a reader that answers one question about the files it can see, in text, and changes nothing",
+                "tone": "direct"
+              },
+              "prompts": ["prompts/identity.md"],
+              "capabilities": {
+                "required": ["repo.read", "model.text"],
+                "optional": [],
+                "denied": ["repo.write", "files.write", "shell.run", "net.fetch", "deploy.invoke"]
+              },
+              "harness": { "requires": ["tool_allowlist", "structured_output"] },
+              "placement": { "allowed": ["client", "server"] },
+              "outputSchemas": { "default": "schemas/outcome.json" }
+            }
+            JSON
+        'prompts/identity.md' => q:to/MD/,
+            You answer the question in the work below by reading the repository you are given, and you reply in text only.
+
+            You change nothing: no file is created, edited or deleted, and no command is run. If the question cannot be answered from what you can see, say what is missing instead of guessing.
+
+            Put the whole answer in `summary`. When the work asks for a file's content, `summary` is that content and nothing else.
+            MD
+        'schemas/outcome.json' => q:to/JSON/,
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "summary"],
+              "properties": {
+                "status": {"type": "string", "enum": ["changed", "no_change", "blocked"]},
+                "summary": {"type": "string", "description": "The whole answer, as text."},
+                "blocked_on": {"type": "string", "description": "When status is blocked, the single thing that is missing."},
+                "conditions": {"type": "array",
+                  "description": "One element per done condition, in the order they were given.",
+                  "items": {"type": "object", "required": ["met"],
+                    "properties": {"met": {"type": "boolean"}, "proof": {"type": "string"}}}}
+              }
+            }
+            JSON
+    ) );
+}
+
+#| Write a built-in package under $home/packages/<name> if it is not
+#| already there, word for word, with its DIGEST; returns the directory.
+sub materialise-builtin(Str $name, IO::Path $home --> IO::Path) is export {
+    my %files = builtin-packages(){$name} // die "no built-in package named $name";
+    my $dir = $home.add('packages').add($name);
+    my $same = $dir.d && %files.kv.map(-> $rel, $text { $dir.add($rel).f && $dir.add($rel).slurp eq $text }).all.so;
+    unless $same {
+        $dir.mkdir;
+        for %files.kv -> $rel, $text {
+            my $f = $dir.add($rel);
+            $f.parent.mkdir;
+            $f.spurt($text);
+        }
+        write-digest-file($dir, compute($dir)[0]);
+    }
+    $dir;
+}
+
 sub cmd-packages(Env $env, @args --> Int) {
-    my $usage = 'usage: 321 packages validate <dir> | digest <dir> [--write] | show <id>';
+    my $usage = 'usage: 321 packages validate <dir> | digest <dir> [--write] | show <id> | builtin <name>';
     if @args < 2 { $env.stderr.say($usage); return EXIT-USAGE }
     given @args[0] {
+        when 'builtin' {
+            my $dir = try materialise-builtin(@args[1], home-of($env));
+            if $! { $env.stderr.say("321: {$!.message}"); return EXIT-USAGE }
+            my ($m, $d) = try validate-package($dir);
+            if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
+            $env.stdout.say($dir.Str);
+            return 0;
+        }
         when 'validate' {
             my ($m, $d) = try validate-package(@args[1].IO);
             if $! { $env.stdout.say("INVALID: {$!.message}"); return EXIT-FAILED }
@@ -690,6 +773,15 @@ sub render-receipt($w, %r, IO::Path $run-dir) {
 #| here is a blanket approval.
 sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     my $request = @words.join(' ').trim;
+    # a lone "-" takes the request from standard input, to the end, so a
+    # caller can hand over a long prompt without argv or a shell; steering
+    # is then off, since stdin has been consumed
+    if @words == 1 && @words[0] eq '-' {
+        my @lines;
+        loop { my $l = $env.stdin.next; last without $l; @lines.push($l) }
+        $request = @lines.join("\n").trim;
+        $g.non-interactive = True;
+    }
     if $request eq '' {
         $env.stderr.say("321: what should $name do? Give the request after the agent name.");
         return EXIT-USAGE;

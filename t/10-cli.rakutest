@@ -62,6 +62,15 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     ok !validate-run-receipt(%r), 'and the receipt file validates' or diag validate-run-receipt(%r).Str;
 }
 
+# a lone - takes the request from stdin
+{
+    my ($rc, $out, $err, $home) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', '-', :in("note: from stdin\nsecond line\n"));
+    is $rc, 0, 'the request comes from stdin' or diag "$out\n$err";
+    my @runs = $home.add('runs').dir;
+    my %wp = load('WorkPackage', parse-json(@runs[0].add('work-package.json').slurp));
+    is %wp<objective>, "note: from stdin\nsecond line", 'kept verbatim, newlines included';
+}
+
 # ---- alias resolution through the trust file -------------------------------------
 {
     my $tp = dev-trust();
