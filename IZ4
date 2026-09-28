@@ -75,10 +75,15 @@ The runtime never understands or mutates Track, Step, Entry or Action.
 Correlation references are opaque and echoed verbatim.
 
 INVARIANT 6
-Agent identity is publisher domain plus agent name. Version and content digest
-are separate fields, never part of the identity. A manifest's domain is a claim;
-official or verified status comes only from administrator-pinned trust
+Agent identity is publisher domain plus agent name, and it stays the same while
+the model, harness, prompts and skills beneath it change. Version and content
+digest are separate fields, never part of the identity. A manifest's domain is a
+claim; official or verified status comes only from administrator-pinned trust
 configuration and, where present, a verifying signature.
+
+BECAUSE
+People and work systems delegate to an agent by name and build trust in it over
+time; that trust must survive the model underneath being upgraded or replaced.
 
 INVARIANT 7
 Official and user agent packages use identical runtime interfaces. No official
