@@ -136,7 +136,9 @@ define 'TrustPublisher', (keys => 'list:Key?', packages => 'map:Pin?');
 define 'Key', (keyId => 'str', publicKey => 'str', since => 'str?', note => 'str?');
 define 'Pin', (path => 'str', version => 'str', digest => 'str', trust => 'str?');
 define 'LocalPin', (path => 'str');
-define 'Policy', (capabilityCeiling => 'strs?', limits => 'obj:Limits', adapters => 'obj:AdapterPolicy');
+define 'Policy', (capabilityCeiling => 'strs?', limits => 'obj:Limits', adapters => 'obj:AdapterPolicy',
+    standingApprovals => 'list:StandingApproval?');
+define 'StandingApproval', (action => 'str', targets => 'strs', approvedBy => 'str', note => 'str?');
 define 'AdapterPolicy', (preferred => 'strs?', denied => 'strs?');
 
 # the instruction history line

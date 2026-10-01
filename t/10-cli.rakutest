@@ -153,11 +153,11 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
 }
 
 # ---- tool bindings: the unbranded operator fixture through the CLI ----------------
-sub operator-trust(--> IO::Path) {
+sub operator-trust(:%policy --> IO::Path) {
     my $dir = fixture('example.test/operator');
     trust-file({ schema => SCHEMA-TRUST-CONFIG,
         publishers => { 'example.test' => { packages => { operator => { path => $dir.Str, version => '0.1.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
-        aliases => { op => 'example.test/operator' } });
+        aliases => { op => 'example.test/operator' }, |(%policy ?? (policy => %policy) !! ()) });
 }
 
 sub operator-env(Bool $bound, *%extra --> List) {
@@ -232,6 +232,58 @@ sub operator-env(Bool $bound, *%extra --> List) {
     ok $out.contains('approval'), 'with a needs-approval message';
     ok !$out.lc.contains('deployed successfully'), 'never reads as deployed';
     ok !read-lines($log).grep(*.starts-with('go ')), 'the engine\'s go did not run';
+}
+
+# an unattended go deploys under a standing approval the operator wrote into local policy
+{
+    my $tp = operator-trust(policy => { standingApprovals => [ %( action => 'deploy', targets => ['alpha.web@live'], approvedBy => 'nige' ), ] });
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live');
+    my ($rc, $out, $err, $home) = cli($tp, '--non-interactive', 'op', 'go', 'alpha.web', 'live', :env(%$env));
+    is $rc, 0, 'the unattended go completes' or diag "$out\n$err";
+    ok $err.contains('standing approval') && $err.contains('nige'), 'the note names the standing approval and who gave it' or diag $err;
+    ok $out.contains('Deployed alpha.web successfully'), 'and it was deployed' or diag $out;
+    my @runs = $home.add('runs').dir;
+    my %r = load('RunReceipt', parse-json(@runs[0].add('receipt.json').slurp));
+    ok %r<evidence><externalAction>.defined && %r<evidence><externalAction><approvalRef>.starts-with('standing/'), 'the external action is under a standing/ approval';
+    ok %r<evidence><approvalCheck>.defined && %r<evidence><approvalCheck><operationMatched>, 'the approval still had to match the fresh plan';
+    my %wp = parse-json(@runs[0].add('work-package.json').slurp);
+    ok %wp<approval><approvedBy>.contains('nige') && %wp<approval><approvedBy>.contains('standing approval'), 'the package records who approved, and how';
+}
+
+# a wildcard service matches; a standing approval for another target or service does not
+{
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live');
+    my $any = operator-trust(policy => { standingApprovals => [ %( action => 'deploy', targets => ['*@live'], approvedBy => 'nige' ), ] });
+    my ($rc, $out, $err) = cli($any, '--non-interactive', 'op', 'go', 'alpha.web', 'live', :env(%$env));
+    is $rc, 0, '*@live covers alpha.web on live' or diag "$out\n$err";
+
+    for ['alpha.web@dev'], ['beta.web@live'] -> @targets {
+        my ($env2, $log2) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live');
+        my $tp = operator-trust(policy => { standingApprovals => [ %( action => 'deploy', targets => @targets, approvedBy => 'nige' ), ] });
+        ($rc, $out, $err) = cli($tp, '--non-interactive', 'op', 'go', 'alpha.web', 'live', :env(%$env2));
+        ok $rc == EXIT-FAILED && $out.contains('deploy.invoke'), "a standing approval for {@targets[0]} does not cover alpha.web on live, so deploy.invoke is never granted" or diag $out;
+        ok !read-lines($log2).grep(*.starts-with('go ')), "and the engine's go did not run";
+    }
+}
+
+# a standing approval is still bounded by the capability ceiling
+{
+    my $tp = operator-trust(policy => { capabilityCeiling => ['deploy.read', 'deploy.plan'],
+        standingApprovals => [ %( action => 'deploy', targets => ['*@*'], approvedBy => 'nige' ), ] });
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live');
+    my ($rc, $out) = cli($tp, '--non-interactive', 'op', 'go', 'alpha.web', 'live', :env(%$env));
+    ok $rc == EXIT-FAILED && $out.contains('deploy.invoke'), 'a ceiling without deploy.invoke still refuses' or diag $out;
+    ok !read-lines($log).grep(*.starts-with('go ')), "the engine's go did not run";
+}
+
+# malformed standing approvals are refused when the trust file loads
+{
+    for { action => 'restart', targets => ['*@live'], approvedBy => 'nige' }, { action => 'deploy', targets => ['alpha.web'], approvedBy => 'nige' },
+        { action => 'deploy', targets => ['*@live'], approvedBy => '' } -> %bad {
+        my $tp = operator-trust(policy => { standingApprovals => [ %bad, ] });
+        my ($rc, $out, $err) = cli($tp, '--non-interactive', 'op', 'status', :env(%(operator-env(True)[0])));
+        ok $rc != 0 && $err.contains('standingApprovals'), "refused: {%bad.raku}" or diag "$rc $out $err";
+    }
 }
 
 {

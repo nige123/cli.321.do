@@ -25,7 +25,20 @@
       "properties": {
         "capabilityCeiling": { "type": "array", "items": { "type": "string" } },
         "limits": { "type": "object", "additionalProperties": false, "properties": { "maxUsd": { "type": "number" }, "maxTurns": { "type": "integer" }, "timeout": { "type": "string" }, "network": { "enum": ["none", "provider_only", "open"] } } },
-        "adapters": { "type": "object", "additionalProperties": false, "properties": { "preferred": { "type": "array", "items": { "type": "string" } }, "denied": { "type": "array", "items": { "type": "string" } } } }
+        "adapters": { "type": "object", "additionalProperties": false, "properties": { "preferred": { "type": "array", "items": { "type": "string" } }, "denied": { "type": "array", "items": { "type": "string" } } } },
+        "standingApprovals": {
+          "description": "Deployments an unattended `321 <agent> go` may run without a person at the terminal. The administrator who writes this file is the approver; each approval is still bound to the exact fresh plan.",
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["action", "targets", "approvedBy"],
+            "properties": {
+              "action": { "const": "deploy" },
+              "targets": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^(\\*|[a-z0-9][a-z0-9.-]*)@(\\*|[a-z0-9][a-z0-9_-]*)$" } },
+              "approvedBy": { "type": "string", "minLength": 1 },
+              "note": { "type": "string" }
+            }
+          }
+        }
       }
     }
   }

@@ -89,6 +89,15 @@ class Config is export {
             trust-error("local package \"$name\" is not an agent name") unless is-agent-name($name);
             trust-error("local package $name needs a path") if %l<path> eq '';
         }
+        for @((self.policy // {})<standingApprovals> // []).kv -> $i, %sa {
+            trust-error("policy.standingApprovals[$i]: action must be \"deploy\"") unless %sa<action> eq 'deploy';
+            trust-error("policy.standingApprovals[$i]: approvedBy names the person approving") if (%sa<approvedBy> // '').trim eq '';
+            trust-error("policy.standingApprovals[$i]: targets must list at least one service\@target") unless @(%sa<targets> // []);
+            for @(%sa<targets>) -> $t {
+                trust-error("policy.standingApprovals[$i]: \"$t\" is not service\@target (either side may be *)")
+                    unless $t ~~ m:P5/^(\*|[a-z0-9][a-z0-9.-]*)@(\*|[a-z0-9][a-z0-9_-]*)$/;
+            }
+        }
         for self.aliases.sort(*.key) -> (:key($alias), :value($target)) {
             trust-error("alias \"$alias\" is not an agent name") unless is-agent-name($alias);
             trust-error("alias \"$alias\" shadows a reserved command") if is-in($alias, RESERVED);

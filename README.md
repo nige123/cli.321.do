@@ -300,6 +300,28 @@ match its pattern is refused before anything runs.
   since the approved plan. Any of these failing is `approval_mismatch` with
   the reason on the receipt and nothing executed. Changed parameters mean a
   new proposal and a renewed approval.
+- **Who approves a standalone `321 <agent> go`.** A person typing it at a
+  terminal is the approval: the runner plans first, mints an `operator/`
+  approval bound to that plan and grants `deploy.invoke`. Unattended (no
+  terminal, or `--non-interactive`, as when an agent session in another
+  repository deploys its work), nothing is assumed: the go is approved only
+  by a **standing approval** the administrator wrote into local policy,
+  matching the planned `service@target` (either side may be `*`):
+
+  ```json
+  "policy": {
+    "standingApprovals": [
+      { "action": "deploy", "targets": ["*@dev", "*@live"], "approvedBy": "nige" }
+    ]
+  }
+  ```
+
+  The approval it mints carries a `standing/` ref and names the approver
+  ("nige (standing approval in local policy)"), and it is bound to the exact
+  plan like any other. `DP_EXECUTE`, the capability ceiling, the fresh
+  re-plan comparison and the engine's own gates, health check and rollback
+  all still apply. Without a matching standing approval an unattended go is
+  refused with `deploy.invoke` not granted, and nothing reaches the engine.
 - A package that can never read or write files (no `repo.*`, `files.*` or
   `shell.run` capability) is given no workspace, so the repository the
   terminal happens to be in is never reported as evidence of its run.

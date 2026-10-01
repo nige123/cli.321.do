@@ -22,7 +22,7 @@ use Do321::Wire;
 use Do321::Hooks;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.3.2';
+constant VERSION is export = '0.3.3';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
@@ -553,9 +553,16 @@ sub cmd-hooks(Env $env, Global $g, @args --> Int) {
 # remains gated by DP_EXECUTE, and a plan that does not come back
 # `planned` mints no approval at all.  A server-issued package never
 # enters here.
+#
+# Unattended (no terminal, or --non-interactive) there is no person to
+# exercise the authority, so a go is approved only by a standing approval
+# the administrator wrote into local policy (policy.standingApprovals),
+# matching the planned service@target.  The administrator is the
+# approver: the approval names them, carries a standing/ ref, and is
+# bound to the exact plan like any other.  No standing approval, no
+# approval: an agent's own text never grants one.
 
 sub is-operator-deploy-go(Env $env, Global $g, Loaded $agent, Str $request --> Str) {
-    return Str if !$env.interactive || $g.non-interactive;
     return Str unless is-in(CAP-DEPLOY-INVOKE, @($agent.manifest<capabilities><optional> // []));
     my @fields = $request.words;
     return Str unless @fields && @fields[0] eq 'go';
@@ -563,9 +570,9 @@ sub is-operator-deploy-go(Env $env, Global $g, Loaded $agent, Str $request --> S
     @fields.join(' ');
 }
 
-sub mint-operator-approval(%p, Str $by --> Hash) {
+sub mint-operator-approval(%p, Str $by, Str :$kind = 'operator' --> Hash) {
     my %params = approval-params(%p);
-    doc('Approval', proposalRef => 'operator/' ~ %p<proposalId>, approvalRef => 'operator/' ~ new-ulid(), approvedBy => $by,
+    doc('Approval', proposalRef => 'operator/' ~ %p<proposalId>, approvalRef => $kind ~ '/' ~ new-ulid(), approvedBy => $by,
         action => 'deploy', target => %p<service> ~ '@' ~ %p<target>, params => %params, paramsHash => params-hash(%params), proposal => %p);
 }
 
@@ -585,19 +592,45 @@ sub assume-operator-approval(Env $env, Global $g, Config $cfg, Loaded $agent, %w
     my $plan-request = is-operator-deploy-go($env, $g, $agent, $request);
     return Str without $plan-request;
     with $cfg.policy<capabilityCeiling> -> $ceiling { return Str unless is-in(CAP-DEPLOY-INVOKE, @$ceiling) }
+    my $attended = $env.interactive && !$g.non-interactive;
+    return Str unless $attended || @(($cfg.policy // {})<standingApprovals> // []);
     my $proposal = operator-plan($env, $g, $cfg, $agent, $plan-request);
     return Str unless $proposal.defined && $proposal<status> eq 'planned';
-    my $by = %*ENV<USER> // '';
-    my $host = (try qx{hostname}.trim) // '';
-    $by ~= "@$host" if $host ne '';
-    %wp<approval> = mint-operator-approval($proposal, $by);
+    my ($by, $kind, $how);
+    if $attended {
+        $by = %*ENV<USER> // '';
+        my $host = (try qx{hostname}.trim) // '';
+        $by ~= "@$host" if $host ne '';
+        ($kind, $how) = 'operator', 'operator approval assumed (you typed the command)';
+    }
+    else {
+        my $sa = standing-approval-for($cfg, $proposal<service> // '', $proposal<target> // '');
+        return Str without $sa;
+        $by = "{$sa<approvedBy>} (standing approval in local policy)";
+        ($kind, $how) = 'standing', "standing approval in local policy (approved by {$sa<approvedBy>})";
+    }
+    %wp<approval> = mint-operator-approval($proposal, $by, :$kind);
     %wp<capabilities><granted>.push(CAP-DEPLOY-INVOKE) unless is-in(CAP-DEPLOY-INVOKE, %wp<capabilities><granted>);
     if validate-work-package(%wp) {
         %wp<approval>:delete;
         return Str;
     }
     my $sha = ($proposal<revision> // {})<sha>; $sha = '' unless $sha ~~ Str;
-    "operator approval assumed (you typed the command): deploy {$proposal<service>} to {$proposal<target>} at {short-sha($sha)} — execution proceeds only where DP_EXECUTE enables it";
+    "$how: deploy {$proposal<service>} to {$proposal<target>} at {short-sha($sha)} — execution proceeds only where DP_EXECUTE enables it";
+}
+
+#| The first standing approval in local policy that covers service@target
+#| (either side of a pattern may be *), or Hash when none does.
+sub standing-approval-for(Config $cfg, Str $service, Str $target --> Hash) {
+    return Hash if $service eq '' || $target eq '';
+    for @(($cfg.policy // {})<standingApprovals> // []) -> %sa {
+        next unless %sa<action> eq 'deploy';
+        for @(%sa<targets> // []) -> $t {
+            my ($s, $tg) = $t.split('@', 2);
+            return %sa if ($s eq '*' || $s eq $service) && ($tg eq '*' || $tg eq $target);
+        }
+    }
+    Hash;
 }
 
 # -------------------------------------------------------------- standalone
