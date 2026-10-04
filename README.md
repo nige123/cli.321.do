@@ -270,8 +270,9 @@ match its pattern is refused before anything runs.
   prints the binding.
 - `DP_EXECUTE` names, as a comma-separated list, the targets on
   which an APPROVED deployment may be executed through the engine's own
-  `go <service> <target>`. Unset, execute is unavailable, which is the
-  state of every production binding. A target not listed is refused before
+  `go <service> <target>`. Unset, execute is unavailable: the call is
+  recorded as not performed and the run ends blocked: "execution is
+  unavailable here (DP_EXECUTE is unset)". A target not listed is refused before
   the engine is invoked; the engine's own words decide success (a failed
   gate, an aborted deploy or a rollback is a failure whatever the exit
   code). This is the executor the boundary below calls.
@@ -285,12 +286,10 @@ match its pattern is refused before anything runs.
   anything happened. A blocked plan (an ambiguous target, an unreachable
   host, an unresolvable revision) is recorded as a blocked proposal with the
   question.
-- `execute` is performed only by a bound **executor**, and no production
-  binding of this build has one: the call is recorded as not performed and
-  the run ends blocked with "execution is unavailable in this development
-  slice"; a supplied approval or a `deploy.invoke` grant changes nothing.
-  Where an executor is bound (the tests bind a recording fake), the
-  **execution boundary** applies: the package must carry an `approval`
+- `execute` is performed only by a bound **executor**, which `DP_EXECUTE`
+  supplies (the tests bind a recording fake). Without one, a supplied
+  approval or a `deploy.invoke` grant changes nothing. Where an executor is
+  bound, the **execution boundary** applies: the package must carry an `approval`
   whose `proposal` is the approved deployment proposal verbatim (its digest
   equal to `params.proposalDigest`), `deploy.invoke` must be granted, a
   fresh plan of the same target must immediately precede the execute step,

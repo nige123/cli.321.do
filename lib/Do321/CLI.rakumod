@@ -22,7 +22,7 @@ use Do321::Wire;
 use Do321::Hooks;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.3.3';
+constant VERSION is export = '0.3.4';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
@@ -85,8 +85,10 @@ constant USAGE = q:to/END/;
 
     Tool bindings (procedures only, by explicit path, never by PATH lookup):
       DP_BIN             the deployment engine entry point a package's dp
-                                    tool steps may call: status (deploy.read) and plan (deploy.plan);
-                                    execute (deploy.invoke) is not performed in this build
+                                    tool steps may call: status (deploy.read), plan (deploy.plan)
+                                    and execute (deploy.invoke)
+      DP_EXECUTE         comma-separated targets on which an approved execute may run;
+                                    unset, execute is not performed
       321 version | help
 
     Exit codes: 0 completed or no change, 2 blocked, 3 stopped, 4 failed, 5 denied,

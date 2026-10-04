@@ -263,8 +263,8 @@ sub go-duration(Numeric $seconds --> Str) is export {
 
 constant DEFAULT-TIMEOUT    is export = 120;
 constant DEFAULT-MAX-OUTPUT is export = 256 * 1024;
-#| The message every execute call returns in a build with no executor.
-constant EXECUTION-UNAVAILABLE is export = 'execution is unavailable in this development slice: the proposal was prepared and nothing was deployed';
+#| The message every execute call returns when no executor is bound.
+constant EXECUTION-UNAVAILABLE is export = 'execution is unavailable here (DP_EXECUTE is unset): the proposal was prepared and nothing was deployed';
 
 my $SERVICE_RE  = '^[a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*$';
 my $TARGET_RE   = '^[a-z][a-z0-9-]{0,15}$';

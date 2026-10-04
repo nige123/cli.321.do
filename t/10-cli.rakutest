@@ -198,7 +198,7 @@ sub operator-env(Bool $bound, *%extra --> List) {
     my ($env, $log) = operator-env(True);
     my ($rc, $out) = cli($tp, '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', 'revision', '0f94b03', :env(%$env));
     is $rc, EXIT-BLOCKED, 'go is prepared, not executed, even with a grant';
-    for 'BLOCKED', 'execution is unavailable in this development slice', 'nothing was deployed', 'Tool: dp execute  (not performed)', 'Proposal: ' -> $want {
+    for 'BLOCKED', 'execution is unavailable here (DP_EXECUTE is unset)', 'nothing was deployed', 'Tool: dp execute  (not performed)', 'Proposal: ' -> $want {
         ok $out.contains($want), "the transcript carries '$want'" or diag $out;
     }
     ok !$out.lc.contains('deployed successfully'), 'it never reads as deployed';
