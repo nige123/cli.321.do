@@ -115,7 +115,11 @@ throws-like { load-trust($bad-file) }, X::Do321::Trust, message => /reserved/, '
 # ---- reading inside the package ---------------------------------------------
 my $pkg = copy-fixture('local/helper');
 throws-like { read-inside($pkg, '../etc/passwd') }, X::Do321::Trust, 'dotdot is refused';
-'/etc/hostname'.IO.symlink($pkg.add('prompts/out.md'));
+# The link must point at a file that exists (macOS has no /etc/hostname,
+# and a dangling link is "no such file" before it can be "escapes").
+my $outside = temp-dir().add('outside.md');
+$outside.spurt("not part of the package\n");
+$outside.symlink($pkg.add('prompts/out.md'));
 throws-like { read-inside($pkg, 'prompts/out.md') }, X::Do321::Trust, message => /escapes/, 'a symlink out of the package is refused';
 ok read-inside($pkg, 'prompts/identity.md').chars > 0, 'a real file reads';
 throws-like { read-inside($pkg, 'prompts/none.md') }, X::Do321::Trust, 'a missing file is an error';
