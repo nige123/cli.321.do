@@ -725,7 +725,13 @@ sub parse-envelope(Str $line --> Summary) is export {
         %args<no-change> = str-of($o<status>) eq 'no_change';
         %args<conditions> = [ @($o<conditions> // []).grep(Associative).map({ %( met => so $_<met>, proof => str-of($_<proof>) ) }) ];
     }
-    Summary.new(|%args);
+    # The list attributes are passed from @ variables, not through %args: a
+    # hash value is an item, and an item bound to an @ attribute is one
+    # element (Rakudo and Raku++ 5.1 agree; 4.0.1 flattened it).
+    my @d = @(%args<denials>:delete);
+    my @e = @(%args<errors>:delete);
+    my @c = @(%args<conditions>:delete // []);
+    Summary.new(|%args, :denials(@d), :errors(@e), :conditions(@c));
 }
 
 sub first-line(Str $s, Int $max --> Str) {

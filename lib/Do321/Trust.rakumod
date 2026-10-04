@@ -218,7 +218,7 @@ class Loaded is export {
     #| The default output schema, or the one named for a procedure.
     method output-schema(Str $procedure = '' --> Str) {
         my $file = %!manifest<outputSchemas><default>;
-        if $procedure ne '' && (%!manifest<outputSchemas><byProcedure> // {}){$procedure}:exists {
+        if $procedure ne '' && ((%!manifest<outputSchemas><byProcedure> // {}){$procedure}:exists) {
             $file = %!manifest<outputSchemas><byProcedure>{$procedure};
         }
         read-inside($!root, $file);

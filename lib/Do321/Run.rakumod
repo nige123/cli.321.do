@@ -257,7 +257,9 @@ class DirectiveState {
                 if %dir<seq> != $!next-seq {
                     @!gaps.push(doc('SequenceGap', directiveId => %dir<directiveId>, expectedSeq => $!next-seq, receivedSeq => %dir<seq>));
                 }
-                without $!stop {
+                # with/else, not without/else: Raku++ 5.1 refuses an else on without.
+                with $!stop { self!reject-locked(%dir<directiveId>, 'already stopping on ' ~ $!stop<directiveId>) }
+                else {
                     $!stop = %dir;
                     $!stop-at = $!session.now.();
                     # Cancel first, then tell anyone listening: a full event
@@ -266,7 +268,6 @@ class DirectiveState {
                     if $!paused && $!resume-p.defined { $!resume-p.keep(True); $!resume-p = Promise }
                     $!session.emit(EVENT-STOPPING, %( directiveId => %dir<directiveId>, reason => %dir<payload><reason> ));
                 }
-                else { self!reject-locked(%dir<directiveId>, 'already stopping on ' ~ $!stop<directiveId>) }
                 return;
             }
             %!waiting{%dir<seq>} = %dir;
@@ -531,7 +532,9 @@ sub iz4-report-check(Str $bin, Str $workspace, Str $run-id, Str $summary --> Lis
     my $p = try run $bin, 'hook', 'stop', :cwd($workspace), :in, :out, :err, :env(%*ENV);
     return (-1, $!.message) if $!;
     $p.in.print(encode-json(%( session_id => "321-$run-id", transcript_path => $transcript.Str )));
-    try $p.in.close;
+    # Raku++ 5.1 returns the Proc from closing stdin; sinking an unsuccessful
+    # one throws, and the exit code is what we want, read below.
+    try { $p.in.close; Nil };
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
     ($p.exitcode, ($err.trim || $out.trim));

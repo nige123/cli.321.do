@@ -44,14 +44,14 @@ define 'Licence', (spdx => 'str?', url => 'str?');
 define 'Provenance', (source => 'str?', builtAt => 'str?', builtBy => 'str?');
 define 'Identity', (role => 'str', personality => 'str?', tone => 'str?', decisionStyle => 'str?');
 define 'Procedure', (name => 'str', matches => 'obj:ProcedureMatch', requires => 'strs?', steps => 'list:ProcedureStep');
-define 'ProcedureMatch', (objectiveRegex => 'str?');
+define 'ProcedureMatch', (objectiveRegex => 'str?',);
 define 'ProcedureStep', (
     kind => 'str', tool => 'str?', op => 'str?', text => 'str?', path => 'str?', content => 'str?',
     condition => 'int?', met => 'bool?', proof => 'str?', question => 'str?', action => 'str?',
     target => 'str?', params => 'any?', duration => 'str?');
 define 'CapabilitySpec', (required => 'strs', optional => 'strs?', denied => 'strs?');
 define 'HarnessSpec', (requires => 'strs', overlays => 'map:str?');
-define 'PlacementSpec', (allowed => 'strs');
+define 'PlacementSpec', (allowed => 'strs',);
 define 'OutputSchemas', (default => 'str', byProcedure => 'map:str?');
 
 define 'WorkPackage', (
@@ -61,7 +61,7 @@ define 'WorkPackage', (
     objective => 'str', instructions => 'str?', context => 'obj:Context', completion => 'obj:Completion',
     capabilities => 'obj:Grants', authority => 'obj:Authority', approval => 'ptr:Approval?', outputSchema => 'str?');
 define 'Issuer', (kind => 'str', id => 'str', url => 'str?');
-define 'Correlation', (refs => 'list:Ref?');
+define 'Correlation', (refs => 'list:Ref?',);
 define 'Ref', (kind => 'str', id => 'str');
 define 'AgentRef', (id => 'str', version => 'str?', digest => 'str?');
 define 'Workspace', (kind => 'str', path => 'str?', branch => 'str?', ownership => 'str');
@@ -135,7 +135,7 @@ define 'TrustConfig', ( schema => 'str', publishers => 'map:TrustPublisher?', lo
 define 'TrustPublisher', (keys => 'list:Key?', packages => 'map:Pin?');
 define 'Key', (keyId => 'str', publicKey => 'str', since => 'str?', note => 'str?');
 define 'Pin', (path => 'str', version => 'str', digest => 'str', trust => 'str?');
-define 'LocalPin', (path => 'str');
+define 'LocalPin', (path => 'str',);
 define 'Policy', (capabilityCeiling => 'strs?', limits => 'obj:Limits', adapters => 'obj:AdapterPolicy',
     standingApprovals => 'list:StandingApproval?');
 define 'StandingApproval', (action => 'str', targets => 'strs', approvedBy => 'str', note => 'str?');

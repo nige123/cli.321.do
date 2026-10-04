@@ -65,7 +65,10 @@ sub x321(*@args, Str :$in = '', :%env, IO::Path :$cwd --> List) is export {
     my %e = %*ENV, %env;
     my $proc = run |runtime-command(), |@args, :in, :out, :err, :env(%e), |($cwd ?? (:cwd($cwd.Str)) !! ());
     $proc.in.print($in);
-    try $proc.in.close;
+    # Raku++ 5.1 returns the Proc from closing stdin; a child that exited
+    # non-zero would then throw when that value is sunk. Its exit code is
+    # read below instead.
+    try { $proc.in.close; Nil };
     my $out = $proc.out.slurp(:close);
     my $err = $proc.err.slurp(:close);
     ($proc.exitcode, $out, $err);
