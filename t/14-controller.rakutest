@@ -1,0 +1,148 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# The controller seam and its first controller.  The IZ4 driver runs
+# iz4's machine interface and reads its documents; it holds no view of
+# what an invariant means.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321ControlTest;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Controller;
+
+my $iz4 = IZ4.new;
+is $iz4.name, 'iz4', 'the controller has a name';
+is $iz4.answers.join(','), 'context,action,change,verify', 'and says which points it answers';
+
+# ---- absent: the controller does not apply ----------------------------------------
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    my $bare = iz4-workspace(:!iz4);
+    is $iz4.discover($bare.Str).elems, 0, 'no IZ4: the controller does not apply';
+    is $iz4.discover('').elems, 0, 'no workspace: it does not apply';
+}
+
+# ---- present and driven -----------------------------------------------------------
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    my $ws = iz4-workspace();
+    $ws.add('src').mkdir;
+    my %d = $iz4.discover($ws.add('src').Str);
+    ok %d<available>, 'an IZ4 up the tree is discovered and can be driven';
+    is %d<subject>, $ws.add('IZ4').Str, 'the subject is the file that governs';
+    is %d<digest>, 'sha256:abc123', 'with its content identity, from iz4';
+    my ($text, $err) = $iz4.context($ws.Str);
+    ok !$err.defined && $text.contains('These invariants govern this work'), 'the context is iz4\'s own text' or diag $err;
+
+    # an action reaches iz4 as a generic document
+    my $seen = temp-dir().add('action.json');
+    temp %*ENV<STUB_ACTION_IN> = $seen.Str;
+    my $v = $iz4.check-action($ws.Str, Action.new(:operation<write>, :target<lib/a.txt>, :parameters(%( content => 'x' )), :context('tool Write')));
+    is $v.result, RESULT-PASS, 'a passing action passes';
+    ok $v.ran && !$v.stops, 'it ran and does not stop the work';
+    my %sent = parse-json($seen.slurp);
+    ok %sent<operation> eq 'write' && %sent<target> eq 'lib/a.txt' && %sent<parameters><content> eq 'x' && %sent<context> eq 'tool Write',
+        'iz4 was given operation, target, parameters and context' or diag %sent.raku;
+    ok !(%sent<recipient>:exists), 'and nothing it was not told';
+    like $v.limits, /establishes/, 'the limits iz4 states come back with the verdict';
+    is $v.invariants.join(','), '5', 'so do the invariants it considered';
+
+    for RESULT-WARN, RESULT-BLOCK, RESULT-NEEDS-HUMAN -> $r {
+        temp %*ENV<STUB_ACTION> = $r;
+        my $x = $iz4.check-action($ws.Str, Action.new(:operation<write>, :target<IZ4>));
+        is $x.result, $r, "an action answered $r is $r";
+        is $x.stops, ($r ne RESULT-WARN), "$r " ~ ($r eq RESULT-WARN ?? 'does not stop' !! 'stops') ~ ' the work';
+    }
+
+    # a change
+    is $iz4.check-change($ws.Str).result, RESULT-PASS, 'a passing change passes';
+    {
+        temp %*ENV<STUB_CHANGE> = RESULT-NEEDS-HUMAN;
+        my $c = $iz4.check-change($ws.Str);
+        is $c.result, RESULT-NEEDS-HUMAN, 'a change that needs a person says so';
+        ok $c.proposal.contains('reworded Invariant 5') && $c.proposal.contains('Staff decide.'), 'the proposal names what would change' or diag $c.proposal;
+        ok $c.proposal.contains('iz4 approve --candidate=abc --base=HEAD'), 'and how a person agrees';
+        ok $c.proposal.contains('d1g'), 'bound to the proposal digest';
+        ok $c.evidence ~~ Associative && $c.evidence<schema> eq 'iz4-check/1', 'the controller\'s own document is kept as evidence';
+    }
+    {
+        temp %*ENV<STUB_CHANGE> = RESULT-BLOCK;
+        my $c = $iz4.check-change($ws.Str);
+        ok $c.result eq RESULT-BLOCK && $c.uncertain.grep(*.contains('change block')), 'a block is on the uncertain list in its own words';
+    }
+
+    # verification
+    my $log = temp-dir().add('calls');
+    temp %*ENV<STUB_LOG> = $log.Str;
+    my $vf = $iz4.verify($ws.Str, %( transcript => '/tmp/t.jsonl' ));
+    is $vf.result, RESULT-PASS, 'verification passes';
+    ok $vf.uncertain.grep(*.contains('IZ4 Invariant 5 Nothing is deleted.: uncertain')), 'what the report calls uncertain reaches the verdict';
+    ok $log.slurp.contains('verify --worktree --json --transcript=/tmp/t.jsonl'), 'the transcript is handed to iz4';
+    is-deeply $vf.record, %( point => 'verify', result => 'pass', reason => 'verify pass', invariants => ['5'] ), 'a verdict has a small record for the receipt';
+}
+
+# ---- present but not drivable: said, never passed ----------------------------------
+{
+    my $ws = iz4-workspace();
+    {
+        temp %*ENV<X321_IZ4> = '/nonexistent/iz4';
+        temp %*ENV<PATH> = '/nonexistent';
+        my %d = $iz4.discover($ws.Str);
+        ok %d<subject> eq $ws.add('IZ4').Str && !%d<available> && %d<reason>.contains('not installed'), 'no iz4: the IZ4 is seen and reported as not driven';
+        is $iz4.check-change($ws.Str).result, RESULT-UNAVAILABLE, 'and a check is unavailable, not a pass';
+    }
+    {
+        temp %*ENV<X321_IZ4> = stub-iz4();
+        temp %*ENV<STUB_OLD> = '1';
+        my %d = $iz4.discover($ws.Str);
+        ok !%d<available> && %d<reason>.contains('no machine interface'), 'an iz4 from before the machine interface is reported as such' or diag %d.raku;
+        my $v = $iz4.check-action($ws.Str, Action.new(:operation<write>, :target<a>));
+        ok $v.result eq RESULT-UNAVAILABLE && !$v.ran && !$v.stops, 'its checks are unavailable';
+    }
+    {
+        temp %*ENV<X321_IZ4> = stub-iz4();
+        temp %*ENV<STUB_INVALID> = '1';
+        my %d = $iz4.discover($ws.Str);
+        ok !%d<available> && %d<reason>.contains('invalid'), 'an invalid IZ4 is not driven, and the reason says why';
+    }
+}
+
+# ---- documents that are not what they claim ----------------------------------------
+is verdict-from(POINT-CHANGE, 'not json', 'nope').result, RESULT-UNAVAILABLE, 'output that is not a document is unavailable';
+is verdict-from(POINT-CHANGE, '{"schema":"iz4-check/1","result":"splendid"}', 'x').result, RESULT-UNAVAILABLE, 'an unknown result is unavailable, never a pass';
+is verdict-from(POINT-CHANGE, '{"schema":"other/1","result":"pass"}', 'x').result, RESULT-UNAVAILABLE, 'another schema is not trusted as a check';
+
+# ---- a second controller needs no change to the first -------------------------------
+class Tracer does Controller {
+    method name(--> Str) { 'tracer' }
+    method discover(Str $ws --> Hash) { %( subject => 'always', digest => '', available => True, reason => '' ) }
+    method context(Str $ws --> List) { ('', Str) }
+}
+my $t = Tracer.new;
+is $t.check-change('/tmp').result, RESULT-UNAVAILABLE, 'a controller that offers no change check says so by default';
+ok $t.check-change('/tmp').reason.contains('tracer offers no change check'), 'in its own name';
+is controller-named('iz4').name, 'iz4', 'controllers are found by name';
+ok !controller-named('nope').defined, 'and an unknown one is not invented';
+
+# ---- the real iz4, when one with the machine interface is installed ------------------
+{
+    my $real = on-path('iz4');
+    my $ok = $real.defined && do { my $p = run $real.Str, 'discover', '--json', :out, :err, :cwd(temp-dir().Str); my $o = $p.out.slurp(:close); $p.err.slurp(:close); $o.contains('iz4-discover/') };
+    if $ok {
+        temp %*ENV<X321_IZ4> = $real.Str;
+        my $ws = iz4-workspace(:!iz4);
+        is IZ4.new.discover($ws.Str).elems, 0, 'real iz4: no IZ4, does not apply';
+        my $p = run $real.Str, 'init', '--for-what=A test.', '--for-who=Testers.', '--/agents', :cwd($ws.Str), :out, :err; $p.out.slurp(:close); $p.err.slurp(:close);
+        my %d = IZ4.new.discover($ws.Str);
+        ok %d<available> && %d<digest>.starts-with('sha256:'), 'real iz4: discovered and drivable' or diag %d.raku;
+        my ($text, $err) = IZ4.new.context($ws.Str);
+        ok $text.contains('INVARIANT 0'), 'real iz4: the context carries the invariants' or diag $err;
+        is IZ4.new.check-action($ws.Str, Action.new(:operation<write>, :target<notes.txt>)).result, RESULT-PASS, 'real iz4: an ordinary write passes';
+        is IZ4.new.check-action($ws.Str, Action.new(:operation<write>, :target<IZ4>)).result, RESULT-NEEDS-HUMAN, 'real iz4: editing the IZ4 needs a person';
+        ok IZ4.new.check-change($ws.Str).ran, 'real iz4: the change check runs';
+        ok IZ4.new.verify($ws.Str, %()).ran, 'real iz4: verification runs';
+    }
+    else { skip 'no iz4 with the machine interface on PATH', 7 }
+}
+
+done-testing;

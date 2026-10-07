@@ -62,6 +62,54 @@ sub features(--> List) is export {
      FEAT-SESSION-CONTINUE, FEAT-GRACEFUL-STOP);
 }
 
+# Controls a harness may let a controller operate, and how strongly.
+# Distinct from the features above: a feature is authority the adapter
+# enforces for the runtime; a control is a point where something outside
+# the harness (an IZ4 driver, an approval system) can be told and can
+# answer.  'enforces' means the answer can stop the thing; 'advises'
+# means text reaches the model and nothing more.
+constant CTRL-AUTHORITATIVE-CONTEXT is export = 'authoritative_context';
+constant CTRL-PRE-ACTION            is export = 'pre_action';
+constant CTRL-POST-ACTION           is export = 'post_action';
+constant CTRL-PRE-TOOL              is export = 'pre_tool';
+constant CTRL-POST-TOOL             is export = 'post_tool';
+constant CTRL-FILESYSTEM-GUARD      is export = 'filesystem_guard';
+constant CTRL-SHELL-GUARD           is export = 'shell_guard';
+constant CTRL-NETWORK-GUARD         is export = 'network_guard';
+constant CTRL-PRE-COMMIT            is export = 'pre_commit';
+constant CTRL-POST-COMMIT           is export = 'post_commit';
+constant CTRL-HUMAN-APPROVAL        is export = 'human_approval';
+constant CTRL-POST-RUN              is export = 'post_run';
+
+sub controls(--> List) is export {
+    (CTRL-AUTHORITATIVE-CONTEXT, CTRL-PRE-ACTION, CTRL-POST-ACTION, CTRL-PRE-TOOL, CTRL-POST-TOOL,
+     CTRL-FILESYSTEM-GUARD, CTRL-SHELL-GUARD, CTRL-NETWORK-GUARD, CTRL-PRE-COMMIT, CTRL-POST-COMMIT,
+     CTRL-HUMAN-APPROVAL, CTRL-POST-RUN);
+}
+
+#| How a person reads a control's name.
+sub control-label(Str $c --> Str) is export {
+    my %l = CTRL-AUTHORITATIVE-CONTEXT, 'Context injection', CTRL-PRE-ACTION, 'Action interception',
+        CTRL-POST-ACTION, 'After-action check', CTRL-PRE-TOOL, 'Tool interception', CTRL-POST-TOOL, 'After-tool check',
+        CTRL-FILESYSTEM-GUARD, 'Filesystem guard', CTRL-SHELL-GUARD, 'Shell guard', CTRL-NETWORK-GUARD, 'Network interception',
+        CTRL-PRE-COMMIT, 'Commit check', CTRL-POST-COMMIT, 'After-commit check', CTRL-HUMAN-APPROVAL, 'Human approval',
+        CTRL-POST-RUN, 'Post-run verification';
+    %l{$c} // $c;
+}
+
+constant STRENGTH-ENFORCES is export = 'enforces';
+constant STRENGTH-ADVISES  is export = 'advises';
+constant STRENGTH-NONE     is export = 'none';
+
+sub strengths(--> List) is export { (STRENGTH-ENFORCES, STRENGTH-ADVISES, STRENGTH-NONE) }
+
+#| An adapter's strength for one control; anything undeclared or outside
+#| the vocabulary is none, so a typo can never read as protection.
+sub control-strength(%c, Str $control --> Str) is export {
+    my $s = %c{$control} // STRENGTH-NONE;
+    ($s ~~ Str && ($s eq STRENGTH-ENFORCES || $s eq STRENGTH-ADVISES)) ?? $s !! STRENGTH-NONE;
+}
+
 constant NETWORK-NONE          is export = 'none';
 constant NETWORK-PROVIDER-ONLY is export = 'provider_only';
 constant NETWORK-OPEN          is export = 'open';

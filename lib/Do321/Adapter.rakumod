@@ -77,6 +77,16 @@ role Adapter is export {
     method detect(--> Detection) { ... }
     method enforcement(--> Hash) { ... }
     method run(Cancel $cancel, Spec $spec, Control $ctl --> Outcome) { ... }
+    #| Which controls this harness lets a controller operate, and how
+    #| strongly: a Hash of control => strength.  Absent means none.  Claim
+    #| only what the harness really does.
+    method controls(--> Hash) { %() }
+    #| The same, for a run 321 launches itself with nobody at the harness's
+    #| own prompt: usually the controls less asking a person.
+    method headless-controls(--> Hash) { self.controls }
+    #| Whether hooks handed over in a Spec are registered with the harness
+    #| for that run.
+    method can-register-hooks(--> Bool) { False }
 }
 
 #| One feature the package or its grants make mandatory.
@@ -243,10 +253,15 @@ class ProcedureAdapter does Adapter is export {
     has Str $.adapter-name = 'procedure';
     has $.script;               # a list of ProcedureStep documents: fake mode
     has %.tools;                # name => Tool
+    has %.fake-controls;        # fake mode: the controls a stand-in harness claims
 
     method name(--> Str) { $!adapter-name }
     method detect(--> Detection) { Detection.new(:available, :version<built-in>) }
     method enforcement(--> Hash) { %( features().map({ $_ => True }) ) }
+    #| Deterministic steps have no model, so there is no tool call, write or
+    #| turn end of a model's to intercept: every control is none unless a
+    #| fake stands in for a harness and says otherwise.
+    method controls(--> Hash) { %!fake-controls }
 
     #| The bound tools, for `321 doctor`.
     method bindings(--> List) {
@@ -667,7 +682,9 @@ sub build-proposal(Spec $spec, %data --> Hash) is export {
 sub new-procedure(:%tools --> ProcedureAdapter) is export { ProcedureAdapter.new(:adapter-name<procedure>, :%tools) }
 
 #| The deterministic fake adapter with an optional script.
-sub new-fake($script = Any --> ProcedureAdapter) is export { ProcedureAdapter.new(:adapter-name<fake>, :$script) }
+sub new-fake($script = Any, :%controls --> ProcedureAdapter) is export {
+    ProcedureAdapter.new(:adapter-name<fake>, :$script, :fake-controls(%controls));
+}
 
 # ------------------------------------------------------------ claude code
 
@@ -839,6 +856,30 @@ class ClaudeCode does Adapter is export {
            FEAT-TIMEOUT, True, FEAT-EVENT-STREAM, True, FEAT-SESSION-CONTINUE, True, FEAT-GRACEFUL-STOP, True,
            FEAT-REPO-SCOPE, False, FEAT-NETWORK-DENY, False, FEAT-LIVE-STEER, False, FEAT-PAUSE, False );
     }
+
+    #| Claude Code runs hooks at a session's start, around every tool call
+    #| and at a turn's end.  A hook before a tool call can refuse it, so
+    #| writes, shell commands and any other action that is a tool call can
+    #| be intercepted; a hook after one can only comment.  A commit is a
+    #| shell command there, so it is caught as one and not at a commit hook
+    #| of the harness's own.  Network use from inside a shell command is
+    #| invisible to it.  A hook can ask the person at an interactive
+    #| session to decide; a headless run has nobody to ask, which is what
+    #| headless-controls reports.
+    method controls(--> Hash) {
+        %( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-PRE-ACTION, STRENGTH-ENFORCES,
+           CTRL-PRE-TOOL, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD, STRENGTH-ENFORCES,
+           CTRL-SHELL-GUARD, STRENGTH-ENFORCES, CTRL-POST-RUN, STRENGTH-ENFORCES,
+           CTRL-HUMAN-APPROVAL, STRENGTH-ENFORCES,
+           CTRL-POST-TOOL, STRENGTH-ADVISES, CTRL-POST-ACTION, STRENGTH-ADVISES,
+           CTRL-NETWORK-GUARD, STRENGTH-NONE, CTRL-PRE-COMMIT, STRENGTH-NONE, CTRL-POST-COMMIT, STRENGTH-NONE );
+    }
+    method headless-controls(--> Hash) {
+        my %c = self.controls;
+        %c{CTRL-HUMAN-APPROVAL} = STRENGTH-NONE;
+        %c;
+    }
+    method can-register-hooks(--> Bool) { True }
 
     #| The whole invocation, exported so the surface is testable without a
     #| process.

@@ -1,0 +1,51 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# Harness controls: what each adapter says it can intercept, how strongly,
+# and that nothing is claimed that is not there.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321::Protocol;
+use Do321::Adapter;
+
+# ---- the vocabulary ---------------------------------------------------------
+is controls().elems, 12, 'twelve controls are named';
+ok is-in(CTRL-NETWORK-GUARD, controls()) && is-in(CTRL-AUTHORITATIVE-CONTEXT, controls()), 'by constant';
+is control-strength(%(), CTRL-PRE-TOOL), STRENGTH-NONE, 'a control an adapter does not mention is none';
+is control-strength(%( CTRL-PRE-TOOL, STRENGTH-ENFORCES ), CTRL-PRE-TOOL), STRENGTH-ENFORCES, 'a declared strength is read back';
+is control-strength(%( CTRL-PRE-TOOL, 'mighty' ), CTRL-PRE-TOOL), STRENGTH-NONE, 'an unknown strength is none, never more';
+
+# ---- Claude Code: real, and honest about its gaps ------------------------------
+my %cc = ClaudeCode.new.controls;
+is control-strength(%cc, CTRL-AUTHORITATIVE-CONTEXT), STRENGTH-ENFORCES, 'claude_code: context is delivered';
+is control-strength(%cc, CTRL-PRE-TOOL), STRENGTH-ENFORCES, 'claude_code: a tool call can be refused';
+is control-strength(%cc, CTRL-FILESYSTEM-GUARD), STRENGTH-ENFORCES, 'claude_code: a write can be refused';
+is control-strength(%cc, CTRL-SHELL-GUARD), STRENGTH-ENFORCES, 'claude_code: a shell command can be refused';
+is control-strength(%cc, CTRL-POST-RUN), STRENGTH-ENFORCES, 'claude_code: a turn end can be refused';
+is control-strength(%cc, CTRL-NETWORK-GUARD), STRENGTH-NONE, 'claude_code: network cannot be intercepted, and says so';
+is control-strength(%cc, CTRL-PRE-COMMIT), STRENGTH-NONE, 'claude_code: no commit hook of its own';
+is control-strength(%cc, CTRL-POST-COMMIT), STRENGTH-NONE, 'claude_code: nor one after';
+is control-strength(%cc, CTRL-POST-TOOL), STRENGTH-ADVISES, 'claude_code: after a tool call it can only comment';
+is control-strength(%cc, CTRL-HUMAN-APPROVAL), STRENGTH-ENFORCES, 'claude_code: an interactive session can ask the person';
+is control-strength(ClaudeCode.new.headless-controls, CTRL-HUMAN-APPROVAL), STRENGTH-NONE, 'claude_code: a headless run has nobody to ask, and says so';
+is control-strength(ClaudeCode.new.headless-controls, CTRL-FILESYSTEM-GUARD), STRENGTH-ENFORCES, 'claude_code: headless still guards writes';
+is control-label(CTRL-NETWORK-GUARD), 'Network interception', 'controls have labels people read';
+ok ClaudeCode.new.can-register-hooks, 'claude_code can carry hooks for a run';
+
+# ---- the deterministic adapters: no model, so nothing to intercept -----------------
+my %pr = new-procedure().controls;
+is control-strength(%pr, CTRL-PRE-TOOL), STRENGTH-NONE, 'procedure: no model tool calls to intercept';
+ok !new-procedure().can-register-hooks, 'procedure carries no hooks';
+
+# ---- a stand-in harness with fewer capabilities ---------------------------------
+my $weak = new-fake(Any, :controls(%( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ADVISES )));
+is control-strength($weak.controls, CTRL-AUTHORITATIVE-CONTEXT), STRENGTH-ADVISES, 'a weak harness only advises';
+is control-strength($weak.controls, CTRL-FILESYSTEM-GUARD), STRENGTH-NONE, 'and guards nothing';
+ok !$weak.can-register-hooks, 'and carries no hooks';
+
+# ---- every adapter answers for every control ------------------------------------
+for ClaudeCode.new, new-procedure(), $weak -> $a {
+    my %c = $a.controls;
+    ok controls().map({ control-strength(%c, $_) }).grep({ is-in($_, strengths()) }).elems == controls().elems,
+        "{$a.name}: every control has a strength from the vocabulary";
+}
+
+done-testing;
