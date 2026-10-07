@@ -63,16 +63,27 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
         my $state = !$wanted ?? 'not used'
             !! $strength eq STRENGTH-NONE ?? 'unavailable'
             !! (%wired{$c} // 'missing');
-        %operating{$c} = $strength if $wanted && $strength ne STRENGTH-NONE && ($state eq 'installed' || $state eq 'legacy');
+        # The old direct wiring delivers the context and looks for a report;
+        # it does not put actions or the change to the controller, so it
+        # counts for context and nothing more.
+        %operating{$c} = $strength if $wanted && $strength ne STRENGTH-NONE
+            && ($state eq 'installed' || ($state eq 'legacy' && $c eq CTRL-AUTHORITATIVE-CONTEXT));
         @rows.push(%( control => $c, label => control-label($c), harness => $strength, wanted => $wanted, state => $state ));
         @warnings.push("{control-label($c)} is not available in {$adapter.name}: this harness cannot intercept it.")
             if $strength eq STRENGTH-NONE && ($wanted || is-in($c, [CTRL-NETWORK-GUARD, CTRL-PRE-COMMIT]));
-        @warnings.push("{control-label($c)} is wired the old way (the controller's own hook command); install again to route it through 321.")
+        @warnings.push("{control-label($c)} is wired the old way (the controller's own hook command), which only delivers the context and looks for a report; install again to route it through 321.")
             if $state eq 'legacy';
         @warnings.push("{control-label($c)} only advises in {$adapter.name}: text reaches the model, nothing is refused.")
             if $wanted && $strength eq STRENGTH-ADVISES;
     }
     my @levels = (%found && %found<available>) ?? levels-from(%operating, $controller.answers) !! ();
+    # Asking a person is not wired separately: a guard that meets
+    # needs_human asks through the harness, where the harness can.
+    my $guarding = so @GUARDS.grep({ (%operating{$_} // '') eq STRENGTH-ENFORCES });
+    for @rows -> %row {
+        next unless %row<control> eq CTRL-HUMAN-APPROVAL && %row<harness> ne STRENGTH-NONE;
+        %row<state> = $guarding ?? 'through the guards' !! 'no guard installed to ask through';
+    }
     @warnings.unshift("{$controller.name} cannot be driven here: {%found<reason>}") if %found && !%found<available>;
     @warnings.unshift("{$adapter.name} was not detected here ({$det.reason}); the wiring is written for when it is.") if %found && !$det.available;
     %(
@@ -136,10 +147,12 @@ sub status-lines(%s --> List) is export {
     @l.push('');
     for @(%s<controls>) -> %c {
         next unless %c<wanted> || is-in(%c<control>, [CTRL-NETWORK-GUARD, CTRL-PRE-COMMIT, CTRL-HUMAN-APPROVAL]);
-        my $say = !%c<wanted> ?? (%c<harness> eq STRENGTH-NONE ?? 'no' !! 'available, not used')
+        my $say = %c<control> eq CTRL-HUMAN-APPROVAL && %c<harness> ne STRENGTH-NONE
+                ?? (%c<state> eq 'through the guards' ?? 'yes (a guard asks the person at the session)' !! 'not installed')
+            !! !%c<wanted> ?? (%c<harness> eq STRENGTH-NONE ?? 'no' !! 'available, not used')
             !! %c<state> eq 'installed' ?? (%c<harness> eq STRENGTH-ADVISES ?? 'yes (advises only)' !! 'yes')
             !! %c<state> eq 'unavailable' ?? 'no'
-            !! %c<state> eq 'legacy' ?? 'yes (old wiring)'
+            !! %c<state> eq 'legacy' ?? 'old wiring'
             !! 'not installed';
         @l.push(sprintf('%-24s %s', %c<label>, $say));
     }

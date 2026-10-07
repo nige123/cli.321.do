@@ -74,10 +74,14 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
     # verification
     my $log = temp-dir().add('calls');
     temp %*ENV<STUB_LOG> = $log.Str;
-    my $vf = $iz4.verify($ws.Str, %( transcript => '/tmp/t.jsonl' ));
+    my $said = temp-dir().add('said.txt');
+    temp %*ENV<STUB_SUMMARY_OUT> = $said.Str;
+    my $vf = $iz4.verify($ws.Str, %( summary => "Done.\nInvariant: 5" ));
     is $vf.result, RESULT-PASS, 'verification passes';
     ok $vf.uncertain.grep(*.contains('IZ4 Invariant 5 Nothing is deleted.: uncertain')), 'what the report calls uncertain reaches the verdict';
-    ok $log.slurp.contains('verify --worktree --json --transcript=/tmp/t.jsonl'), 'the transcript is handed to iz4';
+    ok $log.slurp.contains('verify --worktree --json --summary='), 'the agent\'s last words are handed to iz4 as a file of text';
+    is $said.slurp, "Done.\nInvariant: 5", 'exactly as given';
+    is $vf.parts.map(*<part>).join(','), 'structure,change,report', 'a compound answer keeps its parts';
     is-deeply $vf.record, %( point => 'verify', result => 'pass', reason => 'verify pass', invariants => ['5'] ), 'a verdict has a small record for the receipt';
 }
 

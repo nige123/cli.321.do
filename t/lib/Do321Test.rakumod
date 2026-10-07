@@ -62,7 +62,10 @@ sub runtime-command(--> List) is export {
 #| Run the CLI with arguments and optional stdin; returns (exit code,
 #| stdout, stderr).  The environment is the current one plus %env.
 sub x321(*@args, Str :$in = '', :%env, IO::Path :$cwd --> List) is export {
-    my %e = %*ENV, %env;
+    # The suite runs inside a repository that keeps an IZ4, with a real iz4
+    # on PATH.  Unless a test supplies one, there is no iz4, so no run
+    # here is put to the developer's own.
+    my %e = %*ENV, X321_IZ4 => '/nonexistent/iz4', %env;
     my $proc = run |runtime-command(), |@args, :in, :out, :err, :env(%e), |($cwd ?? (:cwd($cwd.Str)) !! ());
     $proc.in.print($in);
     # Raku++ 5.1 returns the Proc from closing stdin; a child that exited

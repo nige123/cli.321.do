@@ -20,6 +20,8 @@ use Do321::Adapter;
 use Do321::Run;
 use Do321::Wire;
 use Do321::Hooks;
+use Do321::Controller;
+use Do321::Enforcement;
 
 #| Stamped at build time in the release workflow.
 constant VERSION is export = '0.3.4';
@@ -76,7 +78,22 @@ constant USAGE = q:to/END/;
       321 trust show | check
       321 doctor [--json]           installed adapters and what each actually enforces, and bound tools
 
-    Harness hooks (for a hook command such as 'iz4 hook'):
+    Harnesses and what protects the work in them:
+      321 harness detect [--workspace <dir>] [--json]
+                                    the agent environments 321 knows, whether each is here,
+                                    and the controls it lets a controller operate
+      321 iz4 status  [--workspace <dir>] [--harness <name>] [--json]
+                                    how strongly the project's IZ4 is enforced in a harness
+      321 iz4 install [--workspace <dir>] [--harness <name>] [--json]
+                                    wire IZ4 into the harness, as strongly as it allows, and
+                                    verify the wiring; installing again changes nothing
+      321 iz4 remove  [--workspace <dir>] [--harness <name>] [--json]
+                                    take out only what 321 installed for IZ4
+      321 hook <harness> <controller> <control>
+                                    the glue a harness calls: native event in, the
+                                    controller's verdict out in the harness's own terms
+
+    Harness hooks, the older form (for a hook command such as 'iz4 hook'):
       321 hooks install --workspace <dir> --command <cmd> [--strict] [--json]
                                     wire <cmd> session-start|pre-edit|stop into every harness
                                     321 knows, in that workspace; --strict wires the two that refuse
@@ -110,8 +127,19 @@ sub default-registry($stderr --> Registry) is export {
     $script = [ @$script.map({ load('ProcedureStep', $_) }) ] if $script ~~ Positional;
     Registry.new
         .register-hidden(new-procedure(:tools(default-tools())))
-        .register-hidden(new-fake($script))
+        .register-hidden(new-fake($script, :controls(fake-controls-seam())))
         .register(ClaudeCode.new(:binary(%*ENV<X321_CLAUDE_BINARY> // ''), :stderr($stderr), :transcript($stderr)));
+}
+
+#| DO321_FAKE_CONTROLS is a test seam: a JSON object of control =>
+#| strength that makes the hidden fake adapter stand in for a harness with
+#| exactly those controls, so a weaker environment can be shown through
+#| the real entry point.
+sub fake-controls-seam(--> Hash) {
+    my $seam = %*ENV<DO321_FAKE_CONTROLS> // '';
+    return %() if $seam eq '';
+    my $c = try parse-json($seam);
+    $c ~~ Associative ?? %$c !! %();
 }
 
 #| The externally configured tools a procedure may reach, each an explicit
@@ -222,6 +250,10 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'trust'    { return cmd-trust($env, @rest[1 .. *]) }
         when 'doctor'   { return cmd-doctor($env, @rest[1 .. *]) }
         when 'hooks'    { return cmd-hooks($env, $g, @rest[1 .. *]) }
+        when 'harness'  { return cmd-harness($env, $g, @rest[1 .. *]) }
+        when 'hook'     { return cmd-hook($env, @rest[1 .. *]) }
+        # A controller by name.  Another controller is one more line here.
+        when 'iz4'      { return cmd-controller($env, $g, 'iz4', @rest[1 .. *]) }
     }
     cmd-agent($env, $g, @rest[0], @rest[1 .. *]);
 }
@@ -485,6 +517,195 @@ sub cmd-doctor(Env $env, @args --> Int) {
     else { $env.stdout.say("trust: no file at {$cfg.path} (only --package-dir packages can run)") }
     $env.stdout.say("policy: {to-wire('Policy', $cfg.policy)}");
     0;
+}
+
+# -------------------------------------------------- harnesses, controllers
+
+#| The harness adapters: the ones that say they have controls at all.
+sub harness-adapters(Env $env --> List) {
+    $env.adapters.all.grep({ .controls.elems > 0 }).List;
+}
+
+#| The 321 command a harness should call back.  A project's settings are
+#| shared between machines, so the default is the name on PATH;
+#| X321_HOOK_SELF overrides it.
+sub hook-self(--> Str) { %*ENV<X321_HOOK_SELF> // '321' }
+
+sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
+    my ($workspace, $harness, $json) = $g.workspace, $g.adapter, $g.json-out;
+    my $i = 0;
+    while $i < @args {
+        my $a = @args[$i];
+        my ($name, $value, $has-value) = $a.contains('=') ?? (|$a.split('=', 2), True) !! ($a, '', False);
+        my sub need() {
+            return $value if $has-value;
+            X::Do321::Usage.new(message => "$name needs a value").throw if $i + 1 >= @args;
+            $i++;
+            @args[$i];
+        }
+        given $name {
+            when '--workspace' { $workspace = need() }
+            when '--harness'   { $harness = need() }
+            when '--json'      { $json = True }
+            default { X::Do321::Usage.new(message => "unknown option $name for $what").throw }
+        }
+        $i++;
+    }
+    $workspace = $*CWD.Str if $workspace eq '';
+    X::Do321::Usage.new(message => "no such directory $workspace").throw unless $workspace.IO.d;
+    ($workspace, $harness, $json);
+}
+
+sub cmd-harness(Env $env, Global $g, @args --> Int) {
+    my $usage = 'usage: 321 harness detect [--workspace <dir>] [--json]';
+    if !@args || @args[0] ne 'detect' { $env.stderr.say($usage); return EXIT-USAGE }
+    my ($workspace, $, $json) = try parse-harness-options($env, $g, @args[1 .. *], 'harness detect');
+    if $! { $env.stderr.say("321 harness: {$!.message}"); return EXIT-USAGE }
+    my @records;
+    for harness-adapters($env) -> $a {
+        my $det = $a.detect;
+        my %c = $a.controls;
+        my $path = $a.wiring-path;
+        @records.push(%(
+            harness => $a.name, detected => $det.available, version => $det.version, reason => $det.reason,
+            wiring => $path, configured => ($path ne '' && $workspace.IO.add($path).e),
+            controls => %( controls().map({ $_ => control-strength(%c, $_) }) ),
+            headless => %( controls().map({ $_ => control-strength($a.headless-controls, $_) }) ),
+        ));
+    }
+    if $json {
+        $env.stdout.say(encode-json-pretty(%( schema => 'harness-detect.v1', workspace => $workspace.IO.absolute, harnesses => @records )));
+        return 0;
+    }
+    for @records -> %r {
+        $env.stdout.say(sprintf('%-14s %s', %r<harness>, %r<detected> ?? "detected {%r<version>}" !! "not detected ({%r<reason>})"));
+        $env.stdout.say("    project wiring: {%r<wiring>}" ~ (%r<configured> ?? '' !! ' (none yet)')) if %r<wiring> ne '';
+        my @yes = controls().grep({ %r<controls>{$_} eq STRENGTH-ENFORCES });
+        my @adv = controls().grep({ %r<controls>{$_} eq STRENGTH-ADVISES });
+        my @no  = controls().grep({ %r<controls>{$_} eq STRENGTH-NONE });
+        $env.stdout.say("    enforces: {@yes.join(', ') || 'nothing'}");
+        $env.stdout.say("    advises:  {@adv.join(', ')}") if @adv;
+        $env.stdout.say("    cannot:   {@no.join(', ')}") if @no;
+    }
+    $env.stdout.say('no harness with controls is known to this 321') unless @records;
+    0;
+}
+
+#| install | status | remove for one controller, in one harness or every
+#| harness detected here.
+sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
+    my $usage = "usage: 321 $name install|status|remove [--workspace <dir>] [--harness <name>] [--json]";
+    if !@args || !is-in(@args[0], <install status remove>) { $env.stderr.say($usage); return EXIT-USAGE }
+    my $sub = @args[0];
+    my ($workspace, $harness, $json) = try parse-harness-options($env, $g, @args[1 .. *], "$name $sub");
+    if $! { $env.stderr.say("321 $name: {$!.message}"); return EXIT-USAGE }
+    my $controller = controller-named($name);
+    without $controller { $env.stderr.say("321: no controller \"$name\""); return EXIT-USAGE }
+    my @adapters = harness-adapters($env);
+    if $harness ne '' {
+        @adapters = @adapters.grep(*.name eq $harness);
+        unless @adapters { $env.stderr.say("321 $name: no harness \"$harness\" (321 harness detect lists them)"); return EXIT-USAGE }
+    }
+    else {
+        # With no harness named, act on the ones that are here; if none is,
+        # still report on every harness 321 knows.
+        my @here = @adapters.grep({ .detect.available });
+        @adapters = @here if @here;
+    }
+    unless @adapters { $env.stderr.say("321 $name: this 321 knows no harness it can wire a controller into"); return EXIT-FAILED }
+    my $ws = $workspace.IO;
+    my %found = $controller.discover($workspace);
+    my @statuses = do given $sub {
+        when 'install' {
+            %found ?? @adapters.map({ install-enforcement($_, $controller, $ws, hook-self()) })
+                   !! @adapters.map({ enforcement-status($_, $controller, $ws) })
+        }
+        when 'remove'  { @adapters.map({ remove-enforcement($_, $controller, $ws) }) }
+        default        { @adapters.map({ enforcement-status($_, $controller, $ws) }) }
+    };
+    if $json {
+        $env.stdout.say(encode-json-pretty(%( schema => 'enforcement-report.v1', workspace => $ws.absolute, controller => $name, harnesses => [ |@statuses ] )));
+    }
+    else {
+        my $first = True;
+        for @statuses -> %s {
+            $env.stdout.say('') unless $first;
+            $first = False;
+            if $sub eq 'install' && %s<applies> {
+                $env.stdout.say("{$name.uc} integration {%s<action>}" ~ (%s<wiring> ne '' ?? " ({%s<wiring>})" !! '') ~ '.');
+            }
+            elsif $sub eq 'remove' { $env.stdout.say("{$name.uc} integration {%s<action>}.") }
+            $env.stdout.say($_) for status-lines(%s);
+            $env.stdout.say("! {%s<error>}") if (%s<error> // '') ne '';
+        }
+    }
+    @statuses.grep({ (.<action> // '') eq 'failed' }) ?? EXIT-FAILED !! 0;
+}
+
+#| The glue a harness calls at one of its own events.  It reads the
+#| native event on stdin, translates it, asks the controller, and answers
+#| in the harness's terms.  Each call is appended to X321_HOOK_LOG when
+#| that is set, which is how a run proves its hooks really fired.
+sub cmd-hook(Env $env, @args --> Int) {
+    if @args != 3 { $env.stderr.say('usage: 321 hook <harness> <controller> <control>   (called by a harness, with its event on stdin)'); return EXIT-USAGE }
+    my ($harness, $name, $control) = @args;
+    my $adapter = $env.adapters.get($harness);
+    my $controller = controller-named($name);
+    without $adapter { $env.stderr.say("321 hook: no harness \"$harness\""); return EXIT-USAGE }
+    without $controller { $env.stderr.say("321 hook: no controller \"$name\""); return EXIT-USAGE }
+    unless is-in($control, controls()) { $env.stderr.say("321 hook: no control \"$control\""); return EXIT-USAGE }
+
+    my @lines;
+    loop { my $l = $env.stdin.next; last without $l; @lines.push($l) }
+    my $parsed = try parse-json(@lines.join("\n"));
+    my %native = $parsed ~~ Associative ?? %$parsed !! %();
+    my $workspace = ((%native<cwd> // '') ~~ Str && (%native<cwd> // '') ne '') ?? %native<cwd> !! $*CWD.Str;
+    my $headless = (%*ENV<X321_HEADLESS> // '') eq '1';
+
+    my %found = $controller.discover($workspace);
+    return 0 unless %found;                       # nothing governs here: stay out of the way
+    my Verdict $v;
+    my ($code, $out, $err) = 0, '', '';
+    if !%found<available> {
+        $v = unavailable('', "{$name} cannot be driven here: {%found<reason>}");
+        ($code, $out, $err) = $adapter.answer($control, $v, :$headless);
+    }
+    elsif $control eq CTRL-AUTHORITATIVE-CONTEXT {
+        my ($text, $why) = $controller.context($workspace);
+        if $why.defined { $v = unavailable(POINT-CONTEXT, "the context could not be read: $why"); $err = "321: {$v.reason}\n" }
+        else { $v = Verdict.new(:point(POINT-CONTEXT), :result(RESULT-PASS), :reason('the context was delivered')); $out = $text }
+    }
+    elsif $control eq CTRL-POST-RUN {
+        if %native<stop_hook_active> { $v = Verdict.new(:point(POINT-VERIFY), :result(RESULT-PASS), :reason('already asked once this turn')) }
+        else {
+            $v = $controller.verify($workspace, %( summary => $adapter.final-words(%native) ));
+            ($code, $out, $err) = $adapter.answer($control, $v, :$headless);
+        }
+    }
+    else {
+        my $action = $adapter.translate-event($control, %native);
+        if $action.defined {
+            $v = $controller.check-action($workspace, $action);
+            ($code, $out, $err) = $adapter.answer($control, $v, :$headless);
+        }
+        else { $v = unavailable(POINT-ACTION, "{$harness} gave no action for $control") }
+    }
+    hook-log($name, $harness, $control, $v);
+    $env.stdout.print($out) if $out ne '';
+    $env.stderr.print($err) if $err ne '';
+    $code;
+}
+
+sub hook-log(Str $controller, Str $harness, Str $control, Verdict $v) {
+    my $path = %*ENV<X321_HOOK_LOG> // '';
+    return if $path eq '';
+    my %line = controller => $controller, harness => $harness, control => $control, point => $v.point,
+        result => $v.result, reason => $v.reason, invariants => [ |$v.invariants.map(*.Str) ];
+    try {
+        my $fh = $path.IO.open(:a);
+        $fh.say(encode-json(%line));
+        $fh.close;
+    }
 }
 
 # ----------------------------------------------------------------- hooks

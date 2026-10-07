@@ -151,6 +151,37 @@ sub claude-verify(IO::Path $workspace, Str $controller, @controls --> Hash) is e
     %state;
 }
 
+# ---------------------------------------------------------------- per run
+
+#| The same wiring as a value for `claude --settings`, so a run 321
+#| launches carries its hooks without anything being written into the
+#| caller's workspace.
+sub claude-run-settings(Str $self, %by-controller --> Str) is export {
+    my %hooks;
+    for %by-controller.keys.sort -> $controller {
+        my %add = claude-entries($self, $controller, @(%by-controller{$controller}));
+        for %add.keys.sort -> $event { %hooks{$event} = [ |@(%hooks{$event} // []), |@(%add{$event}) ] }
+    }
+    %hooks ?? encode-json(%( hooks => %hooks )) !! '';
+}
+
+#| The last thing the assistant said, from a Claude Code transcript (JSON
+#| lines): the text a controller needs to look for a report in.
+sub claude-last-words(Str $path --> Str) is export {
+    return '' unless $path ne '' && $path.IO.f;
+    my $text = '';
+    for $path.IO.lines -> $line {
+        my $rec = try parse-json($line);
+        next unless $rec ~~ Associative && ($rec<type> // '') eq 'assistant';
+        my $content = ($rec<message> // {})<content> // $rec<content>;
+        my @parts;
+        if $content ~~ Positional { @parts = @$content.grep({ $_ ~~ Associative && ($_<type> // '') eq 'text' }).map({ ($_<text> // '').Str }) }
+        elsif $content ~~ Str { @parts = ($content,) }
+        $text = @parts.join("\n") if @parts.join.trim ne '';
+    }
+    $text;
+}
+
 # ------------------------------------------------------------- translation
 
 #| A native Claude Code hook event as a generic action: what is being done

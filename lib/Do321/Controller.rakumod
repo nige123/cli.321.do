@@ -43,6 +43,7 @@ class Verdict is export {
     has @.uncertain;             # lines for a receipt's uncertain list
     has Str $.proposal = '';     # for needs_human: what a person is asked to agree to
     has Str $.limits = '';       # what the controller says it did not establish
+    has @.parts;                 # for a compound answer: { part, result, detail } each
     has $.evidence;              # the controller's own document, verbatim, or Any
 
     #| Whether work must not simply continue past this answer.
@@ -99,15 +100,16 @@ role Controller is export {
     method wants(--> List) { () }
     method check-action(Str $workspace, Action $action --> Verdict) { unavailable(POINT-ACTION, "{self.name} offers no action check") }
     method check-change(Str $workspace --> Verdict) { unavailable(POINT-CHANGE, "{self.name} offers no change check") }
-    #| %run may carry transcript (a path to the harness's transcript).
+    #| %run may carry summary: the agent's last words, as text.
     method verify(Str $workspace, %run --> Verdict) { unavailable(POINT-VERIFY, "{self.name} offers no verification") }
 }
 
 # --------------------------------------------------------------------- IZ4
 
-#| The iz4 executable: X321_IZ4, else `iz4` on PATH; '' when absent.
+#| The iz4 executable: X321_IZ4 when that is set (and nothing else, so a
+#| caller can pin or withhold it), else `iz4` on PATH; '' when absent.
 sub iz4-binary(--> Str) is export {
-    with %*ENV<X321_IZ4> { return $_ if $_.IO.x }
+    with %*ENV<X321_IZ4> { return ($_.IO.x ?? $_ !! '') if $_ ne '' }
     my $found = on-path('iz4');
     $found.defined ?? $found.Str !! '';
 }
@@ -190,7 +192,13 @@ class IZ4 does Controller is export {
     }
     method verify(Str $workspace, %run --> Verdict) {
         my @args = 'verify', '--worktree', '--json';
-        @args.push('--transcript=' ~ %run<transcript>) if (%run<transcript> // '') ne '';
+        my $file;
+        if %run<summary>:exists {
+            $file = $*TMPDIR.add("321-summary-{$*PID}-{(^1_000_000).pick}.txt");
+            $file.spurt((%run<summary> // '').Str);
+            @args.push('--summary=' ~ $file.Str);
+        }
+        LEAVE { try $file.unlink if $file.defined }
         self!check(POINT-VERIFY, $workspace, @args);
     }
 
@@ -229,8 +237,10 @@ sub verdict-from(Str $point, Str $out, Str $otherwise --> Verdict) is export {
             $proposal = @lines.join("\n");
         }
     }
+    my @parts = @((($doc<evidence> // {})<parts>) // []).grep(Associative).map({
+        %( part => ($_<part> // '').Str, result => ($_<result> // '').Str, detail => ($_<detail> // '').Str ) });
     Verdict.new(:$point, :$result, :$reason, :invariants(@($doc<invariants_considered> // []).map(*.Str)),
-        :@uncertain, :$proposal, :limits(($doc<limits> // '').Str), :evidence($doc));
+        :@uncertain, :$proposal, :limits(($doc<limits> // '').Str), :@parts, :evidence($doc));
 }
 
 #| The IZ4 file above a directory, for the case where iz4 itself cannot be

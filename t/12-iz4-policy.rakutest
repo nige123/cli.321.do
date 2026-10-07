@@ -1,50 +1,23 @@
-# The IZ4 protocol as a policy on a run: the packet goes into the prompt,
-# a completed run that changed files must carry the per-invariant report,
-# and a missing iz4 is said on the receipt.  iz4 is a stand-in script
-# here: the runtime only ever runs it and reads its answers.
+# What governs a run: when the workspace keeps an IZ4, its context goes
+# into the prompt, the harness's interception points are used where it has
+# them, the finished work is put to iz4, and the receipt records what
+# really operated.  iz4 is a stand-in here: the runtime only ever runs it
+# and reads its result documents.
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
 use Do321Test;
 use Do321RunTest;
+use Do321ControlTest;
 use Do321::JSON;
 use Do321::Shape;
 use Do321::Protocol;
 use Do321::Async;
+use Do321::Controller;
 use Do321::Adapter;
 use Do321::Run;
 
 my $bg = Cancel.new;
 my $agent = helper();
-
-#| A stand-in iz4: `agent packet` prints a packet; `hook stop` reads the
-#| harness JSON, reads the transcript it names, and refuses (exit 2) when
-#| the last assistant text carries no report.
-sub stub-iz4(--> Str) {
-    my $dir = temp-dir();
-    my $f = $dir.add('iz4');
-    $f.spurt(q:to/SH/);
-        #!/bin/sh
-        case "$1 $2" in
-          "agent packet") echo "IZ4 agent packet (stub)"; echo "INVARIANT 5"; echo "Nothing is deleted."; exit 0 ;;
-          "hook stop")
-            input=$(cat)
-            path=$(printf '%s' "$input" | sed -n 's/.*"transcript_path":"\([^"]*\)".*/\1/p')
-            if grep -qi 'invariant' "$path" && grep -qi 'assessment' "$path"; then exit 0; fi
-            echo "iz4: files changed in a repository that keeps an IZ4, and the reply gives no per-invariant report." >&2
-            exit 2 ;;
-          *) exit 0 ;;
-        esac
-        SH
-    $f.chmod(0o755);
-    $f.Str;
-}
-
-sub git-workspace(--> IO::Path) {
-    my $ws = temp-dir();
-    my $p = run 'git', 'init', '-q', $ws.Str, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close);
-    $ws.add('IZ4').spurt("IZ4\n\nIS FOR WHAT?\nA test.\n\nIS FOR WHO?\nTesters.\n");
-    $ws;
-}
 
 sub git-pkg(IO::Path $ws, Str $objective --> Hash) {
     my %wp = pkg-for($agent, $objective, 'done');
@@ -55,83 +28,230 @@ sub git-pkg(IO::Path $ws, Str $objective --> Hash) {
 
 my $report = "Changed the file.\n\nInvariant:     5 Nothing is deleted.\nAssessment:    uncertain\nEvidence:      the diff was reviewed\nRemaining gap: no test covers it\n";
 
-#| A stub adapter that answers with a fixed summary and lets the test see
-#| the prompt it was given.
+#| A stand-in harness: it answers with a fixed summary, keeps the Specs it
+#| was given, and has whatever controls the test gives it.  When it can
+#| carry hooks it plays the harness's part and calls one, so the run has
+#| something real to count.
 class Answering does Adapter {
     has Str $.summary;
-    has @.prompts;
+    has @.specs;
+    has %.has-controls;
+    has Bool $.carries-hooks = False;
+    has @.fire;                         # hook log lines to write, as a harness's hooks would
     method name(--> Str) { 'answering' }
     method detect(--> Detection) { Detection.new(:available, :version<t>) }
     method enforcement(--> Hash) { %( features().map({ $_ => True }) ) }
+    method controls(--> Hash) { %!has-controls }
+    method can-register-hooks(--> Bool) { $!carries-hooks }
+    method prompts { @!specs.map(*.prompt) }
     method run(Cancel $, Spec $spec, Control $ --> Outcome) {
-        @!prompts.push($spec.prompt);
+        @!specs.push($spec);
+        if $spec.hook-env<X321_HOOK_LOG>:exists {
+            my $fh = $spec.hook-env<X321_HOOK_LOG>.IO.open(:a);
+            $fh.say(encode-json($_)) for @!fire;
+            $fh.close;
+        }
         Outcome.new(:status(STATUS-COMPLETED.Str), :end-reason<completed>, :summary($!summary),
             :conditions([ %( met => True, proof => 'stub' ), ]), :cost(load('Cost', { basis => COST-HARNESS })));
     }
 }
 sub reg(Answering $a --> Registry) { Registry.new.register-hidden(new-procedure()).register($a) }
+sub go(Answering $a, IO::Path $ws, $sink = Any) {
+    runner(reg($a)).run($bg, git-pkg($ws, 'change it'), $agent,
+        Options.new(|($sink.defined ?? (:sink($sink)) !! ()), :list-changed-files(-> $ { ('note.txt',) })));
+}
+sub governed(%r) { @(%r<evidence><controllers> // []).first({ .<name> eq 'iz4' }) }
 
-# ---- with iz4 present ------------------------------------------------------------
+my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD, STRENGTH-ENFORCES,
+           CTRL-SHELL-GUARD, STRENGTH-ENFORCES, CTRL-POST-RUN, STRENGTH-ENFORCES;
+
+# ---- governed, with a harness that has every control ------------------------------
 {
     temp %*ENV<X321_IZ4> = stub-iz4();
-    my $ws = git-workspace();
-    my $changed = -> { $ws.add('note.txt').spurt('changed') };
+    temp %*ENV<X321_HOOK_SELF> = '/opt/bin/321';
+    my $ws = iz4-workspace();
+    my $said = temp-dir().add('said.txt');
+    temp %*ENV<STUB_SUMMARY_OUT> = $said.Str;
 
-    # a report satisfies the policy, and its uncertain invariants reach the receipt
-    my $a = Answering.new(:summary($report));
-    $changed();
+    my $a = Answering.new(:summary($report), :has-controls(%full), :carries-hooks,
+        :fire([ %( controller => 'iz4', harness => 'answering', control => CTRL-FILESYSTEM-GUARD, point => 'action', result => 'pass', reason => '' ),
+                %( controller => 'iz4', harness => 'answering', control => CTRL-SHELL-GUARD, point => 'action', result => 'warn', reason => 'tests/x names Invariant 5', invariants => ['5'] ), ]));
     my $col = Collector.new;
-    my %r = runner(reg($a)).run($bg, git-pkg($ws, 'change it'), $agent, Options.new(:sink($col), :list-changed-files(-> $ { ('note.txt',) })));
-    is %r<status>, STATUS-COMPLETED, 'a run with the report completes' or diag "{%r<blockedOn>} {%r<uncertain>.raku}";
-    ok $a.prompts[0].contains('## Project intent (IZ4)') && $a.prompts[0].contains('IZ4 agent packet (stub)'), 'the packet is in the prompt, before the work';
-    ok $a.prompts[0].index('Project intent (IZ4)') < $a.prompts[0].index('## The work'), 'and it comes before the work';
-    ok @(%r<uncertain>).grep(*.contains('Invariant 5 Nothing is deleted.: uncertain')), 'an invariant the report marks uncertain is on the receipt' or diag %r<uncertain>.raku;
-    ok $col.all.grep({ .<kind> eq EVENT-PROGRESS && (.<payload><text> // '').contains('IZ4 policy') }), 'the policy says what it did';
-    ok !validate-run-receipt(%r), 'the receipt validates';
+    my %r = go($a, $ws, $col);
+    is %r<status>, STATUS-COMPLETED, 'a run whose work passes completes' or diag "{%r<blockedOn>} {%r<uncertain>.raku}";
+    ok $a.prompts[0].contains('## What governs this work') && $a.prompts[0].contains('These invariants govern this work (stub)'), 'iz4\'s context is in the prompt';
+    ok $a.prompts[0].index('What governs this work') < $a.prompts[0].index('## The work'), 'before the work';
+    ok !$a.prompts[0].contains('per-invariant report'), 'and the runtime adds no words about IZ4 of its own';
+    is $said.slurp, $report, 'the agent\'s last words were put to iz4 exactly';
+    ok @(%r<uncertain>).grep(*.contains('IZ4 Invariant 5 Nothing is deleted.: uncertain')), 'what the report calls uncertain is on the receipt' or diag %r<uncertain>.raku;
+    ok $col.all.grep({ .<kind> eq EVENT-PROGRESS && (.<payload><text> // '').contains('IZ4 policy') }), 'the run says what it did';
+    ok !validate-run-receipt(%r), 'the receipt validates' or diag validate-run-receipt(%r).Str;
 
-    # no report: the run is blocked, not completed
-    my $b = Answering.new(:summary('Changed the file. Done.'));
-    %r = runner(reg($b)).run($bg, git-pkg($ws, 'change it'), $agent, Options.new(:list-changed-files(-> $ { ('note.txt',) })));
-    is %r<status>, STATUS-BLOCKED, 'a run without the report is blocked' or diag %r<uncertain>.raku;
-    ok %r<blockedOn>.contains('per-invariant report'), 'blocked on the report' or diag %r<blockedOn>;
-    ok @(%r<uncertain>).grep(*.contains('no per-invariant report')), 'and the receipt says so';
-    ok !validate-run-receipt(%r), 'the blocked receipt validates';
+    # the hooks were handed to the harness for this run only
+    my $spec = $a.specs[0];
+    is-deeply $spec.hook-controls<iz4>.sort.List, (CTRL-FILESYSTEM-GUARD, CTRL-POST-RUN, CTRL-SHELL-GUARD).sort.List, 'the guards and the end-of-run check are registered for the run';
+    is $spec.hook-self, '/opt/bin/321', 'calling back this 321';
+    ok $spec.hook-env<X321_HEADLESS> eq '1' && $spec.hook-env<X321_HOOK_LOG> ne '', 'headless, with somewhere for the hooks to report';
+    ok !$ws.add('.claude').e && !$ws.add('.fake-harness.json').e, 'nothing was written into the caller\'s workspace';
+    ok !$spec.hook-env<X321_HOOK_LOG>.IO.e, 'and the hook log is gone once it has been read';
 
-    # a procedure is outside the policy
+    # the evidence
+    my %g = governed(%r);
+    ok %g.defined, 'the receipt records what governed the run';
+    is %g<harness>, 'answering', 'in which harness';
+    is %g<subject>, $ws.add('IZ4').Str, 'which IZ4';
+    is %g<digest>, 'sha256:abc123', 'and its content identity';
+    is %g<levels>.join(','), 'aware,checked,guarded,verified', 'all four levels, each earned';
+    is %g<hooksFired>, 2, 'the hooks that reported back are counted';
+    is %g<controls>{CTRL-AUTHORITATIVE-CONTEXT}, 'in the prompt', 'context: in the prompt';
+    is %g<controls>{CTRL-FILESYSTEM-GUARD}, 'registered for this run (enforces)', 'the write guard: registered for this run';
+    is %g<humanDecision>, 'none was needed', 'no human decision was needed';
+    ok %g<checks>.grep({ .<point> eq 'verify/change' && .<result> eq 'pass' }), 'the change check is recorded';
+    ok %g<checks>.grep({ .<point> eq 'verify' && .<result> eq 'pass' }), 'so is the verification';
+    ok %g<checks>.grep({ .<point> eq 'action' && .<result> eq 'warn' && .<control> eq CTRL-SHELL-GUARD && .<reason>.contains('Invariant 5') }), 'a hook\'s warning is recorded in full';
+    ok !%g<checks>.grep({ .<point> eq 'action' && .<result> eq 'pass' }), 'a hook\'s pass is counted, not listed';
+    ok !@(%g<gaps> // []), 'and there are no gaps to report' or diag %g<gaps>.raku;
+}
+
+# ---- what the finished work can come back as ---------------------------------------
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    temp %*ENV<X321_HOOK_SELF> = '/opt/bin/321';
+    my $ws = iz4-workspace();
+    my sub ran(*%env) {
+        my %old = %env.keys.map({ $_ => %*ENV{$_} });
+        %*ENV{.key} = .value for %env;
+        LEAVE { for %old.kv -> $k, $v { if $v.defined { %*ENV{$k} = $v } else { %*ENV{$k}:delete } } }
+        go(Answering.new(:summary($report), :has-controls(%full), :carries-hooks), $ws);
+    }
+
+    # a person must decide
+    my %r = ran(STUB_VERIFY => 'needs_human');
+    is %r<status>, STATUS-BLOCKED, 'work that changes a commitment ends blocked, not completed';
+    ok %r<blockedOn>.contains('reworded Invariant 5') && %r<blockedOn>.contains('iz4 approve --candidate=abc --base=HEAD'), 'blocked on the proposal, with how a person agrees' or diag %r<blockedOn>;
+    my %g = governed(%r);
+    ok %g<humanDecision>.contains('a person must agree') && %g<humanDecision>.contains('never agrees for them'), 'the receipt says a person\'s decision is outstanding';
+    ok !is-in('verified', %g<levels>), 'and the run is not verified';
+    ok %g<checks>.grep({ .<point> eq 'verify' && .<result> eq 'needs_human' }), 'the verdict is recorded as it came';
+    ok !validate-run-receipt(%r), 'the blocked receipt validates' or diag validate-run-receipt(%r).Str;
+
+    # a definite finding
+    %r = ran(STUB_VERIFY => 'block');
+    is %r<status>, STATUS-BLOCKED, 'a block ends the run blocked';
+    ok %r<blockedOn>.contains('IZ4: verify block'), 'on iz4\'s own reason' or diag %r<blockedOn>;
+    ok @(%r<uncertain>).grep(*.contains('IZ4: verify block')), 'which is on the uncertain list too';
+    is governed(%r)<humanDecision>, 'none was needed', 'a block is not a question for a person';
+
+    # a warning
+    %r = ran(STUB_VERIFY => 'warn');
+    is %r<status>, STATUS-COMPLETED, 'a warning does not block';
+    ok @(%r<uncertain>).grep(*.contains('IZ4: verify warn')), 'it is on the uncertain list';
+    ok !is-in('verified', governed(%r)<levels>), 'and a warned run is not called verified';
+}
+
+# ---- a harness with fewer capabilities: degraded, and it says so ---------------------
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    temp %*ENV<X321_HOOK_SELF> = '/opt/bin/321';
+    my $ws = iz4-workspace();
+    my $weak = Answering.new(:summary($report), :has-controls(%( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ADVISES )));
+    my %r = go($weak, $ws);
+    is %r<status>, STATUS-COMPLETED, 'a weak harness still runs';
+    my %g = governed(%r);
+    is %g<levels>.join(','), 'aware,checked,verified', 'aware, checked and verified, but not guarded';
+    ok !$weak.specs[0].hook-controls, 'no hooks were handed to a harness that has none';
+    is %g<controls>{CTRL-FILESYSTEM-GUARD}, 'unavailable', 'the write guard is unavailable';
+    is %g<controls>{CTRL-POST-RUN}, 'by the runtime, at the end of the run', 'the end-of-run check is the runtime\'s own';
+    ok %g<gaps>.grep(*.contains('Filesystem guard is not available in answering')), 'the gap is on the receipt';
+    is %g<hooksFired>, 0, 'and no hook is claimed to have fired';
+
+    # controls it has, but no way to carry hooks for one run
+    my $fixed = Answering.new(:summary($report), :has-controls(%full));
+    %g = governed(go($fixed, $ws));
+    ok !is-in('guarded', %g<levels>), 'a harness that takes no per-run hooks, with none installed, is not guarded';
+    ok %g<gaps>.grep(*.contains('could not be registered for this run')), 'and the receipt says the guards could not be registered';
+
+    # hooks registered that never report back are not counted
+    my $silent = Answering.new(:summary($report), :has-controls(%full), :carries-hooks);
+    %g = governed(go($silent, $ws));
+    ok !is-in('guarded', %g<levels>), 'registered hooks that never reported are not called guarded';
+    ok %g<gaps>.grep(*.contains('no hook reported back')), 'and that is a gap on the receipt';
+}
+
+# ---- outside all of this ---------------------------------------------------------
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    my $ws = iz4-workspace();
+
     my %wp = git-pkg($ws, 'note: a procedure');
-    %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new);
-    is %r<status>, STATUS-COMPLETED, 'a procedure run is not asked for a report';
-    ok !@(%r<uncertain> // []).grep(*.contains('IZ4')), 'and carries no IZ4 note';
+    my %r = runner(fake-registry()).run($bg, %wp, $agent, Options.new);
+    is %r<status>, STATUS-COMPLETED, 'a procedure run is not governed: there is no model';
+    ok !governed(%r).defined && !@(%r<uncertain> // []).grep(*.contains('IZ4')), 'and its receipt carries nothing about IZ4';
 
-    # a package with no workspace is outside it too
-    my $c = Answering.new(:summary('nothing to report'));
+    my $c = Answering.new(:summary('nothing to report'), :has-controls(%full));
     my %none = pkg-for($agent, 'think', 'done'); %none<capabilities><limits><network> = NETWORK-OPEN;
     %r = runner(reg($c)).run($bg, %none, $agent, Options.new);
-    is %r<status>, STATUS-COMPLETED, 'no workspace, no policy';
-    ok !$c.prompts[0].contains('Project intent (IZ4)'), 'and no packet';
+    ok %r<status> eq STATUS-COMPLETED && !governed(%r).defined, 'no workspace: nothing governs';
+    ok !$c.prompts[0].contains('What governs this work'), 'and nothing is added to the prompt';
+
+    my $bare = iz4-workspace(:!iz4);
+    my $d = Answering.new(:summary('done'), :has-controls(%full), :carries-hooks);
+    %r = go($d, $bare);
+    ok %r<status> eq STATUS-COMPLETED && !governed(%r).defined, 'a workspace with no IZ4 runs exactly as before';
+    ok !$d.prompts[0].contains('What governs this work') && !$d.specs[0].hook-controls, 'with no context and no hooks';
+
+    my $e = Answering.new(:summary('done'), :has-controls(%full), :carries-hooks);
+    %r = runner(reg($e)).run($bg, git-pkg($ws, 'change it'), $agent, Options.new(:controllers([]), :list-changed-files(-> $ { () })));
+    ok %r<status> eq STATUS-COMPLETED && !governed(%r).defined, 'a caller can run with no controllers at all';
 }
 
-# ---- without iz4 -------------------------------------------------------------------
+# ---- an IZ4 that cannot be driven: said, never passed ------------------------------
 {
-    temp %*ENV<X321_IZ4> = temp-dir().add('missing').Str;
-    temp %*ENV<PATH> = temp-dir().Str;
-    my $ws = git-workspace();
-    my $a = Answering.new(:summary('Changed the file. Done.'));
-    my %r = runner(reg($a)).run($bg, git-pkg($ws, 'change it'), $agent, Options.new(:list-changed-files(-> $ { ('note.txt',) })));
-    is %r<status>, STATUS-COMPLETED, 'without iz4 the run is not blocked';
-    ok @(%r<uncertain>).grep(*.contains('protocol not applied: iz4 is not installed')), 'but the receipt says the protocol was not applied' or diag %r<uncertain>.raku;
-    ok !$a.prompts[0].contains('Project intent (IZ4)'), 'and no packet was injected';
+    my $ws = iz4-workspace();
+    {
+        temp %*ENV<X321_IZ4> = temp-dir().add('missing').Str;
+        temp %*ENV<PATH> = temp-dir().Str;
+        my $a = Answering.new(:summary('Changed the file. Done.'), :has-controls(%full), :carries-hooks);
+        my %r = go($a, $ws);
+        is %r<status>, STATUS-COMPLETED, 'without iz4 the run is not blocked';
+        ok @(%r<uncertain>).grep(*.contains('IZ4 present at') && *.contains('not applied: iz4 is not installed')), 'but the receipt says the IZ4 was not applied' or diag %r<uncertain>.raku;
+        ok !$a.prompts[0].contains('What governs this work'), 'and nothing was put in the prompt';
+        my %g = governed(%r);
+        ok %g.defined && %g<levels>.elems == 0, 'the IZ4 is on the receipt with no level claimed';
+        ok %g<gaps>.grep(*.contains('not driven')), 'and the gap named';
+    }
+    {
+        temp %*ENV<X321_IZ4> = stub-iz4();
+        temp %*ENV<STUB_OLD> = '1';
+        my %r = go(Answering.new(:summary($report), :has-controls(%full), :carries-hooks), $ws);
+        ok @(%r<uncertain>).grep(*.contains('no machine interface')), 'an iz4 too old to be driven is reported the same way' or diag %r<uncertain>.raku;
+        is governed(%r)<levels>.elems, 0, 'with no level claimed';
+    }
 }
 
-# ---- the helpers --------------------------------------------------------------------
-is uncertain-invariants($report).join('|'), 'IZ4 Invariant 5 Nothing is deleted.: uncertain', 'uncertain invariants are read off the report';
-is uncertain-invariants("Invariant: 6\nAssessment: apparently consistent\n").elems, 0, 'consistent ones are not';
-my $nested = temp-dir(); $nested.add('IZ4').spurt("IZ4\n"); $nested.add('src').mkdir;
-is find-iz4($nested.add('src').Str).Str, $nested.add('IZ4').Str, 'the IZ4 is found up the tree';
-ok !find-iz4(temp-dir().Str).defined, 'and not invented';
+# ---- the IZ4 changing during a run ---------------------------------------------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
-    ok iz4-binary() ne '', 'X321_IZ4 names the binary';
+    # two attempts, the digest different on the second: the context is re-read
+    my $ws = iz4-workspace();
+    my $n = temp-dir().add('n');
+    $n.spurt('0');
+    my $f = temp-dir().add('iz4');
+    $f.spurt(qq:to/SH/);
+        #!/bin/sh
+        case "\$1 \$2" in
+          "discover --json") c=\$(cat $n); echo \$((c+1)) > $n; printf '\{"schema":"iz4-discover/1","present":true,"file":"{$ws}/IZ4","sha256":"v%s","valid":true,"errors":[],"invariants":[]\}\\n' "\$c"; exit 0 ;;
+          "context --json") c=\$(cat $n); printf '\{"schema":"iz4-context/1","text":"context read at %s"\}\\n' "\$c"; exit 0 ;;
+          *) printf '\{"schema":"iz4-check/1","check":"verify","result":"pass","reason":"ok","invariants_considered":[],"evidence":\{\},"proposed_invariant_change":null,"limits":""\}\\n'; exit 0 ;;
+        esac
+        SH
+    $f.chmod(0o755);
+    temp %*ENV<X321_IZ4> = $f.Str;
+    my $s = Session.make(runner(reg(Answering.new(:summary('x')))), git-pkg($ws, 'change it'), $agent, Options.new);
+    $s.adapter = Answering.new(:summary('x'), :has-controls(%full));
+    $s.apply-controllers;
+    ok $s.policy-text.contains('context read at 1'), 'the context is read when the run starts';
+    $s.refresh-controllers(2);
+    ok $s.policy-text.contains('context read at 2'), 'and read again when the IZ4 has changed between attempts' or diag $s.policy-text;
 }
 
 done-testing;

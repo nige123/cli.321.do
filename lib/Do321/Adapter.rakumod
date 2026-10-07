@@ -46,6 +46,9 @@ class Spec is export {
     has $.procedure;             # a Procedure document, or Any
     has %.captures;
     has Str $.overlay;           # adapter-specific tuning, or Str
+    has %.hook-controls;         # controller name => the controls to register for this run
+    has Str $.hook-self = '';    # the 321 command the harness should call back
+    has %.hook-env;              # extra environment for the harness, so its hooks can report back
 }
 
 #| What the adapter can say and hear while it runs.
@@ -113,6 +116,8 @@ role Adapter is export {
     method translate-event(Str $control, %native --> Action) { Action }
     #| A verdict in the harness's own terms: (exit code, stdout, stderr).
     method answer(Str $control, Verdict $v, Bool :$headless = False --> List) { (0, '', '') }
+    #| The agent's last words, from the harness's own end-of-turn event.
+    method final-words(%native --> Str) { '' }
 }
 
 #| One feature the package or its grants make mandatory.
@@ -208,6 +213,17 @@ class Registry is export {
         my @rest = @!adapters.grep({ !(%rank{.name}:exists) });
         (|@ranked, |@rest);
     }
+}
+
+#| The argument vector for a harness: with a replacement environment when
+#| one is given (tests), and with extra variables added to the inherited
+#| one otherwise, through env so the result does not depend on how the
+#| runtime's own process passes an environment on.
+sub launch-argv(Str $bin, @argv, %replace, %extra --> List) is export {
+    return spawn-argv($bin, @argv, %( |%replace, |%extra )) if %replace.elems;
+    return ($bin, |@argv) unless %extra.elems;
+    my $env-bin = on-path('env') // '/usr/bin/env'.IO;
+    ($env-bin.Str, |%extra.keys.sort.map({ "$_={%extra{$_}}" }), $bin, |@argv);
 }
 
 #| Neutral grants mapped onto an adapter's tool vocabulary.  Unknown
@@ -951,6 +967,7 @@ class ClaudeCode does Adapter is export {
         ($event // '') eq 'PreToolUse' || ($event // '') eq 'PostToolUse' ?? claude-action(%native) !! Action;
     }
     method answer(Str $control, Verdict $v, Bool :$headless = False --> List) { claude-answer($control, $v, :$headless) }
+    method final-words(%native --> Str) { claude-last-words((%native<transcript_path> // '').Str) }
 
     #| The whole invocation, exported so the surface is testable without a
     #| process.
@@ -963,6 +980,12 @@ class ClaudeCode does Adapter is export {
         @args.push('--max-turns', ($spec.limits<maxTurns> // 0).Str) if ($spec.limits<maxTurns> // 0) > 0;
         @args.push('--max-budget-usd', sprintf('%.2f', $spec.limits<maxUsd>)) if ($spec.limits<maxUsd> // 0) > 0;
         @args.push('--resume', $spec.session-ref) if $spec.session-ref ne '';
+        # Hooks for this run only: handed to the harness on its command
+        # line, so the caller's settings file is not written.
+        if $spec.hook-controls && $spec.hook-self ne '' {
+            my $settings = claude-run-settings($spec.hook-self, $spec.hook-controls);
+            @args.push('--settings', $settings) if $settings ne '';
+        }
         with $spec.overlay {
             my $o = try parse-json($_);
             @args.push('--model', $o<model>) if !$! && $o ~~ Associative && $o<model> ~~ Str && $o<model> ne '';
@@ -972,7 +995,7 @@ class ClaudeCode does Adapter is export {
 
     method run(Cancel $cancel, Spec $spec, Control $ctl --> Outcome) {
         my $start = now;
-        my $proc = Proc::Async.new(|spawn-argv(self!binary, self.args($spec), %!env));
+        my $proc = Proc::Async.new(|launch-argv(self!binary, self.args($spec), %!env, $spec.hook-env));
         my $consumer = StreamConsumer.new(:transcript($!transcript), :$ctl);
         my $err = '';
         my $lock = Lock.new;

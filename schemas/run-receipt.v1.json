@@ -55,6 +55,24 @@
         "denials": { "type": "array", "items": { "type": "string" } },
         "toolCalls": { "type": "array", "items": { "type": "object", "required": ["tool", "op", "capability", "ok", "exitCode", "durationMs"], "properties": { "tool": { "type": "string" }, "op": { "type": "string" }, "capability": { "type": "string" }, "params": { "type": "object" }, "argv": { "type": "array", "items": { "type": "string" } }, "ok": { "type": "boolean" }, "exitCode": { "type": "integer" }, "durationMs": { "type": "integer" }, "unavailable": { "type": "string" }, "summary": { "type": "string" }, "outputSha256": { "type": "string" } } } },
         "proposal": { "$ref": "deployment-proposal.v1.json" },
+        "controllers": {
+          "description": "What governed the work besides the runtime's own grants: one record per controller that applied (an IZ4, say). levels are separate facts: aware (its context reached the agent), checked (a change check ran), guarded (operations were intercepted before they ran), verified (the finished result was checked and passed). controls says how each harness control was operated. A gap is listed, never read as a pass.",
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["name", "harness", "subject", "levels"],
+            "properties": {
+              "name": { "type": "string" }, "harness": { "type": "string" }, "subject": { "type": "string" }, "digest": { "type": "string" },
+              "levels": { "type": "array", "items": { "enum": ["aware", "checked", "guarded", "verified"] } },
+              "controls": { "type": "object", "additionalProperties": { "type": "string" } },
+              "checks": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["point", "result"], "properties": {
+                "point": { "type": "string" }, "result": { "enum": ["pass", "warn", "block", "needs_human", "unavailable", "not_checked"] },
+                "reason": { "type": "string" }, "invariants": { "type": "array", "items": { "type": "string" } }, "control": { "type": "string" } } } },
+              "hooksFired": { "type": "integer" },
+              "humanDecision": { "type": "string" },
+              "gaps": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
         "errors": { "type": "array", "items": { "type": "string" } },
         "noChange": { "type": "boolean" }
       }

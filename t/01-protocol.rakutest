@@ -167,7 +167,9 @@ my %NESTED =
         attempts => 'Attempt', directives => 'DirectiveSummary', instructionHistory => 'HistoryRef', events => 'EventSummary',
         conditions => 'ConditionProof', evidence => 'Evidence', cost => 'Cost', stop => 'StopInfo', denied => 'DenialInfo', signature => 'Signature' },
     Attempt => { cost => 'Cost' }, DirectiveSummary => { rejected => 'RejectedDirective', gaps => 'SequenceGap' },
-    Evidence => { artifacts => 'Artifact', externalAction => 'ExternalAction', approvalCheck => 'ApprovalCheck', toolCalls => 'ToolCall', proposal => 'DeploymentProposal' },
+    Evidence => { artifacts => 'Artifact', externalAction => 'ExternalAction', approvalCheck => 'ApprovalCheck', toolCalls => 'ToolCall', proposal => 'DeploymentProposal',
+        controllers => 'ControllerEvidence' },
+    ControllerEvidence => { checks => 'ControllerCheck' },
     StopInfo => { issuer => 'Issuer' }, DeploymentProposal => { agent => 'AgentRef' };
 sub nested-type(Str $type, Str $field) { (%NESTED{$type} // {}){$field} }
 for (

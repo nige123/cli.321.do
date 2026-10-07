@@ -109,7 +109,12 @@ define 'ConditionProof', (met => 'bool', proof => 'str?');
 define 'Evidence', (
     filesChanged => 'strs?', artifacts => 'list:Artifact?', externalAction => 'ptr:ExternalAction?',
     approvalCheck => 'ptr:ApprovalCheck?', denials => 'strs?', errors => 'strs?', noChange => 'bool?',
-    toolCalls => 'list:ToolCall?', proposal => 'ptr:DeploymentProposal?');
+    toolCalls => 'list:ToolCall?', proposal => 'ptr:DeploymentProposal?', controllers => 'list:ControllerEvidence?');
+# What governed the work besides the runtime's own grants: one record per
+# controller (IZ4, say) that applied, with what really operated.
+define 'ControllerEvidence', (name => 'str', harness => 'str', subject => 'str', digest => 'str?', levels => 'strs',
+    controls => 'map:str?', checks => 'list:ControllerCheck?', hooksFired => 'int?', humanDecision => 'str?', gaps => 'strs?');
+define 'ControllerCheck', (point => 'str', result => 'str', reason => 'str?', invariants => 'strs?', control => 'str?');
 define 'ToolCall', (
     tool => 'str', op => 'str', capability => 'str', params => 'map:str?', argv => 'strs?', ok => 'bool',
     exitCode => 'int', durationMs => 'int', unavailable => 'str?', summary => 'str?', outputSha256 => 'str?');

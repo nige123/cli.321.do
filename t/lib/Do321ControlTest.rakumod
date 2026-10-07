@@ -26,7 +26,7 @@ sub stub-iz4(--> Str) is export {
           [ "$2" = needs_human ] && extra=',"proposed_invariant_change":{"kind":"change","summary":"1 commitment change(s)","changes":[{"kind":"reworded","number":5,"text":"Staff decide."}],"agree_with":"iz4 approve --candidate=abc --base=HEAD","proposal_digest":"d1g"}'
           [ "$2" = needs_human ] || extra=',"proposed_invariant_change":null'
           rep=''
-          [ "$1" = verify ] && rep=',"report":{"uncertain":["Invariant 5 Nothing is deleted.: uncertain"]}'
+          [ "$1" = verify ] && rep=',"report":{"uncertain":["Invariant 5 Nothing is deleted.: uncertain"]},"parts":[{"part":"structure","result":"pass","detail":"well formed"},{"part":"change","result":"'"${STUB_CHANGE:-pass}"'","detail":"change"},{"part":"report","result":"pass","detail":"report"}]'
           printf '{"schema":"iz4-check/1","tool":"iz4/stub","check":"%s","result":"%s","reason":"%s","invariants_considered":[5],"evidence":{"rule":"stub"%s}%s,"iz4":{"file":"x","sha256":"y"},"limits":"a stub establishes nothing"}\n' "$1" "$2" "$3" "$rep" "$extra"
           case "$2" in needs_human) exit 2 ;; block) exit 3 ;; *) exit 0 ;; esac
         }
@@ -42,7 +42,9 @@ sub stub-iz4(--> Str) is export {
           "context --json") printf '%s\n' '{"schema":"iz4-context/1","text":"These invariants govern this work (stub).\nINVARIANT 5\nNothing is deleted.\n"}'; exit 0 ;;
           "check action") cat > "${STUB_ACTION_IN:-/dev/null}"; doc action "${STUB_ACTION:-pass}" "action ${STUB_ACTION:-pass}" ;;
           "check change") doc change "${STUB_CHANGE:-pass}" "change ${STUB_CHANGE:-pass}" ;;
-          "verify --worktree") doc verify "${STUB_VERIFY:-pass}" "verify ${STUB_VERIFY:-pass}" ;;
+          "verify --worktree")
+            for a in "$@"; do case "$a" in --summary=*) [ -n "$STUB_SUMMARY_OUT" ] && cp "${a#--summary=}" "$STUB_SUMMARY_OUT" ;; esac; done
+            doc verify "${STUB_VERIFY:-pass}" "verify ${STUB_VERIFY:-pass}" ;;
           *) echo "stub iz4: unknown: $*" >&2; exit 2 ;;
         esac
         SH

@@ -95,6 +95,7 @@ sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@(
     ok %v{CTRL-AUTHORITATIVE-CONTEXT} eq 'legacy' && %v{CTRL-POST-RUN} eq 'legacy' && %v{CTRL-FILESYSTEM-GUARD} eq 'missing', 'direct wiring is seen as legacy, not as installed';
     my %s = enforcement-status($cc, $iz4, $ws);
     ok %s<warnings>.grep(*.contains('old way')), 'the status says it is the old way';
+    is %s<levels>.join(','), 'aware', 'old wiring delivers context: aware, and not counted as checking or guarding';
     is $cc.install-controller($ws, '321', 'iz4', @wants), 'updated', 'installing replaces it';
     ok !commands($ws).grep(*.contains('iz4 hook ')), 'the direct commands are gone, so nothing runs twice';
 }
@@ -118,6 +119,7 @@ sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@(
     my @lines = status-lines(%s);
     ok @lines.grep(/^ 'Filesystem guard' \s+ 'yes' $/) && @lines.grep(/^ 'Network interception' \s+ 'no' $/), 'the lines say yes and no plainly' or diag @lines.join("\n");
     ok @lines.grep('Effective enforcement: GUARDED (aware, checked, guarded)'), 'with the headline and what it is made of';
+    ok @lines.grep(/^ 'Human approval' \s+ 'yes'/), 'where a guard is installed, asking the person is reported as operating';
     is install-enforcement($cc, $iz4, $ws, '321')<action>, 'unchanged', 'install is idempotent';
 
     # only the context hook: aware, and never called guarded

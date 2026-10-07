@@ -29,7 +29,7 @@ constant LEVEL-LOCAL       is export = 'local';
 constant MANIFEST-FILE is export = 'agent.json';
 
 #| Reserved names an alias may never shadow.
-constant RESERVED is export = <run agents packages trust doctor help version>;
+constant RESERVED is export = <run agents packages trust doctor help version hooks hook harness iz4>;
 
 class X::Do321::Trust is Exception is export {
     has Str $.message;
