@@ -1,0 +1,217 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# Harness knowledge: wiring a controller into a harness, taking it out,
+# checking it is really there, translating native events to generic
+# actions and verdicts back, and saying honestly what it adds up to.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321ControlTest;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Controller;
+use Do321::ClaudeHooks;
+use Do321::Adapter;
+use Do321::Enforcement;
+
+my $cc = ClaudeCode.new(:binary<no-such-claude-binary>);
+my $iz4 = IZ4.new;
+my @wants = $iz4.wants;
+temp %*ENV<X321_IZ4> = stub-iz4();
+
+sub settings(IO::Path $ws) { parse-json($ws.add(CLAUDE-SETTINGS).slurp) }
+sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@($_<hooks>) }).map(*<command>).sort }
+
+# ---- install into Claude Code ------------------------------------------------------
+{
+    my $ws = iz4-workspace();
+    is $cc.wiring-path, '.claude/settings.json', 'the adapter says where its wiring lives';
+    is $cc.install-controller($ws, '321', 'iz4', @wants), 'installed', 'a first install';
+    my %s = settings($ws);
+    is %s<hooks>.keys.sort.join(','), 'PreToolUse,SessionStart,Stop', 'the three native events are wired';
+    is commands($ws).join('|'),
+       '321 hook claude_code iz4 authoritative_context|321 hook claude_code iz4 filesystem_guard|321 hook claude_code iz4 post_run|321 hook claude_code iz4 shell_guard',
+       'every hook calls 321\'s glue, never the controller directly';
+    is %s<hooks><PreToolUse>.map(*<matcher>).sort.join(','), 'Bash,Edit|Write|MultiEdit|NotebookEdit', 'writes and shell commands are matched';
+    is %s<hooks><SessionStart>[0]<matcher>, 'startup|resume|compact', 'context is delivered at start, resume and after a compaction';
+    is $cc.install-controller($ws, '321', 'iz4', @wants), 'unchanged', 'installing again changes nothing';
+    is-deeply $cc.verify-controller($ws, 'iz4', @wants), %( @wants.map({ $_ => 'installed' }) ), 'and every control verifies as installed';
+
+    is $cc.install-controller($ws, '/opt/321', 'iz4', @wants), 'updated', 'a changed 321 path updates the wiring';
+    is commands($ws).grep(*.starts-with('/opt/321 ')).elems, 4, 'in place, with no duplicates';
+    is commands($ws).elems, 4, 'four commands in all';
+
+    is $cc.remove-controller($ws, 'iz4'), 'removed', 'remove takes it out';
+    ok !(settings($ws)<hooks>:exists), 'leaving no empty hooks behind';
+    is $cc.remove-controller($ws, 'iz4'), 'unchanged', 'removing again changes nothing';
+    is-deeply $cc.verify-controller($ws, 'iz4', @wants), %( @wants.map({ $_ => 'missing' }) ), 'and nothing verifies';
+}
+
+# ---- other people's configuration is never damaged --------------------------------
+{
+    my $ws = iz4-workspace();
+    $ws.add('.claude').mkdir;
+    $ws.add(CLAUDE-SETTINGS).spurt(encode-json(%(
+        permissions => %( allow => ['Bash(ls:*)'] ), model => 'opus',
+        hooks => %( PreToolUse => [ %( matcher => 'Bash', hooks => [ %( type => 'command', command => 'my-own-linter --check' ), ] ), ],
+                    Notification => [ %( hooks => [ %( type => 'command', command => 'notify-send done' ), ] ), ] ) )));
+    is $cc.install-controller($ws, '321', 'iz4', @wants), 'installed', 'install beside existing settings';
+    my %s = settings($ws);
+    ok %s<permissions><allow>[0] eq 'Bash(ls:*)' && %s<model> eq 'opus', 'unrelated settings are kept';
+    ok commands($ws).grep('my-own-linter --check') && commands($ws).grep('notify-send done'), 'and so are hooks that are not 321\'s';
+    is $cc.remove-controller($ws, 'iz4'), 'removed', 'remove';
+    %s = settings($ws);
+    is commands($ws).join('|'), 'my-own-linter --check|notify-send done', 'only 321\'s entries are gone';
+    ok %s<permissions><allow>[0] eq 'Bash(ls:*)', 'and the rest is untouched';
+
+    # a second controller's wiring is independent of the first
+    $cc.install-controller($ws, '321', 'iz4', @wants);
+    $cc.install-controller($ws, '321', 'tracer', [CTRL-POST-TOOL]);
+    is $cc.remove-controller($ws, 'iz4'), 'removed', 'removing one controller';
+    ok commands($ws).grep('321 hook claude_code tracer post_tool'), 'leaves another\'s wiring alone';
+}
+
+# ---- a settings file 321 cannot read is never touched -----------------------------
+{
+    my $ws = iz4-workspace();
+    $ws.add('.claude').mkdir;
+    $ws.add(CLAUDE-SETTINGS).spurt('{ this is not json');
+    my $r = try $cc.install-controller($ws, '321', 'iz4', @wants);
+    ok $!.defined && $!.message.contains('not a JSON object'), 'install refuses a settings file it cannot parse';
+    is $ws.add(CLAUDE-SETTINGS).slurp, '{ this is not json', 'and leaves it exactly as it was';
+    my %s = install-enforcement($cc, $iz4, $ws, '321');
+    is %s<action>, 'failed', 'the failure is reported as a failure';
+    ok %s<error>.contains('not a JSON object'), 'with the reason';
+    is %s<headline>, 'NONE', 'and no enforcement is claimed';
+}
+
+# ---- the older direct wiring is recognised and replaced ----------------------------
+{
+    my $ws = iz4-workspace();
+    $ws.add('.claude').mkdir;
+    $ws.add(CLAUDE-SETTINGS).spurt(encode-json(%( hooks => %(
+        SessionStart => [ %( matcher => 'startup|resume|compact', hooks => [ %( type => 'command', command => 'iz4 hook session-start' ), ] ), ],
+        Stop => [ %( hooks => [ %( type => 'command', command => '/home/x/.local/bin/iz4 hook stop' ), ] ), ] ) )));
+    my %v = $cc.verify-controller($ws, 'iz4', @wants);
+    ok %v{CTRL-AUTHORITATIVE-CONTEXT} eq 'legacy' && %v{CTRL-POST-RUN} eq 'legacy' && %v{CTRL-FILESYSTEM-GUARD} eq 'missing', 'direct wiring is seen as legacy, not as installed';
+    my %s = enforcement-status($cc, $iz4, $ws);
+    ok %s<warnings>.grep(*.contains('old way')), 'the status says it is the old way';
+    is $cc.install-controller($ws, '321', 'iz4', @wants), 'updated', 'installing replaces it';
+    ok !commands($ws).grep(*.contains('iz4 hook ')), 'the direct commands are gone, so nothing runs twice';
+}
+
+# ---- status: what is wired, and no more than that ---------------------------------
+{
+    my $ws = iz4-workspace();
+    my %s = enforcement-status($cc, $iz4, $ws);
+    ok %s<applies> && %s<available>, 'the IZ4 is found and can be driven';
+    is %s<headline>, 'NONE', 'nothing installed: no enforcement, whatever the harness could do';
+    ok %s<controls>.first({ .<control> eq CTRL-FILESYSTEM-GUARD })<state> eq 'missing', 'the write guard is not installed';
+    ok %s<controls>.first({ .<control> eq CTRL-NETWORK-GUARD })<harness> eq STRENGTH-NONE, 'network interception is not something this harness has';
+    ok %s<warnings>.grep(*.contains('Network interception is not available')), 'and the status warns about it';
+    ok %s<warnings>.grep(*.contains('not detected')), 'a harness that is not installed here is said to be absent';
+
+    %s = install-enforcement($cc, $iz4, $ws, '321');
+    is %s<action>, 'installed', 'install through the enforcement layer';
+    is %s<headline>, 'GUARDED', 'context, checks and interception wired: GUARDED';
+    is %s<levels>.join(','), 'aware,checked,guarded', 'as three separate facts';
+    ok !is-in('verified', %s<levels>), 'verified is never claimed by a status: only a run earns it';
+    my @lines = status-lines(%s);
+    ok @lines.grep(/^ 'Filesystem guard' \s+ 'yes' $/) && @lines.grep(/^ 'Network interception' \s+ 'no' $/), 'the lines say yes and no plainly' or diag @lines.join("\n");
+    ok @lines.grep('Effective enforcement: GUARDED (aware, checked, guarded)'), 'with the headline and what it is made of';
+    is install-enforcement($cc, $iz4, $ws, '321')<action>, 'unchanged', 'install is idempotent';
+
+    # only the context hook: aware, and never called guarded
+    $cc.remove-controller($ws, 'iz4');
+    $cc.install-controller($ws, '321', 'iz4', [CTRL-AUTHORITATIVE-CONTEXT]);
+    %s = enforcement-status($cc, $iz4, $ws);
+    is %s<headline>, 'AWARE', 'a context hook alone is AWARE';
+    is %s<levels>.join(','), 'aware', 'and nothing more';
+
+    # headless: nobody to ask
+    %s = enforcement-status($cc, $iz4, $ws, :headless);
+    is %s<controls>.first({ .<control> eq CTRL-HUMAN-APPROVAL })<harness>, STRENGTH-NONE, 'a headless run reports no human approval';
+
+    %s = remove-enforcement($cc, $iz4, $ws);
+    ok %s<action> eq 'removed' && %s<headline> eq 'NONE', 'removal is reported, and enforcement is back to none';
+}
+
+# ---- no IZ4, and an IZ4 that cannot be driven ---------------------------------------
+{
+    my $bare = iz4-workspace(:!iz4);
+    my %s = enforcement-status($cc, $iz4, $bare);
+    ok !%s<applies> && %s<headline> eq 'NONE', 'no IZ4: nothing applies';
+    ok status-lines(%s).grep('Nothing to enforce.'), 'and the lines say so';
+
+    my $ws = iz4-workspace();
+    $cc.install-controller($ws, '321', 'iz4', @wants);
+    temp %*ENV<STUB_OLD> = '1';
+    %s = enforcement-status($cc, $iz4, $ws);
+    ok %s<applies> && !%s<available>, 'an IZ4 whose iz4 has no machine interface applies but cannot be driven';
+    is %s<headline>, 'NONE', 'so hooks that call nothing are not counted as enforcement';
+    ok %s<warnings>.grep(*.contains('cannot be driven')), 'and the warning says why';
+}
+
+# ---- a harness with fewer capabilities degrades, and says so --------------------------
+{
+    my $ws = iz4-workspace();
+    my $weak = new-fake(Any, :name<weakling>, :controls(%( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ADVISES, CTRL-POST-RUN, STRENGTH-ENFORCES )));
+    my %s = install-enforcement($weak, $iz4, $ws, '321');
+    is %s<action>, 'installed', 'a weak harness still gets what it supports';
+    is %s<levels>.join(','), 'aware,checked', 'context and checks, no interception';
+    is %s<headline>, 'CHECKED', 'CHECKED, not GUARDED';
+    ok %s<controls>.first({ .<control> eq CTRL-FILESYSTEM-GUARD })<state> eq 'unavailable', 'the write guard is unavailable there';
+    ok %s<warnings>.grep(*.contains('Filesystem guard is not available in weakling')), 'which the status warns about';
+    ok %s<warnings>.grep(*.contains('Context injection only advises')), 'and an advisory context is called advisory';
+
+    my $deaf = new-fake(Any, :name<deaf>, :controls(%( CTRL-POST-TOOL, STRENGTH-ADVISES )));
+    %s = install-enforcement($deaf, $iz4, $ws, '321');
+    is %s<headline>, 'NONE', 'a harness with nothing the controller wants gives no enforcement';
+
+    my $broken = new-fake(Any, :name<broken>, :controls(%( CTRL-FILESYSTEM-GUARD, STRENGTH-ENFORCES )), :install-fails);
+    %s = install-enforcement($broken, $iz4, $ws, '321');
+    ok %s<action> eq 'failed' && %s<error>.contains('refused'), 'a harness that refuses the wiring is a reported failure';
+    is %s<headline>, 'NONE', 'with nothing claimed';
+
+    my $none = new-procedure();
+    %s = install-enforcement($none, $iz4, $ws, '321');
+    ok %s<action> eq 'failed' && %s<error>.contains('no hook mechanism'), 'an adapter with no hook mechanism says so';
+}
+
+# ---- translation: native events become generic actions --------------------------------
+{
+    my $a = $cc.translate-event(CTRL-FILESYSTEM-GUARD, %( tool_name => 'Write', cwd => '/repo', tool_input => %( file_path => '/repo/lib/a.txt', content => 'hello' ) ));
+    ok $a.operation eq 'write' && $a.target eq '/repo/lib/a.txt' && $a.parameters<content> eq 'hello' && $a.repository eq '/repo', 'Write is a write to a path';
+    $a = $cc.translate-event(CTRL-FILESYSTEM-GUARD, %( tool_name => 'Edit', tool_input => %( file_path => 'IZ4', old_string => 'a', new_string => 'b' ) ));
+    ok $a.operation eq 'edit' && $a.target eq 'IZ4' && $a.parameters<new> eq 'b', 'Edit is an edit, with what it replaces';
+    $a = $cc.translate-event(CTRL-SHELL-GUARD, %( tool_name => 'Bash', tool_input => %( command => 'rm -f IZ4' ) ));
+    ok $a.operation eq 'execute' && $a.target eq 'shell' && $a.parameters<command> eq 'rm -f IZ4', 'Bash is executing a shell command';
+    $a = $cc.translate-event(CTRL-PRE-TOOL, %( tool_name => 'WebFetch', tool_input => %( url => 'https://example.com/x' ) ));
+    ok $a.operation eq 'fetch' && $a.recipient eq 'https://example.com/x', 'WebFetch is a fetch, with its recipient';
+    $a = $cc.translate-event(CTRL-PRE-TOOL, %( tool_name => 'SomeNewTool', tool_input => %( k => 'v' ) ));
+    ok $a.operation eq 'tool' && $a.target eq 'SomeNewTool' && $a.parameters<k> eq 'v', 'a tool 321 has never heard of is still described';
+    ok !$cc.translate-event(CTRL-POST-RUN, %( stop_hook_active => False )).defined, 'the end of a turn is not an action';
+    ok !new-procedure().translate-event(CTRL-PRE-TOOL, %()).defined, 'an adapter with no events translates nothing';
+}
+
+# ---- answers: verdicts become what Claude Code understands -----------------------------
+{
+    my sub v($result, :$proposal = '') { Verdict.new(:point<action>, :$result, :reason("because $result"), :$proposal) }
+    is-deeply $cc.answer(CTRL-FILESYSTEM-GUARD, v(RESULT-PASS)), (0, '', ''), 'a pass lets the tool call through, silently';
+    my ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, v(RESULT-BLOCK));
+    ok $code == 2 && $err.contains('because block'), 'a block refuses it and tells the model why';
+    ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, v(RESULT-NEEDS-HUMAN, :proposal('IZ4: agree?')));
+    is $code, 0, 'needs_human at an interactive session does not refuse';
+    my %j = parse-json($out);
+    ok %j<hookSpecificOutput><permissionDecision> eq 'ask' && %j<hookSpecificOutput><permissionDecisionReason> eq 'IZ4: agree?', 'it asks the person, with the proposal';
+    ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, v(RESULT-NEEDS-HUMAN, :proposal('IZ4: agree?')), :headless);
+    ok $code == 2 && $err.contains('IZ4: agree?') && $err.contains('put the proposal to a person'), 'headless, with nobody to ask, it refuses and says to take it to a person';
+    ($code, $out, $err) = $cc.answer(CTRL-SHELL-GUARD, v(RESULT-WARN));
+    ok $code == 0 && parse-json($out)<hookSpecificOutput><additionalContext> eq 'because warn', 'a warning lets it through and says why';
+    ($code, $out, $err) = $cc.answer(CTRL-POST-RUN, v(RESULT-BLOCK));
+    ok $code == 2 && $err.contains('because block'), 'at the end of a turn a block refuses the stop';
+    is $cc.answer(CTRL-POST-RUN, v(RESULT-PASS))[0], 0, 'and a pass lets it end';
+    ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, unavailable('action', 'iz4 is not installed'));
+    ok $code == 0 && $err.contains('iz4 is not installed'), 'an unavailable controller lets the call through and says so: a visible gap';
+}
+
+done-testing;

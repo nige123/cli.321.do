@@ -94,6 +94,9 @@ role Controller is export {
     method context(Str $workspace --> List) { ... }
     #| Which of the four points this controller can answer here.
     method answers(--> List) { () }
+    #| The harness controls it wants to be driven from, strongest first; an
+    #| adapter wires the ones its harness has.
+    method wants(--> List) { () }
     method check-action(Str $workspace, Action $action --> Verdict) { unavailable(POINT-ACTION, "{self.name} offers no action check") }
     method check-change(Str $workspace --> Verdict) { unavailable(POINT-CHANGE, "{self.name} offers no change check") }
     #| %run may carry transcript (a path to the harness's transcript).
@@ -142,6 +145,9 @@ class IZ4 does Controller is export {
     method name(--> Str) { 'iz4' }
     method binary(--> Str) { $!bin ne '' ?? $!bin !! iz4-binary() }
     method answers(--> List) { (POINT-CONTEXT, POINT-ACTION, POINT-CHANGE, POINT-VERIFY) }
+    #| Context at the start, every write and shell command before it runs,
+    #| and the end of the work.
+    method wants(--> List) { (CTRL-AUTHORITATIVE-CONTEXT, CTRL-FILESYSTEM-GUARD, CTRL-SHELL-GUARD, CTRL-POST-RUN) }
 
     method discover(Str $workspace --> Hash) {
         return %() if $workspace eq '' || !$workspace.IO.d;

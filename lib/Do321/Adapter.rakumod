@@ -17,6 +17,8 @@ use Do321::Protocol;
 use Do321::Async;
 use Do321::Tool;
 use Do321::Trust;
+use Do321::Controller;
+use Do321::ClaudeHooks;
 
 #| Whether an adapter can run here at all.
 class Detection is export {
@@ -87,6 +89,30 @@ role Adapter is export {
     #| Whether hooks handed over in a Spec are registered with the harness
     #| for that run.
     method can-register-hooks(--> Bool) { False }
+
+    # What 321 knows about wiring a controller into this harness.  An
+    # adapter whose harness has no hook mechanism leaves these as they
+    # are: nothing can be installed, and that is what is reported.
+
+    #| Where this harness keeps the wiring in a project, for a person to
+    #| look at; '' when it keeps none.
+    method wiring-path(--> Str) { '' }
+    #| Wire a controller in for the given controls.  $self is the 321
+    #| command the harness should call.  Returns 'installed', 'updated' or
+    #| 'unchanged'; dies with a reason when it cannot.
+    method install-controller(IO::Path $workspace, Str $self, Str $controller, @controls --> Str) {
+        die "{self.name} has no hook mechanism 321 can install into\n";
+    }
+    #| Take only that controller's wiring out: 'removed' or 'unchanged'.
+    method remove-controller(IO::Path $workspace, Str $controller --> Str) { 'unchanged' }
+    #| What is really there: control => 'installed' | 'missing' (or a
+    #| harness-specific word such as 'legacy').
+    method verify-controller(IO::Path $workspace, Str $controller, @controls --> Hash) { %( @controls.map({ $_ => 'missing' }) ) }
+    #| A native hook event as a generic action, or Action:U when the event
+    #| is not an action.
+    method translate-event(Str $control, %native --> Action) { Action }
+    #| A verdict in the harness's own terms: (exit code, stdout, stderr).
+    method answer(Str $control, Verdict $v, Bool :$headless = False --> List) { (0, '', '') }
 }
 
 #| One feature the package or its grants make mandatory.
@@ -254,6 +280,7 @@ class ProcedureAdapter does Adapter is export {
     has $.script;               # a list of ProcedureStep documents: fake mode
     has %.tools;                # name => Tool
     has %.fake-controls;        # fake mode: the controls a stand-in harness claims
+    has Bool $.fake-install-fails = False;
 
     method name(--> Str) { $!adapter-name }
     method detect(--> Detection) { Detection.new(:available, :version<built-in>) }
@@ -262,6 +289,38 @@ class ProcedureAdapter does Adapter is export {
     #| turn end of a model's to intercept: every control is none unless a
     #| fake stands in for a harness and says otherwise.
     method controls(--> Hash) { %!fake-controls }
+
+    # A fake stands in for a harness in tests: it keeps its wiring in a
+    # file of its own and supports exactly the controls it was given.
+    method wiring-path(--> Str) { %!fake-controls ?? '.fake-harness.json' !! '' }
+    method can-register-hooks(--> Bool) { False }
+    method install-controller(IO::Path $workspace, Str $self, Str $controller, @controls --> Str) {
+        die "{self.name} has no hook mechanism 321 can install into\n" unless %!fake-controls;
+        die "the fake harness refused the wiring\n" if $!fake-install-fails;
+        my $f = $workspace.add('.fake-harness.json');
+        my %w = $f.e ?? %(parse-json($f.slurp)) !! %();
+        my @have = @(%w{$controller} // []);
+        my @want = @controls.grep({ control-strength(%!fake-controls, $_) ne STRENGTH-NONE }).sort;
+        return 'unchanged' if @have.sort.join(',') eq @want.join(',') && $f.e;
+        %w{$controller} = [ |@want ];
+        $f.spurt(encode-json(%w));
+        @have ?? 'updated' !! 'installed';
+    }
+    method remove-controller(IO::Path $workspace, Str $controller --> Str) {
+        my $f = $workspace.add('.fake-harness.json');
+        return 'unchanged' unless $f.e;
+        my %w = %(parse-json($f.slurp));
+        return 'unchanged' unless %w{$controller}:exists;
+        %w{$controller}:delete;
+        $f.spurt(encode-json(%w));
+        'removed';
+    }
+    method verify-controller(IO::Path $workspace, Str $controller, @controls --> Hash) {
+        my $f = $workspace.add('.fake-harness.json');
+        my %w = $f.e ?? %(parse-json($f.slurp)) !! %();
+        my @have = @(%w{$controller} // []);
+        %( @controls.map({ $_ => (is-in($_, @have) ?? 'installed' !! 'missing') }) );
+    }
 
     #| The bound tools, for `321 doctor`.
     method bindings(--> List) {
@@ -682,8 +741,8 @@ sub build-proposal(Spec $spec, %data --> Hash) is export {
 sub new-procedure(:%tools --> ProcedureAdapter) is export { ProcedureAdapter.new(:adapter-name<procedure>, :%tools) }
 
 #| The deterministic fake adapter with an optional script.
-sub new-fake($script = Any, :%controls --> ProcedureAdapter) is export {
-    ProcedureAdapter.new(:adapter-name<fake>, :$script, :fake-controls(%controls));
+sub new-fake($script = Any, :%controls, Bool :$install-fails = False, Str :$name = 'fake' --> ProcedureAdapter) is export {
+    ProcedureAdapter.new(:adapter-name($name), :$script, :fake-controls(%controls), :fake-install-fails($install-fails));
 }
 
 # ------------------------------------------------------------ claude code
@@ -880,6 +939,18 @@ class ClaudeCode does Adapter is export {
         %c;
     }
     method can-register-hooks(--> Bool) { True }
+
+    method wiring-path(--> Str) { CLAUDE-SETTINGS }
+    method install-controller(IO::Path $workspace, Str $self, Str $controller, @controls --> Str) {
+        claude-install($workspace, $self, $controller, @controls);
+    }
+    method remove-controller(IO::Path $workspace, Str $controller --> Str) { claude-remove($workspace, $controller) }
+    method verify-controller(IO::Path $workspace, Str $controller, @controls --> Hash) { claude-verify($workspace, $controller, @controls) }
+    method translate-event(Str $control, %native --> Action) {
+        my ($event) = claude-event($control);
+        ($event // '') eq 'PreToolUse' || ($event // '') eq 'PostToolUse' ?? claude-action(%native) !! Action;
+    }
+    method answer(Str $control, Verdict $v, Bool :$headless = False --> List) { claude-answer($control, $v, :$headless) }
 
     #| The whole invocation, exported so the surface is testable without a
     #| process.
