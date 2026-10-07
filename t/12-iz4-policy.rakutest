@@ -101,7 +101,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     my %g = governed(%r);
     ok %g.defined, 'the receipt records what governed the run';
     is %g<harness>, 'answering', 'in which harness';
-    is %g<subject>, $ws.add('IZ4').Str, 'which IZ4';
+    is %g<subject>.IO.resolve.Str, $ws.add('IZ4').resolve.Str, 'which IZ4';    # resolved: macOS temp dirs sit behind a symlink
     is %g<digest>, 'sha256:abc123', 'and its content identity';
     is %g<levels>.join(','), 'aware,checked,guarded,verified', 'all four levels, each earned';
     is %g<hooksFired>, 2, 'the hooks that reported back are counted';

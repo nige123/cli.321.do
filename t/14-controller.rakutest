@@ -29,7 +29,7 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
     $ws.add('src').mkdir;
     my %d = $iz4.discover($ws.add('src').Str);
     ok %d<available>, 'an IZ4 up the tree is discovered and can be driven';
-    is %d<subject>, $ws.add('IZ4').Str, 'the subject is the file that governs';
+    is %d<subject>.IO.resolve.Str, $ws.add('IZ4').resolve.Str, 'the subject is the file that governs';   # resolved: macOS temp dirs sit behind a symlink
     is %d<digest>, 'sha256:abc123', 'with its content identity, from iz4';
     my ($text, $err) = $iz4.context($ws.Str);
     ok !$err.defined && $text.contains('These invariants govern this work'), 'the context is iz4\'s own text' or diag $err;
