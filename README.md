@@ -498,8 +498,18 @@ failure, with nothing claimed. It is idempotent. It merges into the
 harness's project settings, replacing and removing only its own entries for
 that controller: every other setting and every other hook is kept, and a
 settings file it cannot parse is not touched. `--advisory` wires the context
-only, so nothing is refused; a full install can follow, or replace it.
-With no IZ4 in the project, nothing is installed.
+only, so nothing is refused; a full install can follow. An install never
+takes away a moment that was already covered: `--advisory` over fuller
+wiring leaves it as it is, and `321 iz4 remove` is the way to take wiring
+out. With no IZ4 in the project, nothing is installed.
+
+**Adopting wiring iz4 wrote itself.** Before iz4 0.15.0, iz4 wrote its own
+commands (`iz4 hook session-start`, `pre-edit`, `stop`) into
+`.claude/settings.json`. 321 leaves them alone until asked: status reports
+them as `Managed by: legacy IZ4 wiring`, at AWARE. `321 iz4 install` then
+adopts them, replacing each old command with 321's for the same moment,
+once, so nothing runs twice; it reports the action as `adopted`, and
+running it again changes nothing.
 
 The hooks 321 writes never call the controller. They call 321:
 

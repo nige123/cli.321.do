@@ -96,6 +96,9 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
         digest     => (%found<digest> // ''),
         available  => so (%found<available> // False),
         wiring     => $adapter.wiring-path,
+        managedBy  => (@rows.grep({ $_<state> eq 'installed' }) ?? '321'
+                        !! @rows.grep({ $_<state> eq 'legacy' }) ?? "legacy {$controller.name} wiring" !! ''),
+        legacy     => [ |@rows.grep({ $_<state> eq 'legacy' }).map(*<control>) ],
         controls   => @rows,
         levels     => [ |@levels ],
         headline   => headline(@levels),
@@ -111,13 +114,24 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
 #| refused.  A project can start there and install fully later.
 sub install-enforcement(Adapter $adapter, Controller $controller, IO::Path $workspace, Str $self, Bool :$advisory = False --> Hash) is export {
     my %caps = $adapter.controls;
-    my @intended = $advisory ?? $controller.wants.grep(* eq CTRL-AUTHORITATIVE-CONTEXT) !! $controller.wants;
+    # What is already wired here is never taken away by an install: an
+    # advisory install over fuller wiring, or over a controller's own old
+    # hook commands, keeps every moment that was covered.  Removing is
+    # `remove`'s job.  Old commands are adopted: each is replaced by
+    # 321's command for the same moment, once.
+    my %was = $adapter.verify-controller($workspace, $controller.name, $controller.wants);
+    my @legacy = $controller.wants.grep({ (%was{$_} // '') eq 'legacy' });
+    my @intended = $advisory
+        ?? $controller.wants.grep({ $_ eq CTRL-AUTHORITATIVE-CONTEXT || is-in((%was{$_} // ''), ['installed', 'legacy']) })
+        !! $controller.wants;
     my @can = @intended.grep({ control-strength(%caps, $_) ne STRENGTH-NONE });
     my $action = try $adapter.install-controller($workspace, $self, $controller.name, @can);
     my $error = $! ?? $!.message.trim !! '';
     my %s = enforcement-status($adapter, $controller, $workspace);
+    $action = 'adopted' if $error eq '' && @legacy && is-in(($action // ''), ['installed', 'updated']);
     %s<action> = $error ne '' ?? 'failed' !! $action;
     %s<error> = $error if $error ne '';
+    %s<adopted> = [ |@legacy ] if %s<action> eq 'adopted';
     # Verified, not assumed: every control that should be there is.
     my @missing = %s<controls>.grep({ is-in($_<control>, @can) && $_<state> ne 'installed' }).map(*<label>);
     %s<mode> = $advisory ?? 'advisory' !! 'full';
@@ -162,6 +176,11 @@ sub status-lines(%s --> List) is export {
     }
     @l.push('');
     @l.push("Effective enforcement: {%s<headline>}" ~ (%s<levels> ?? " ({@(%s<levels>).join(', ')})" !! ''));
+    if @(%s<legacy> // []) {
+        @l.push("Managed by: legacy {%s<controller>.uc} wiring (its own hook commands in {%s<wiring>}; still active, left as it is)");
+        @l.push("Migration: 321 {%s<controller>} install adopts it: each old command is replaced by 321's, once");
+    }
+    elsif (%s<managedBy> // '') eq '321' { @l.push('Managed by: 321') }
     if %s<warnings> { @l.push(''); @l.push('Warning:'); @l.push("  $_") for @(%s<warnings>) }
     @l.List;
 }

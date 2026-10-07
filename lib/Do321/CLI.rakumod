@@ -635,6 +635,7 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
             $first = False;
             if $sub eq 'install' && %s<applies> {
                 $env.stdout.say("{$name.uc} integration {%s<action>}" ~ (%s<wiring> ne '' ?? " ({%s<wiring>})" !! '') ~ '.');
+                $env.stdout.say("Adopted the wiring an earlier {$name} wrote ({@(%s<adopted>).map({ control-label($_) }).join(', ')}): its commands are replaced by 321's.") if (%s<action> // '') eq 'adopted';
             }
             elsif $sub eq 'remove' { $env.stdout.say("{$name.uc} integration {%s<action>}.") }
             $env.stdout.say($_) for status-lines(%s);

@@ -81,7 +81,10 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str);
     ok $out.contains('IZ4 integration updated') && $out.contains('GUARDED'), 'a full install afterwards upgrades it';
     ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, '--advisory');
-    ok $out.contains('Effective enforcement: AWARE'), 'and an advisory install afterwards takes the guards out again';
+    ok $out.contains('IZ4 integration unchanged') && $out.contains('Effective enforcement: GUARDED'), 'an advisory install afterwards never takes the guards out' or diag $out;
+    c('iz4', 'remove', '--workspace', $ws.Str);
+    ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, '--advisory');
+    ok $out.contains('Effective enforcement: AWARE'), 'stepping down is a remove and then an advisory install';
     c('iz4', 'remove', '--workspace', $ws.Str);
 
     # a settings file that cannot be parsed: failure, loudly, nothing claimed

@@ -100,6 +100,69 @@ sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@(
     ok !commands($ws).grep(*.contains('iz4 hook ')), 'the direct commands are gone, so nothing runs twice';
 }
 
+# ---- adopting the wiring an earlier iz4 wrote ------------------------------------
+# A repository iz4 wired itself keeps working untouched until 321 is asked
+# to install; then each old command is replaced by 321's for the same
+# moment, once, and nothing else in the settings is disturbed.
+{
+    my sub legacy-workspace() {
+        my $ws = iz4-workspace();
+        $ws.add('.claude').mkdir;
+        $ws.add(CLAUDE-SETTINGS).spurt(encode-json(%(
+            model => 'opus',
+            permissions => %( allow => [ 'Bash(make test)', ] ),
+            hooks => %(
+                SessionStart => [ %( matcher => 'startup|resume|compact', hooks => [ %( type => 'command', command => 'iz4 hook session-start' ), ] ), ],
+                PreToolUse => [
+                    %( matcher => 'Bash', hooks => [ %( type => 'command', command => 'my-own-lint --check' ), ] ),
+                    %( matcher => 'Edit|Write|MultiEdit|NotebookEdit', hooks => [ %( type => 'command', command => 'iz4 hook pre-edit' ), ] ),
+                ],
+                Stop => [ %( hooks => [ %( type => 'command', command => 'iz4 hook stop' ), ] ), ],
+                Notification => [ %( hooks => [ %( type => 'command', command => 'notify-send done' ), ] ), ] ) )));
+        $ws;
+    }
+    my $ws = legacy-workspace();
+    my $before = $ws.add(CLAUDE-SETTINGS).slurp;
+    my %st = enforcement-status($cc, $iz4, $ws);
+    is $ws.add(CLAUDE-SETTINGS).slurp, $before, 'looking at old wiring changes nothing';
+    is %st<managedBy>, 'legacy iz4 wiring', 'status says who manages it';
+    is %st<headline>, 'AWARE', 'and counts it as aware, no more';
+    ok status-lines(%st).grep(*.contains('Managed by: legacy IZ4 wiring')) && status-lines(%st).grep(*.contains('Migration: 321 iz4 install adopts it')),
+        'in words, with how to migrate';
+
+    my %s = install-enforcement($cc, $iz4, $ws, '321');
+    is %s<action>, 'adopted', 'an install over old wiring is an adoption';
+    is %s<adopted>.sort.join(','), (CTRL-AUTHORITATIVE-CONTEXT, CTRL-FILESYSTEM-GUARD, CTRL-POST-RUN).sort.join(','), 'naming the moments it took over';
+    is %s<managedBy>, '321', 'after which 321 manages the wiring';
+    my @c = commands($ws);
+    ok !@c.grep(*.contains('iz4 hook ')), 'no old command is left to run beside the new';
+    is @c.grep(*.contains(' hook claude_code iz4 ')).elems, 4, 'one 321 command for each moment iz4 wants';
+    is @c.elems, @c.unique.elems, 'and none twice';
+    ok @c.grep('my-own-lint --check') && @c.grep('notify-send done'), 'hooks that are not iz4\'s are kept';
+    my %after = %(parse-json($ws.add(CLAUDE-SETTINGS).slurp));
+    ok %after<model> eq 'opus' && %after<permissions><allow>[0] eq 'Bash(make test)', 'and so is every other setting';
+    my $once = $ws.add(CLAUDE-SETTINGS).slurp;
+    %s = install-enforcement($cc, $iz4, $ws, '321');
+    is %s<action>, 'unchanged', 'adopting again changes nothing';
+    is $ws.add(CLAUDE-SETTINGS).slurp, $once, 'not a byte';
+
+    # an advisory install never takes away a moment that was covered
+    $ws = legacy-workspace();
+    %s = install-enforcement($cc, $iz4, $ws, '321', :advisory);
+    is %s<action>, 'adopted', 'an advisory install over old wiring adopts it too';
+    @c = commands($ws);
+    ok @c.grep(*.ends-with('iz4 filesystem_guard')) && @c.grep(*.ends-with('iz4 post_run')) && @c.grep(*.ends-with('iz4 authoritative_context')),
+        'keeping the edit and end-of-turn moments the old wiring covered' or diag @c.join("\n");
+    ok !@c.grep(*.ends-with('iz4 shell_guard')), 'and adding nothing that was not asked for';
+    ok !@c.grep(*.contains('iz4 hook ')), 'with the old commands gone';
+
+    $ws = iz4-workspace();
+    install-enforcement($cc, $iz4, $ws, '321');
+    %s = install-enforcement($cc, $iz4, $ws, '321', :advisory);
+    is %s<action>, 'unchanged', 'an advisory install over full wiring is not a downgrade';
+    is %s<headline>, 'GUARDED', 'what was guarded stays guarded';
+}
+
 # ---- status: what is wired, and no more than that ---------------------------------
 {
     my $ws = iz4-workspace();
