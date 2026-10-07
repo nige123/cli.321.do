@@ -84,9 +84,10 @@ constant USAGE = q:to/END/;
                                     and the controls it lets a controller operate
       321 iz4 status  [--workspace <dir>] [--harness <name>] [--json]
                                     how strongly the project's IZ4 is enforced in a harness
-      321 iz4 install [--workspace <dir>] [--harness <name>] [--json]
+      321 iz4 install [--workspace <dir>] [--harness <name>] [--advisory] [--json]
                                     wire IZ4 into the harness, as strongly as it allows, and
-                                    verify the wiring; installing again changes nothing
+                                    verify the wiring; installing again changes nothing.
+                                    --advisory wires only the context: nothing is refused
       321 iz4 remove  [--workspace <dir>] [--harness <name>] [--json]
                                     take out only what 321 installed for IZ4
       321 hook <harness> <controller> <control>
@@ -532,7 +533,7 @@ sub harness-adapters(Env $env --> List) {
 sub hook-self(--> Str) { %*ENV<X321_HOOK_SELF> // '321' }
 
 sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
-    my ($workspace, $harness, $json) = $g.workspace, $g.adapter, $g.json-out;
+    my ($workspace, $harness, $json, $advisory) = $g.workspace, $g.adapter, $g.json-out, False;
     my $i = 0;
     while $i < @args {
         my $a = @args[$i];
@@ -547,13 +548,14 @@ sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
             when '--workspace' { $workspace = need() }
             when '--harness'   { $harness = need() }
             when '--json'      { $json = True }
+            when '--advisory'  { $advisory = True }
             default { X::Do321::Usage.new(message => "unknown option $name for $what").throw }
         }
         $i++;
     }
     $workspace = $*CWD.Str if $workspace eq '';
     X::Do321::Usage.new(message => "no such directory $workspace").throw unless $workspace.IO.d;
-    ($workspace, $harness, $json);
+    ($workspace, $harness, $json, $advisory);
 }
 
 sub cmd-harness(Env $env, Global $g, @args --> Int) {
@@ -597,7 +599,7 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
     my $usage = "usage: 321 $name install|status|remove [--workspace <dir>] [--harness <name>] [--json]";
     if !@args || !is-in(@args[0], <install status remove>) { $env.stderr.say($usage); return EXIT-USAGE }
     my $sub = @args[0];
-    my ($workspace, $harness, $json) = try parse-harness-options($env, $g, @args[1 .. *], "$name $sub");
+    my ($workspace, $harness, $json, $advisory) = try parse-harness-options($env, $g, @args[1 .. *], "$name $sub");
     if $! { $env.stderr.say("321 $name: {$!.message}"); return EXIT-USAGE }
     my $controller = controller-named($name);
     without $controller { $env.stderr.say("321: no controller \"$name\""); return EXIT-USAGE }
@@ -617,7 +619,7 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
     my %found = $controller.discover($workspace);
     my @statuses = do given $sub {
         when 'install' {
-            %found ?? @adapters.map({ install-enforcement($_, $controller, $ws, hook-self()) })
+            %found ?? @adapters.map({ install-enforcement($_, $controller, $ws, hook-self(), :$advisory) })
                    !! @adapters.map({ enforcement-status($_, $controller, $ws) })
         }
         when 'remove'  { @adapters.map({ remove-enforcement($_, $controller, $ws) }) }

@@ -107,16 +107,20 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
 #| Wire a controller into a harness for a workspace and report what is
 #| really there afterwards.  Returns the status with an 'action' of
 #| installed, updated, unchanged or failed (with 'error').
-sub install-enforcement(Adapter $adapter, Controller $controller, IO::Path $workspace, Str $self --> Hash) is export {
+#| :advisory wires only the context: the agent is told, and nothing is
+#| refused.  A project can start there and install fully later.
+sub install-enforcement(Adapter $adapter, Controller $controller, IO::Path $workspace, Str $self, Bool :$advisory = False --> Hash) is export {
     my %caps = $adapter.controls;
-    my @can = $controller.wants.grep({ control-strength(%caps, $_) ne STRENGTH-NONE });
+    my @intended = $advisory ?? $controller.wants.grep(* eq CTRL-AUTHORITATIVE-CONTEXT) !! $controller.wants;
+    my @can = @intended.grep({ control-strength(%caps, $_) ne STRENGTH-NONE });
     my $action = try $adapter.install-controller($workspace, $self, $controller.name, @can);
     my $error = $! ?? $!.message.trim !! '';
     my %s = enforcement-status($adapter, $controller, $workspace);
     %s<action> = $error ne '' ?? 'failed' !! $action;
     %s<error> = $error if $error ne '';
     # Verified, not assumed: every control that should be there is.
-    my @missing = %s<controls>.grep({ $_<wanted> && $_<harness> ne STRENGTH-NONE && $_<state> ne 'installed' }).map(*<label>);
+    my @missing = %s<controls>.grep({ is-in($_<control>, @can) && $_<state> ne 'installed' }).map(*<label>);
+    %s<mode> = $advisory ?? 'advisory' !! 'full';
     if $error eq '' && @missing {
         %s<action> = 'failed';
         %s<error> = "after installing, these are still not wired: {@missing.join(', ')}";
