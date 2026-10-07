@@ -1,0 +1,192 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# The front door for harness knowledge: detecting harnesses, installing a
+# controller into one, saying what is enforced, taking it out again, and
+# the glue command a harness calls.  Everything here goes through bin/321.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321ControlTest;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Wire;
+
+my %base = X321_IZ4 => stub-iz4(), X321_CLAUDE_BINARY => fake-claude().Str;
+sub c(*@args, :%env, Str :$in = '', IO::Path :$cwd) { x321(|@args, :env(%( |%base, |%env )), :$in, |($cwd ?? (:$cwd) !! ())) }
+sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) }
+
+# ---- harness detect -----------------------------------------------------------------
+{
+    my $ws = iz4-workspace();
+    my ($rc, $out, $err) = c('harness', 'detect', '--workspace', $ws.Str);
+    is $rc, 0, 'harness detect' or diag $err;
+    like $out, /^^ 'claude_code' \s+ 'detected'/, 'Claude Code is detected';
+    like $out, /'enforces:' .* 'filesystem_guard'/, 'with what it enforces';
+    like $out, /'cannot:' .* 'network_guard'/, 'and what it cannot do';
+    ok $out.contains('.claude/settings.json (none yet)'), 'and that this project has no wiring yet';
+    ok !$out.lines.grep(/^ ['procedure' | 'fake'] \s/), 'adapters that are not harnesses are not listed';
+
+    ($rc, $out, $err) = c('harness', 'detect', '--workspace', $ws.Str, '--json');
+    my %d = parse-json($out);
+    is %d<schema>, 'harness-detect.v1', 'as a versioned document';
+    my %h = %d<harnesses>[0];
+    ok %h<harness> eq 'claude_code' && %h<detected> && %h<controls><network_guard> eq 'none' && %h<controls><shell_guard> eq 'enforces', 'carrying every control\'s strength';
+    ok %h<controls><human_approval> eq 'enforces' && %h<headless><human_approval> eq 'none', 'interactive and headless told apart';
+
+    ($rc, $out, $err) = c('harness', 'detect', :env(%( X321_CLAUDE_BINARY => '/no/such/claude' )));
+    like $out, /'claude_code' \s+ 'not detected'/, 'a harness that is not here is reported as not detected';
+    is c('harness')[0], EXIT-USAGE, 'harness needs a subcommand';
+}
+
+# ---- install, status, remove ---------------------------------------------------------
+{
+    my $ws = iz4-workspace();
+    my ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str);
+    is $rc, 0, 'status' or diag $err;
+    ok $out.contains('Project: IZ4 enabled') && $out.contains('Effective enforcement: NONE'), 'before installing, nothing is enforced';
+    like $out, /^^ 'Filesystem guard' \s+ 'not installed' $$/, 'and the status says what is not installed';
+
+    ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str);
+    is $rc, 0, 'install' or diag "$out\n$err";
+    ok $out.contains('IZ4 integration installed (.claude/settings.json).'), 'it says what it did and where';
+    like $out, /^^ 'Context injection' \s+ 'yes' $$/, 'context: yes';
+    like $out, /^^ 'Filesystem guard' \s+ 'yes' $$/, 'write guard: yes';
+    like $out, /^^ 'Shell guard' \s+ 'yes' $$/, 'shell guard: yes';
+    like $out, /^^ 'Post-run verification' \s+ 'yes' $$/, 'final verification: yes';
+    like $out, /^^ 'Network interception' \s+ 'no' $$/, 'network: no';
+    ok $out.contains('Effective enforcement: GUARDED (aware, checked, guarded)'), 'the headline, and what it is made of';
+    ok $out.contains('Network interception is not available in claude_code'), 'with the warning';
+    my @cmds = settings($ws)<hooks>.values.map({ |@$_ }).map({ |@($_<hooks>) }).map(*<command>);
+    is @cmds.grep(*.starts-with('321 hook claude_code iz4 ')).elems, 4, 'the project\'s settings call 321 by name, so they work on any machine';
+
+    ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str);
+    ok $rc == 0 && $out.contains('IZ4 integration unchanged'), 'installing again changes nothing';
+
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, '--json');
+    my %d = parse-json($out);
+    is %d<schema>, 'enforcement-report.v1', 'status as a document';
+    my %s = %d<harnesses>[0];
+    ok %s<harness> eq 'claude_code' && %s<headline> eq 'GUARDED' && %s<levels>.join(',') eq 'aware,checked,guarded', 'with the levels as separate facts';
+    ok %s<controls>.first({ .<control> eq 'network_guard' })<harness> eq 'none', 'and each control\'s state';
+    ok %s<subject>.ends-with('/IZ4') && %s<digest> eq 'sha256:abc123', 'and which IZ4, by digest';
+
+    ($rc, $out, $err) = c('iz4', 'remove', '--workspace', $ws.Str);
+    ok $rc == 0 && $out.contains('IZ4 integration removed.') && $out.contains('Effective enforcement: NONE'), 'remove takes it out and says so';
+    ok !(settings($ws)<hooks>:exists), 'the settings are clean again';
+
+    # a settings file that cannot be parsed: failure, loudly, nothing claimed
+    $ws.add('.claude/settings.json').spurt('{ nope');
+    ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str);
+    is $rc, EXIT-FAILED, 'a failed install exits as a failure';
+    ok $out.contains('IZ4 integration failed') && $out.contains('not a JSON object') && $out.contains('Effective enforcement: NONE'), 'says why, and claims nothing' or diag $out;
+}
+
+# ---- no IZ4, unknown harness, a harness that is not here ---------------------------
+{
+    my $bare = iz4-workspace(:!iz4);
+    my ($rc, $out, $err) = c('iz4', 'install', '--workspace', $bare.Str);
+    ok $rc == 0 && $out.contains('no IZ4 here') && $out.contains('Nothing to enforce.'), 'no IZ4: nothing is installed, and that is fine';
+    ok !$bare.add('.claude').e, 'and nothing was written';
+    my $ws = iz4-workspace();
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, '--harness', 'codex');
+    ok $rc == EXIT-USAGE && $err.contains('no harness "codex"'), 'a harness 321 does not know is an error, not a pretend adapter';
+    ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_CLAUDE_BINARY => '/no/such/claude' )));
+    ok $rc == 0 && $out.contains('claude_code (not detected)') && $out.contains('was not detected here'), 'a known harness that is not installed can still be wired, and the status says it is absent';
+    is c('iz4')[0], EXIT-USAGE, 'iz4 needs a subcommand';
+}
+
+# ---- a harness with fewer capabilities ---------------------------------------------
+{
+    my $ws = iz4-workspace();
+    my %weak = DO321_FAKE_CONTROLS => encode-json(%( authoritative_context => 'advises', post_run => 'enforces' ));
+    my ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, '--harness', 'fake', :env(%weak));
+    is $rc, 0, 'install into a weaker harness' or diag "$out\n$err";
+    ok $out.contains('Effective enforcement: CHECKED (aware, checked)'), 'CHECKED, not GUARDED';
+    like $out, /^^ 'Context injection' \s+ 'yes (advises only)' $$/, 'context that only advises is said to only advise';
+    like $out, /^^ 'Filesystem guard' \s+ 'no' $$/, 'there is no write guard';
+    ok $out.contains('Filesystem guard is not available in fake'), 'and the warning says so';
+    ($rc, $out, $err) = c('harness', 'detect', :env(%weak));
+    like $out, /^^ 'fake' \s+ 'detected'/, 'a stand-in harness with controls is listed as one';
+}
+
+# ---- the glue: 321 hook ---------------------------------------------------------------
+{
+    my $ws = iz4-workspace();
+    my $log = temp-dir().add('hooks.ndjson');
+    my sub hook(Str $control, %native, *%env) { c('hook', 'claude_code', 'iz4', $control, :in(encode-json(%( cwd => $ws.Str, |%native ))), :env(%( X321_HOOK_LOG => $log.Str, |%env ))) }
+    my %write = tool_name => 'Write', tool_input => %( file_path => $ws.add('lib/a.txt').Str, content => 'hello' );
+
+    # context
+    my ($rc, $out, $err) = hook('authoritative_context', %( hook_event_name => 'SessionStart' ));
+    ok $rc == 0 && $out.contains('These invariants govern this work (stub)'), 'at a session\'s start the glue prints iz4\'s context' or diag "$out $err";
+
+    # a write that passes: silent
+    my $seen = temp-dir().add('action.json');
+    ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_ACTION_IN => $seen.Str);
+    ok $rc == 0 && $out eq '' && $err eq '', 'a passing write goes through silently' or diag "$out $err";
+    my %a = parse-json($seen.slurp);
+    ok %a<operation> eq 'write' && %a<target>.ends-with('lib/a.txt') && %a<parameters><content> eq 'hello' && %a<repository> eq $ws.Str,
+        'iz4 was asked about a generic action, not a Claude Code event' or diag %a.raku;
+    ok !(%a<tool_name>:exists) && !(%a<tool_input>:exists), 'no harness vocabulary reached iz4';
+
+    # block
+    ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_ACTION => 'block');
+    ok $rc == 2 && $err.contains('action block'), 'a block refuses the tool call, with the reason for the model';
+
+    # needs a person: asked at an interactive session, refused in a headless run
+    ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_ACTION => 'needs_human');
+    is $rc, 0, 'needs_human at an interactive session does not refuse outright';
+    my %j = parse-json($out);
+    ok %j<hookSpecificOutput><permissionDecision> eq 'ask' && %j<hookSpecificOutput><permissionDecisionReason>.contains('iz4 approve'), 'it asks the person, showing how agreement is recorded';
+    ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_ACTION => 'needs_human', X321_HEADLESS => '1');
+    ok $rc == 2 && $err.contains('put the proposal to a person'), 'headless, it refuses and says to take it to a person';
+
+    # warn
+    ($rc, $out, $err) = hook('shell_guard', %( tool_name => 'Bash', tool_input => %( command => 'make test' ) ), STUB_ACTION => 'warn');
+    ok $rc == 0 && parse-json($out)<hookSpecificOutput><additionalContext> eq 'action warn', 'a warning lets the command run and tells the model why';
+
+    # end of a turn: the agent's last words go to iz4, from Claude Code's own transcript
+    my $t = temp-dir().add('t.jsonl');
+    $t.spurt(encode-json(%( type => 'user', message => %( content => 'do it' ) )) ~ "\n"
+           ~ encode-json(%( type => 'assistant', message => %( content => [ %( type => 'text', text => 'first thoughts' ), ] ) )) ~ "\n"
+           ~ encode-json(%( type => 'assistant', message => %( content => [ %( type => 'tool_use', name => 'Write' ), %( type => 'text', text => 'All done, no report.' ) ] ) )) ~ "\n");
+    my $said = temp-dir().add('said.txt');
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ), STUB_VERIFY => 'block', STUB_SUMMARY_OUT => $said.Str);
+    ok $rc == 2 && $err.contains('verify block'), 'a turn that ends without passing is refused, so the agent says what is outstanding';
+    is $said.slurp, 'All done, no report.', 'iz4 was given the last thing the assistant said, as plain text';
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, stop_hook_active => True ), STUB_VERIFY => 'block');
+    is $rc, 0, 'asked a second time in the same turn, the glue lets it end: an agent is never trapped';
+    is hook('post_run', %( transcript_path => $t.Str ))[0], 0, 'a turn that verifies ends normally';
+
+    # the log: how a run proves its hooks fired
+    my @lines = $log.lines.map({ parse-json($_) });
+    is @lines.elems, 9, 'every call was logged';
+    ok @lines.grep({ .<control> eq 'filesystem_guard' && .<result> eq 'block' && .<controller> eq 'iz4' && .<harness> eq 'claude_code' }), 'with controller, harness, control and result';
+    ok @lines.grep({ .<control> eq 'post_run' && .<point> eq 'verify' }) && @lines.grep({ .<control> eq 'authoritative_context' && .<point> eq 'context' }), 'and the point each answered';
+
+    # nothing governs: stay out of the way
+    my $bare = iz4-workspace(:!iz4);
+    ($rc, $out, $err) = c('hook', 'claude_code', 'iz4', 'filesystem_guard', :in(encode-json(%( cwd => $bare.Str, |%write ))), :env(%( STUB_ACTION => 'block' )));
+    ok $rc == 0 && $out eq '' && $err eq '', 'where no IZ4 governs, the glue does nothing at all';
+
+    # iz4 cannot be driven: let it through, visibly
+    ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_OLD => '1');
+    ok $rc == 0 && $err.contains('cannot be driven'), 'an iz4 that cannot be driven lets the call through and says so';
+
+    # misuse
+    is c('hook', 'claude_code', 'iz4')[0], EXIT-USAGE, 'the glue needs all three names';
+    is c('hook', 'nope', 'iz4', 'post_run')[0], EXIT-USAGE, 'an unknown harness is refused';
+    is c('hook', 'claude_code', 'nope', 'post_run')[0], EXIT-USAGE, 'an unknown controller is refused';
+    is c('hook', 'claude_code', 'iz4', 'nope')[0], EXIT-USAGE, 'an unknown control is refused';
+}
+
+# ---- the names are reserved ----------------------------------------------------------
+{
+    for <iz4 harness hook hooks> -> $word {
+        my $bad = temp-dir().add('trust.json');
+        $bad.spurt(encode-json(%( schema => 'trust-config.v1', aliases => %( $word => 'local/x' ) )));
+        my ($rc, $out, $err) = c('--trust', $bad.Str, 'agents');
+        ok $rc != 0 && ($out ~ $err).contains('reserved'), "an agent alias cannot shadow '$word'" or diag "$rc $out $err";
+    }
+}
+
+done-testing;
