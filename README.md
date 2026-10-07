@@ -409,50 +409,240 @@ continuation handle.
 - `fake`: the same executor with a script, for tests and dry runs. Hidden:
   selected only by `--adapter fake` or `policy.adapters.preferred`.
 
-## Harness hooks
+## Harnesses, controllers and what protects the work
 
-A harness that runs a command before a session starts, before an edit and
-before a turn ends can insist on a protocol's mechanical steps. The command
-is somebody else's (iz4's `iz4 hook`, say: JSON on stdin, text for the model
-on stdout, exit 2 to refuse). 321 knows the harnesses' settings files, event
-names and quirks, so it writes the wiring and keeps up with them:
+**321 knows how the harness works. IZ4 knows what must remain true.**
+
+A harness is an agent environment: Claude Code today, others as their
+adapters are written. Each one keeps configuration somewhere different,
+exposes different lifecycle events, and changes them when it likes. 321 is
+where that knowledge lives, for two purposes: a work system such as 123.do
+uses it to *run* an agent, and a controller such as IZ4 uses it to *govern*
+the environment around that agent.
+
+A controller is something outside the harness that says what must hold while
+an agent works. IZ4 is the first. 321 drives IZ4 wherever 321 is present.
+IZ4 remains harness-independent and may also be driven directly by native
+hooks, CI, Git integrations or other agent environments: 321 only ever runs
+the `iz4` command and reads its result documents.
 
 ```
-321 hooks install --workspace . --command "iz4 hook" [--strict] [--json]
-321 hooks status  --workspace . --command "iz4 hook" [--json]
-321 hooks remove  --workspace . --command "iz4 hook" [--json]
+123.do    decides what work should happen, and who should do it
+321       knows how to run that actor in this environment, which controls the
+          harness exposes, and how to install and verify them
+IZ4       knows the applicable invariants, whether an action or a change is
+          compatible with them, and when a person must decide
 ```
 
-Install merges: every setting and every hook that is not ours is kept, ours
-are replaced, and a second install changes nothing. Session start is always
-wired; `--strict` wires pre-edit and stop, the two that refuse. The record
-each command prints, one per harness, says which events are wired and
-whether the harness enforces them (pre-edit and stop can refuse) or only
-advises (session start can only inject). Only Claude Code is known in this
-release, and the wiring it writes is exactly what `iz4 agent install
---hooks --strict` writes, so the two agree. `321 doctor --json` reports the
-same per adapter, beside what each enforces.
+### What a harness can do
 
-## The IZ4 protocol on a run
+```
+$ 321 harness detect
+claude_code    detected 2.1.292 (Claude Code)
+    project wiring: .claude/settings.json (none yet)
+    enforces: authoritative_context, pre_action, pre_tool, filesystem_guard, shell_guard, human_approval, post_run
+    advises:  post_action, post_tool
+    cannot:   network_guard, pre_commit, post_commit
+```
 
-When a package's workspace keeps an IZ4 (the file, in the workspace or a
-parent up to the repository root) and `iz4` is on PATH (or named by
-`X321_IZ4`), every model-driven run is under the IZ4 protocol:
+Twelve controls are named (`lib/Do321/Protocol.rakumod`). An adapter gives
+each a strength: **enforces** (an answer can stop the thing), **advises**
+(text reaches the model and nothing more) or **none**. Anything an adapter
+does not declare is none, and a strength outside the vocabulary is none, so
+a typo can never read as protection. Controls are separate from the
+enforcement features under *Adapters* above: a feature is authority the
+adapter enforces for the runtime; a control is a point where a controller
+can be told and can answer.
 
-- before the first attempt, the packet `iz4 agent packet` prints goes into
-  the prompt, under "Project intent (IZ4)", ahead of the work, marked as
-  project data and not instructions; if the IZ4 changes between attempts
-  it is re-read, and the history records both;
-- a run that ends completed or no_change is checked with `iz4 hook stop`
-  against its summary: a run that changed files and gave no per-invariant
-  report ends **blocked**, not completed, with the reason in `blockedOn`;
-- the invariants the report itself marks uncertain or conflicting are
-  listed under `uncertain` on the receipt.
+Claude Code can refuse a tool call before it runs, so writes, shell commands
+and any other tool call can be intercepted, and a turn's end can be refused.
+It cannot see network use from inside a shell command, and has no commit
+hook of its own (a commit there is a shell command; Git's own pre-commit
+hook is `iz4 gate --install-hook`, outside any harness). At an interactive
+session a hook can ask the person to decide; a headless run has nobody to
+ask, and `321 harness detect --json` reports both.
 
-Procedures (no model) are outside it. When the workspace keeps an IZ4 and
-iz4 is not installed, the run is not blocked, and the receipt says under
-`uncertain` that the protocol was not applied. The runtime never reads the
-IZ4 itself: it runs `iz4` and treats its output as data.
+### Installing IZ4 into a harness
+
+```
+$ 321 iz4 install
+IZ4 integration installed (.claude/settings.json).
+Project: IZ4 enabled (/repo/IZ4)
+Harness: claude_code
+
+Context injection        yes
+Filesystem guard         yes
+Shell guard              yes
+Network interception     no
+Commit check             no
+Human approval           yes (a guard asks the person at the session)
+Post-run verification    yes
+
+Effective enforcement: GUARDED (aware, checked, guarded)
+
+Warning:
+  Network interception is not available in claude_code: this harness cannot intercept it.
+  Commit check is not available in claude_code: this harness cannot intercept it.
+```
+
+```
+321 iz4 install [--workspace <dir>] [--harness <name>] [--advisory] [--json]
+321 iz4 status  [--workspace <dir>] [--harness <name>] [--json]
+321 iz4 remove  [--workspace <dir>] [--harness <name>] [--json]
+```
+
+Install detects the harnesses here, asks IZ4 whether one governs the
+project, wires in everything the harness can enforce, and then reads the
+wiring back: a control that should be there and is not makes the install a
+failure, with nothing claimed. It is idempotent. It merges into the
+harness's project settings, replacing and removing only its own entries for
+that controller: every other setting and every other hook is kept, and a
+settings file it cannot parse is not touched. `--advisory` wires the context
+only, so nothing is refused; a full install can follow, or replace it.
+With no IZ4 in the project, nothing is installed.
+
+The hooks 321 writes never call the controller. They call 321:
+
+```
+harness event  ->  321 hook <harness> <controller> <control>  ->  iz4 check action | context | verify
+```
+
+`321 hook` reads the harness's native event, turns it into a generic action
+(operation, target, parameters, repository, recipient, context), asks the
+controller, and answers in the harness's own terms. For Claude Code a block
+refuses the tool call with the reason; `needs_human` asks the person at an
+interactive session, and in a headless run refuses and tells the agent to
+put the proposal to a person; a warning lets the call through and says why;
+an end of turn that does not pass is refused once, so the agent says what is
+outstanding. A controller that cannot be driven lets the call through and
+says so on stderr: a visible gap, never a silent pass. When Claude Code
+changes its hook mechanism, `lib/Do321/ClaudeHooks.rakumod` changes and IZ4
+does not.
+
+### The levels, and what they do not mean
+
+Four facts, reported separately because one can hold without another:
+
+| Level | Means |
+|---|---|
+| `aware` | the agent was given the controller's context |
+| `checked` | a change check ran |
+| `guarded` | consequential operations were intercepted before they ran |
+| `verified` | the finished result was checked, and passed |
+
+The headline is the strongest of aware, checked and guarded. A status
+reports what is *wired*; `verified` is earned by a run and appears only on
+its receipt. A context in a prompt is never reported as interception, an
+older direct wiring that only delivers the context counts for `aware` and
+no more, and none of these is a proof: IZ4 itself says what each check did
+not establish, and a natural-language invariant is not verified by a hook.
+
+A harness with fewer controls gets what it has, and the report says what it
+lacks:
+
+```
+$ 321 iz4 install --harness <one that only advises, and has no tool hooks>
+Context injection        yes (advises only)
+Filesystem guard         no
+Shell guard              no
+Post-run verification    yes
+
+Effective enforcement: CHECKED (aware, checked)
+
+Warning:
+  Context injection only advises in <harness>: text reaches the model, nothing is refused.
+  Filesystem guard is not available in <harness>: this harness cannot intercept it.
+```
+
+### What a run does
+
+A model-driven run in a workspace that keeps an IZ4 needs nothing installed
+first. 321:
+
+1. asks IZ4 whether one governs the workspace (`iz4 discover`);
+2. puts its context in the prompt ahead of the work (`iz4 context`), and
+   re-reads it if the IZ4 changes between attempts;
+3. uses the harness's interception points: wiring already installed in the
+   project is counted, and what is missing is registered **for that run
+   alone**, through the harness's own mechanism (`claude --settings`),
+   without writing anything into the caller's workspace;
+4. reads back a log the hooks write, so the receipt counts the hooks that
+   really fired instead of assuming they did;
+5. puts the finished work to IZ4 (`iz4 verify --worktree`, with the agent's
+   own last words), which includes the change check.
+
+`needs_human` and `block` end the run **blocked**, not completed, with the
+proposal a person must decide on, or the reason, in `blockedOn`. A warning
+and a check that could not run go on `uncertain`. The runtime never records
+a person's agreement, and treats nothing as one: not the agent's text, not
+silence, not the run continuing. Agreement is a person running
+`iz4 approve` at a terminal.
+
+The receipt carries the evidence under `evidence.controllers`:
+
+```json
+{ "name": "iz4", "harness": "claude_code",
+  "subject": "/repo/IZ4", "digest": "sha256:9020...",
+  "levels": ["aware", "checked", "guarded", "verified"],
+  "controls": { "authoritative_context": "in the prompt",
+                "filesystem_guard": "registered for this run (enforces)",
+                "shell_guard": "registered for this run (enforces)",
+                "post_run": "registered for this run (enforces)" },
+  "checks": [ { "point": "context", "result": "pass" },
+              { "point": "verify/structure", "result": "pass" },
+              { "point": "verify/change", "result": "pass" },
+              { "point": "verify/report", "result": "pass" },
+              { "point": "verify", "result": "pass" } ],
+  "hooksFired": 2, "humanDecision": "none was needed" }
+```
+
+Which IZ4 applied and its content identity, the harness, how each control
+was operated, every check and its result, any gap, and whether a human
+decision is outstanding. Procedures (no model) are outside all of this, and
+a workspace with no IZ4 runs exactly as it did before. When an IZ4 is there
+and `iz4` is missing, too old to be driven, or the IZ4 is invalid, the run
+is not blocked: the receipt lists the IZ4 with no level claimed and says
+why. `X321_IZ4` names the `iz4` to use and, when set, is the only one used.
+
+### Adding a harness
+
+Supporting a new agent environment means teaching 321 about it. IZ4 does
+not change. An adapter (`role Adapter`, `lib/Do321/Adapter.rakumod`) already
+says how to detect and launch its harness and which authority features it
+enforces. For controllers it adds:
+
+| Method | Says |
+|---|---|
+| `controls` | each control's strength in this harness; claim only what it really does |
+| `headless-controls` | the same for a run 321 launches with nobody at the harness's prompt |
+| `wiring-path` | where the harness keeps the wiring in a project |
+| `install-controller` | wire a controller in for a set of controls: merge, replace only your own entries, be idempotent, die with a reason when you cannot |
+| `remove-controller` | take out only that controller's wiring |
+| `verify-controller` | what is really there, read back from the harness's own configuration |
+| `translate-event` | a native hook event as a generic `Action` |
+| `answer` | a `Verdict` as the exit code and output the harness understands |
+| `final-words` | the agent's last words, from the harness's end-of-turn event |
+| `can-register-hooks` | whether hooks can be handed over for a single run |
+
+The minimum is `controls`: an adapter that declares none is reported as
+having none, and IZ4 is still put in the prompt and verified at the end by
+the runtime. Everything else raises what can honestly be claimed. Keep one
+harness's knowledge in one module, as `ClaudeHooks.rakumod` does, and test
+it against a stand-in: `new-fake(:controls(...))` is a harness with exactly
+the controls it is given.
+
+A second controller is a class that does `role Controller`
+(`lib/Do321/Controller.rakumod`): `discover`, `context`, `wants`, and
+whichever of `check-action`, `check-change` and `verify` it can answer. The
+ones it leaves out answer `unavailable`, which is reported as a gap.
+
+### The older hook command
+
+`321 hooks install | status | remove --command "<cmd>"` writes a hook
+command of somebody else's straight into a harness's settings (session
+start always; pre-edit and stop with `--strict`). It predates controllers
+and stays for callers that use it. `321 iz4 install` replaces such wiring
+for IZ4 instead of running both.
 
 ## Prompt-only runs
 
@@ -488,7 +678,10 @@ lib/Do321/Tool         the bounded tool interface, dp, redaction, the execution 
 lib/Do321/Adapter      adapter interface, selection, procedure/fake, claude_code
 lib/Do321/Run          the runner: grants, attempts, directives, receipts
 lib/Do321/Wire         the NDJSON machine protocol
-lib/Do321/Hooks        harness hook wiring and the doctor's JSON
+lib/Do321/Controller   the controller seam, and the IZ4 driver
+lib/Do321/ClaudeHooks  what 321 knows about Claude Code's hooks: wiring, translation, answers
+lib/Do321/Enforcement  what is really wired, and the levels it adds up to
+lib/Do321/Hooks        the older hook command, and the doctor's JSON
 lib/Do321/CLI          the front door
 packages/prompt        the local package for prompt-only runs
 t/                     the suite; t/lib holds its helpers and the binary seam
@@ -520,6 +713,12 @@ testdata/packages      unbranded fixture packages
   one), a Proc's stdin write blocks until the child exits, and `.lines` on
   a pipe waits for EOF. The cost stands: one build per system, and the
   Linux file needs glibc 2.38. The Go tree was removed in the same commit.
+- 2026-10-07: Harness knowledge lives in 321, and nowhere else. 321 detects
+  agent environments, knows each one's controls, installs, removes and
+  verifies a controller's wiring, and translates native events; IZ4 exposes
+  a small machine interface and installs itself into no environment. A
+  harness changing its hook mechanism changes 321, not IZ4. Enforcement is
+  reported as what is really wired or really ran, never more.
 
 ## Intent
 

@@ -141,7 +141,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     # a person must decide
     my %r = ran(STUB_VERIFY => 'needs_human');
     is %r<status>, STATUS-BLOCKED, 'work that changes a commitment ends blocked, not completed';
-    ok %r<blockedOn>.contains('reworded Invariant 5') && %r<blockedOn>.contains('iz4 approve --candidate=abc --base=HEAD'), 'blocked on the proposal, with how a person agrees' or diag %r<blockedOn>;
+    ok %r<blockedOn>.contains('revised Invariant 5') && %r<blockedOn>.contains('iz4 approve --candidate=abc --base=HEAD'), 'blocked on the proposal, with how a person agrees' or diag %r<blockedOn>;
     my %g = governed(%r);
     ok %g<humanDecision>.contains('a person must agree') && %g<humanDecision>.contains('never agrees for them'), 'the receipt says a person\'s decision is outstanding';
     ok !is-in('verified', %g<levels>), 'and the run is not verified';

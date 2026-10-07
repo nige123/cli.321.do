@@ -23,7 +23,7 @@ sub stub-iz4(--> Str) is export {
         find_iz4() { d=$(pwd); while :; do [ -f "$d/IZ4" ] && { echo "$d/IZ4"; return 0; }; [ -e "$d/.git" ] && return 1; [ "$d" = "/" ] && return 1; d=$(dirname "$d"); done; }
         doc() { # check result reason
           extra=''
-          [ "$2" = needs_human ] && extra=',"proposed_invariant_change":{"kind":"change","summary":"1 commitment change(s)","changes":[{"kind":"reworded","number":5,"text":"Staff decide."}],"agree_with":"iz4 approve --candidate=abc --base=HEAD","proposal_digest":"d1g"}'
+          [ "$2" = needs_human ] && extra=',"proposed_invariant_change":{"kind":"change","summary":"1 commitment change(s)","changes":[{"kind":"revised","number":5,"text":"Staff decide."}],"agree_with":"iz4 approve --candidate=abc --base=HEAD","proposal_digest":"d1g"}'
           [ "$2" = needs_human ] || extra=',"proposed_invariant_change":null'
           rep=''
           [ "$1" = verify ] && rep=',"report":{"uncertain":["Invariant 5 Nothing is deleted.: uncertain"]},"parts":[{"part":"structure","result":"pass","detail":"well formed"},{"part":"change","result":"'"${STUB_CHANGE:-pass}"'","detail":"change"},{"part":"report","result":"pass","detail":"report"}]'

@@ -60,7 +60,7 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
         temp %*ENV<STUB_CHANGE> = RESULT-NEEDS-HUMAN;
         my $c = $iz4.check-change($ws.Str);
         is $c.result, RESULT-NEEDS-HUMAN, 'a change that needs a person says so';
-        ok $c.proposal.contains('reworded Invariant 5') && $c.proposal.contains('Staff decide.'), 'the proposal names what would change' or diag $c.proposal;
+        ok $c.proposal.contains('revised Invariant 5') && $c.proposal.contains('Staff decide.'), 'the proposal names what would change' or diag $c.proposal;
         ok $c.proposal.contains('iz4 approve --candidate=abc --base=HEAD'), 'and how a person agrees';
         ok $c.proposal.contains('d1g'), 'bound to the proposal digest';
         ok $c.evidence ~~ Associative && $c.evidence<schema> eq 'iz4-check/1', 'the controller\'s own document is kept as evidence';
