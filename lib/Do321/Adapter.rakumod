@@ -75,6 +75,7 @@ class Outcome is export {
     has $.approval-check is rw;
     has @.tool-calls is rw;
     has $.proposal is rw;
+    has Str $.final-words is rw = '';   # what the agent said in its own messages, when the harness shows them
 }
 
 role Adapter is export {
@@ -847,6 +848,7 @@ class StreamConsumer is export {
     has Control $.ctl;
     has Summary $.envelope;
     has Str $.session = '';
+    has @.said;                # the assistant's own text, in order
 
     method line(Str $line) {
         return if $line.trim eq '';
@@ -872,6 +874,7 @@ class StreamConsumer is export {
                         when 'text' {
                             my $t = str-of($c<text>).trim;
                             if $t ne '' {
+                                @!said.push($t);
                                 self!say($t);
                                 $!ctl.emit.(EVENT-PROGRESS, %( text => cap-tail($t, 500) )) with $!ctl;
                             }
@@ -1019,8 +1022,11 @@ class ClaudeCode does Adapter is export {
         }
         my $result = await $done;
         my $exit = $result.defined ?? $result.exitcode !! -1;
-        my ($env, $session) = $lock.protect({ ($consumer.envelope, $consumer.session) });
+        my ($env, $session, $said) = $lock.protect({ ($consumer.envelope, $consumer.session, $consumer.said.join("\n\n")) });
         my $out = Outcome.new(:cost(doc('Cost', basis => COST-UNREPORTED)), :session-ref($session));
+        # What the model said in its messages, not only the short summary
+        # field: a controller looks there for what it asked the agent to say.
+        $out.final-words = cap-tail($said, 32 * 1024);
         with $env {
             $out.summary = .summary;
             $out.session-ref = .session-ref if .session-ref ne '';

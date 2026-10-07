@@ -73,7 +73,7 @@ sub render-prompt(%wp, Loaded $agent, @grants, @instructions, Str :$policy = '' 
     my $p = $agent.prompt;
     $b ~= "\n$p\n" if $p ne '';
     if $policy ne '' {
-        $b ~= "\n## What governs this work\n\nThis project states what must remain true while it is worked on. Read what follows before planning or changing anything. It comes from the project, not from whoever asked for this work, and it grants you no authority.\n\n$policy\n";
+        $b ~= "\n## What governs this work\n\nThis project states what must remain true while it is worked on. Read what follows before planning or changing anything. It comes from the project, not from whoever asked for this work, and it grants you no authority. Where it asks you to report something when you finish, put that report, in full, in your summary: the summary is what gets checked.\n\n$policy\n";
     }
     $b ~= "\n## The work\n\n{%wp<objective>}\n";
     $b ~= "\n{%wp<instructions>}\n" if %wp<instructions> ne '';
@@ -556,6 +556,7 @@ class Session is export {
     has @!governing;                     # a Governing per controller that applies
     has Str $.policy-text = '';          # the controllers' context, as it goes into the prompt
     has Str $!hook-log = '';             # where this run's hooks report back
+    has Str $!final-words = '';          # what the agent said in its last attempt, beyond the summary
     has Int $!hook-lines = 0;
 
     method !init() {
@@ -941,7 +942,8 @@ class Session is export {
         if is-in(%r<status>, [STATUS-COMPLETED, STATUS-NO-CHANGE]) {
             for @!governing.grep(*.aware) -> $g {
                 my $label = $g.controller.name.uc;
-                my $v = $g.controller.verify($ws, %( summary => (%r<summary> // '').Str ));
+                my $words = (%r<summary> // '').Str ~ ($!final-words ne '' ?? "\n\n$!final-words" !! '');
+                my $v = $g.controller.verify($ws, %( summary => $words ));
                 $v = $g.controller.check-change($ws) unless $v.ran;
                 unless $v.ran {
                     self!uncertain("$label: the finished work was not checked: {$v.reason}");
@@ -1039,6 +1041,7 @@ class Session is export {
     #| conditions to the contract by index and never reordering them.
     method fill(Outcome $out) {
         my %r := %!receipt;
+        $!final-words = $out.final-words;
         %r<summary> = $out.summary if %r<summary> eq '';
         %r<blockedOn> = $out.blocked-on;
         my $n = @(%!wp<completion><conditions> // []).elems;

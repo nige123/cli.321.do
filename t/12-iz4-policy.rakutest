@@ -38,6 +38,7 @@ class Answering does Adapter {
     has %.has-controls;
     has Bool $.carries-hooks = False;
     has @.fire;                         # hook log lines to write, as a harness's hooks would
+    has Str $.said = '';                # what the model said in its messages, beyond the summary
     method name(--> Str) { 'answering' }
     method detect(--> Detection) { Detection.new(:available, :version<t>) }
     method enforcement(--> Hash) { %( features().map({ $_ => True }) ) }
@@ -51,7 +52,7 @@ class Answering does Adapter {
             $fh.say(encode-json($_)) for @!fire;
             $fh.close;
         }
-        Outcome.new(:status(STATUS-COMPLETED.Str), :end-reason<completed>, :summary($!summary),
+        Outcome.new(:status(STATUS-COMPLETED.Str), :end-reason<completed>, :summary($!summary), :final-words($!said),
             :conditions([ %( met => True, proof => 'stub' ), ]), :cost(load('Cost', { basis => COST-HARNESS })));
     }
 }
@@ -82,6 +83,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     ok $a.prompts[0].contains('## What governs this work') && $a.prompts[0].contains('These invariants govern this work (stub)'), 'iz4\'s context is in the prompt';
     ok $a.prompts[0].index('What governs this work') < $a.prompts[0].index('## The work'), 'before the work';
     ok !$a.prompts[0].contains('per-invariant report'), 'and the runtime adds no words about IZ4 of its own';
+    ok $a.prompts[0].contains('put that report, in full, in your summary'), 'only where a report it is asked for belongs in this runtime';
     is $said.slurp, $report, 'the agent\'s last words were put to iz4 exactly';
     ok @(%r<uncertain>).grep(*.contains('IZ4 Invariant 5 Nothing is deleted.: uncertain')), 'what the report calls uncertain is on the receipt' or diag %r<uncertain>.raku;
     ok $col.all.grep({ .<kind> eq EVENT-PROGRESS && (.<payload><text> // '').contains('IZ4 policy') }), 'the run says what it did';
@@ -111,6 +113,17 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     ok %g<checks>.grep({ .<point> eq 'action' && .<result> eq 'warn' && .<control> eq CTRL-SHELL-GUARD && .<reason>.contains('Invariant 5') }), 'a hook\'s warning is recorded in full';
     ok !%g<checks>.grep({ .<point> eq 'action' && .<result> eq 'pass' }), 'a hook\'s pass is counted, not listed';
     ok !@(%g<gaps> // []), 'and there are no gaps to report' or diag %g<gaps>.raku;
+}
+
+# ---- the report may be in what the model said, not in its short summary ---------------
+{
+    temp %*ENV<X321_IZ4> = stub-iz4();
+    my $ws = iz4-workspace();
+    my $said = temp-dir().add('said.txt');
+    temp %*ENV<STUB_SUMMARY_OUT> = $said.Str;
+    my %r = go(Answering.new(:summary('Created the file.'), :said("Working on it.\n$report"), :has-controls(%full)), $ws);
+    ok $said.slurp.contains('Created the file.') && $said.slurp.contains('Assessment:    uncertain'), 'iz4 is given the summary and what the model actually said';
+    is %r<summary>, 'Created the file.', 'the receipt\'s summary is unchanged';
 }
 
 # ---- what the finished work can come back as ---------------------------------------
