@@ -104,7 +104,7 @@ is %by<claude_code><controls><authoritative_context>, 'advises', 'the context is
 is %by<claude_code><controls><network_guard>, 'none', 'and network use cannot be intercepted at all';
 is %by<claude_code><headlessControls><human_approval>, 'none', 'headless, nobody can be asked';
 ok !%by<procedure><controls>.defined, 'an adapter with no controls reports none';
-ok $doc<iz4><drivable>:exists && $doc<iz4><reason>:exists, 'whether iz4 can be driven is reported, with the reason when it cannot';
+ok ($doc<iz4><drivable>:exists) && ($doc<iz4><reason>:exists), 'whether iz4 can be driven is reported, with the reason when it cannot';
 {
     # an iz4 that is installed but has no machine interface is not "applied"
     my $old = stub-iz4();
