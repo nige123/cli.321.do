@@ -45,7 +45,7 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
         'iz4 was given operation, target, parameters and context' or diag %sent.raku;
     ok !(%sent<recipient>:exists), 'and nothing it was not told';
     like $v.limits, /establishes/, 'the limits iz4 states come back with the verdict';
-    is $v.invariants.join(','), '5', 'so do the invariants it considered';
+    is $v.invariants.join(','), 'nothing-deleted.shop.example.com', 'so do the invariants it considered, by the names iz4 gave';
 
     for RESULT-WARN, RESULT-BLOCK, RESULT-NEEDS-HUMAN -> $r {
         temp %*ENV<STUB_ACTION> = $r;
@@ -60,10 +60,10 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
         temp %*ENV<STUB_CHANGE> = RESULT-NEEDS-HUMAN;
         my $c = $iz4.check-change($ws.Str);
         is $c.result, RESULT-NEEDS-HUMAN, 'a change that needs a person says so';
-        ok $c.proposal.contains('revised Invariant 5') && $c.proposal.contains('Staff decide.'), 'the proposal names what would change' or diag $c.proposal;
+        ok $c.proposal.contains('revised staff-decide.shop.example.com') && $c.proposal.contains('Staff decide.'), 'the proposal names what would change' or diag $c.proposal;
         ok $c.proposal.contains('iz4 approve --candidate=abc --base=HEAD'), 'and how a person agrees';
         ok $c.proposal.contains('d1g'), 'bound to the proposal digest';
-        ok $c.evidence ~~ Associative && $c.evidence<schema> eq 'iz4-check/1', 'the controller\'s own document is kept as evidence';
+        ok $c.evidence ~~ Associative && $c.evidence<schema> eq 'iz4-check/2', 'the controller\'s own document is kept as evidence';
     }
     {
         temp %*ENV<STUB_CHANGE> = RESULT-BLOCK;
@@ -78,11 +78,11 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
     temp %*ENV<STUB_SUMMARY_OUT> = $said.Str;
     my $vf = $iz4.verify($ws.Str, %( summary => "Done.\nInvariant: 5" ));
     is $vf.result, RESULT-PASS, 'verification passes';
-    ok $vf.uncertain.grep(*.contains('IZ4 Invariant 5 Nothing is deleted.: uncertain')), 'what the report calls uncertain reaches the verdict';
+    ok $vf.uncertain.grep(*.contains('IZ4 nothing-deleted.shop.example.com Nothing is deleted.: uncertain')), 'what the report calls uncertain reaches the verdict';
     ok $log.slurp.contains('verify --worktree --json --summary='), 'the agent\'s last words are handed to iz4 as a file of text';
     is $said.slurp, "Done.\nInvariant: 5", 'exactly as given';
     is $vf.parts.map(*<part>).join(','), 'structure,change,report', 'a compound answer keeps its parts';
-    is-deeply $vf.record, %( point => 'verify', result => 'pass', reason => 'verify pass', invariants => ['5'] ), 'a verdict has a small record for the receipt';
+    is-deeply $vf.record, %( point => 'verify', result => 'pass', reason => 'verify pass', invariants => ['nothing-deleted.shop.example.com'] ), 'a verdict has a small record for the receipt';
 }
 
 # ---- present but not drivable: said, never passed ----------------------------------
@@ -114,6 +114,26 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
 # ---- documents that are not what they claim ----------------------------------------
 is verdict-from(POINT-CHANGE, 'not json', 'nope').result, RESULT-UNAVAILABLE, 'output that is not a document is unavailable';
 is verdict-from(POINT-CHANGE, '{"schema":"iz4-check/1","result":"splendid"}', 'x').result, RESULT-UNAVAILABLE, 'an unknown result is unavailable, never a pass';
+
+# ---- an invariant's identity is iz4's, and opaque here ---------------------------
+# 321 carries whatever string iz4 gives and never reads meaning into it:
+# not its shape, not its parts, not an order.
+{
+    my $odd = 'Zz.not..a-NAME 7 / anything iz4 says';
+    my $v = verdict-from(POINT-ACTION, encode-json(%( schema => 'iz4-check/2', result => 'warn', reason => 'r',
+        invariants_considered => [$odd, 'b.shop.example.com', 'a.shop.example.com'] )), 'x');
+    is-deeply $v.invariants.List, ($odd, 'b.shop.example.com', 'a.shop.example.com'), 'identities pass through exactly as given, in the order given, unvalidated';
+    my $named = verdict-from(POINT-CHANGE, encode-json(%( schema => 'iz4-check/2', result => 'needs_human', reason => 'r',
+        proposed_invariant_change => %( kind => 'change', changes => [ %( kind => 'revised', id => 'owner-adjusted.prices.honeywillow.com', after => 'New words.' ), ] ) )), 'x');
+    ok $named.proposal.contains('  - revised owner-adjusted.prices.honeywillow.com: New words.'), 'a proposal shows the identity iz4 gave, whole' or diag $named.proposal;
+    nok $named.proposal.contains('Invariant owner'), 'and adds no word of its own to a name';
+    my $numbered = verdict-from(POINT-CHANGE, encode-json(%( schema => 'iz4-check/1', result => 'needs_human', reason => 'r',
+        proposed_invariant_change => %( kind => 'change', changes => [ %( kind => 'revised', number => 5, text => 'Old shape.' ), ] ) )), 'x');
+    ok $numbered.proposal.contains('  - revised Invariant 5: Old shape.'), 'a document from an iz4 that still numbers is shown as it always was' or diag $numbered.proposal;
+    my $src = $?FILE.IO.parent(2).add('lib/Do321').dir.grep(*.extension eq 'rakumod').map(*.slurp).join("\n");
+    nok $src ~~ / 'iz4.you' /, 'no 321 source names the foundation or its namespace';
+    nok $src ~~ / 'humans-first' | 'foundation-holds' | 'legacy_foundation_number' /, 'nor any invariant, nor the mapping from the old numbers';
+}
 is verdict-from(POINT-CHANGE, '{"schema":"other/1","result":"pass"}', 'x').result, RESULT-UNAVAILABLE, 'another schema is not trusted as a check';
 
 # ---- a second controller needs no change to the first -------------------------------
@@ -140,7 +160,7 @@ ok !controller-named('nope').defined, 'and an unknown one is not invented';
         my %d = IZ4.new.discover($ws.Str);
         ok %d<available> && %d<digest>.starts-with('sha256:'), 'real iz4: discovered and drivable' or diag %d.raku;
         my ($text, $err) = IZ4.new.context($ws.Str);
-        ok $text.contains('INVARIANT 0'), 'real iz4: the context carries the invariants' or diag $err;
+        ok $text.contains('INVARIANT '), 'real iz4: the context carries the invariants' or diag $err;
         is IZ4.new.check-action($ws.Str, Action.new(:operation<write>, :target<notes.txt>)).result, RESULT-PASS, 'real iz4: an ordinary write passes';
         is IZ4.new.check-action($ws.Str, Action.new(:operation<write>, :target<IZ4>)).result, RESULT-NEEDS-HUMAN, 'real iz4: editing the IZ4 needs a person';
         ok IZ4.new.check-change($ws.Str).ran, 'real iz4: the change check runs';

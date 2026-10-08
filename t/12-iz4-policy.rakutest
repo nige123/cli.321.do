@@ -76,7 +76,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
 
     my $a = Answering.new(:summary($report), :has-controls(%full), :carries-hooks,
         :fire([ %( controller => 'iz4', harness => 'answering', control => CTRL-FILESYSTEM-GUARD, point => 'action', result => 'pass', reason => '' ),
-                %( controller => 'iz4', harness => 'answering', control => CTRL-SHELL-GUARD, point => 'action', result => 'warn', reason => 'tests/x names Invariant 5', invariants => ['5'] ), ]));
+                %( controller => 'iz4', harness => 'answering', control => CTRL-SHELL-GUARD, point => 'action', result => 'warn', reason => 'tests/x names nothing-deleted.shop.example.com', invariants => ['nothing-deleted.shop.example.com'] ), ]));
     my $col = Collector.new;
     my %r = go($a, $ws, $col);
     is %r<status>, STATUS-COMPLETED, 'a run whose work passes completes' or diag "{%r<blockedOn>} {%r<uncertain>.raku}";
@@ -85,7 +85,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     ok !$a.prompts[0].contains('per-invariant report'), 'and the runtime adds no words about IZ4 of its own';
     ok $a.prompts[0].contains('put that report, in full, in your summary'), 'only where a report it is asked for belongs in this runtime';
     is $said.slurp, $report, 'the agent\'s last words were put to iz4 exactly';
-    ok @(%r<uncertain>).grep(*.contains('IZ4 Invariant 5 Nothing is deleted.: uncertain')), 'what the report calls uncertain is on the receipt' or diag %r<uncertain>.raku;
+    ok @(%r<uncertain>).grep(*.contains('IZ4 nothing-deleted.shop.example.com Nothing is deleted.: uncertain')), 'what the report calls uncertain is on the receipt' or diag %r<uncertain>.raku;
     ok $col.all.grep({ .<kind> eq EVENT-PROGRESS && (.<payload><text> // '').contains('IZ4 policy') }), 'the run says what it did';
     ok !validate-run-receipt(%r), 'the receipt validates' or diag validate-run-receipt(%r).Str;
 
@@ -122,7 +122,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     is %g<humanDecision>, 'none was needed', 'no human decision was needed';
     ok %g<checks>.grep({ .<point> eq 'verify/change' && .<result> eq 'pass' }), 'the change check is recorded';
     ok %g<checks>.grep({ .<point> eq 'verify' && .<result> eq 'pass' }), 'so is the verification';
-    ok %g<checks>.grep({ .<point> eq 'action' && .<result> eq 'warn' && .<control> eq CTRL-SHELL-GUARD && .<reason>.contains('Invariant 5') }), 'a hook\'s warning is recorded in full';
+    ok %g<checks>.grep({ .<point> eq 'action' && .<result> eq 'warn' && .<control> eq CTRL-SHELL-GUARD && .<reason>.contains('nothing-deleted.shop.example.com') }), 'a hook\'s warning is recorded in full';
     ok !%g<checks>.grep({ .<point> eq 'action' && .<result> eq 'pass' }), 'a hook\'s pass is counted, not listed';
     ok !@(%g<gaps> // []), 'and there are no gaps to report' or diag %g<gaps>.raku;
 }
@@ -153,7 +153,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     # a person must decide
     my %r = ran(STUB_VERIFY => 'needs_human');
     is %r<status>, STATUS-BLOCKED, 'work that changes a commitment ends blocked, not completed';
-    ok %r<blockedOn>.contains('revised Invariant 5') && %r<blockedOn>.contains('iz4 approve --candidate=abc --base=HEAD'), 'blocked on the proposal, with how a person agrees' or diag %r<blockedOn>;
+    ok %r<blockedOn>.contains('revised staff-decide.shop.example.com') && %r<blockedOn>.contains('iz4 approve --candidate=abc --base=HEAD'), 'blocked on the proposal, with how a person agrees' or diag %r<blockedOn>;
     my %g = governed(%r);
     ok %g<humanDecision>.contains('a person must agree') && %g<humanDecision>.contains('never agrees for them'), 'the receipt says a person\'s decision is outstanding';
     ok !is-in('verified', %g<levels>), 'and the run is not verified';

@@ -42,20 +42,20 @@ sub stub-iz4(--> Str) is export {
         find_iz4() { d=$(pwd); while :; do [ -f "$d/IZ4" ] && { echo "$d/IZ4"; return 0; }; [ -e "$d/.git" ] && return 1; [ "$d" = "/" ] && return 1; d=$(dirname "$d"); done; }
         doc() { # check result reason
           extra=''
-          [ "$2" = needs_human ] && extra=',"proposed_invariant_change":{"kind":"change","summary":"1 commitment change(s)","changes":[{"kind":"revised","number":5,"text":"Staff decide."}],"agree_with":"iz4 approve --candidate=abc --base=HEAD","proposal_digest":"d1g"}'
+          [ "$2" = needs_human ] && extra=',"proposed_invariant_change":{"kind":"change","summary":"1 commitment change(s)","changes":[{"kind":"revised","id":"staff-decide.shop.example.com","text":"Staff decide."}],"agree_with":"iz4 approve --candidate=abc --base=HEAD","proposal_digest":"d1g"}'
           [ "$2" = needs_human ] || extra=',"proposed_invariant_change":null'
           rep=''
-          [ "$1" = verify ] && rep=',"report":{"uncertain":["Invariant 5 Nothing is deleted.: uncertain"]},"parts":[{"part":"structure","result":"pass","detail":"well formed"},{"part":"change","result":"'"${STUB_CHANGE:-pass}"'","detail":"change"},{"part":"report","result":"pass","detail":"report"}]'
-          printf '{"schema":"iz4-check/1","tool":"iz4/stub","check":"%s","result":"%s","reason":"%s","invariants_considered":[5],"evidence":{"rule":"stub"%s}%s,"iz4":{"file":"x","sha256":"y"},"limits":"a stub establishes nothing"}\n' "$1" "$2" "$3" "$rep" "$extra"
+          [ "$1" = verify ] && rep=',"report":{"uncertain":["nothing-deleted.shop.example.com Nothing is deleted.: uncertain"]},"parts":[{"part":"structure","result":"pass","detail":"well formed"},{"part":"change","result":"'"${STUB_CHANGE:-pass}"'","detail":"change"},{"part":"report","result":"pass","detail":"report"}]'
+          printf '{"schema":"iz4-check/2","tool":"iz4/stub","check":"%s","result":"%s","reason":"%s","invariants_considered":["nothing-deleted.shop.example.com"],"evidence":{"rule":"stub"%s}%s,"iz4":{"file":"x","sha256":"y"},"limits":"a stub establishes nothing"}\n' "$1" "$2" "$3" "$rep" "$extra"
           case "$2" in needs_human) exit 2 ;; block) exit 3 ;; *) exit 0 ;; esac
         }
         case "$1 $2" in
           "discover --json")
-            f=$(find_iz4) || { echo '{"schema":"iz4-discover/1","present":false,"valid":false,"invariants":[]}'; exit 0; }
+            f=$(find_iz4) || { echo '{"schema":"iz4-discover/2","present":false,"valid":false,"invariants":[]}'; exit 0; }
             if [ -n "$STUB_INVALID" ]; then
-              printf '{"schema":"iz4-discover/1","present":true,"file":"%s","sha256":"abc123","valid":false,"errors":["3: no IS FOR WHAT"],"invariants":[]}\n' "$f"
+              printf '{"schema":"iz4-discover/2","present":true,"file":"%s","sha256":"abc123","valid":false,"errors":["3: no IS FOR WHAT"],"invariants":[]}\n' "$f"
             else
-              printf '{"schema":"iz4-discover/1","present":true,"file":"%s","sha256":"abc123","valid":true,"errors":[],"invariants":[{"number":0,"foundation":true},{"number":5,"foundation":false}]}\n' "$f"
+              printf '{"schema":"iz4-discover/2","present":true,"file":"%s","sha256":"abc123","valid":true,"errors":[],"format":"named","invariants":[{"id":"humans-first.iz4.you","foundation":true,"legacy_foundation_number":0},{"id":"nothing-deleted.shop.example.com","foundation":false}]}\n' "$f"
             fi
             exit 0 ;;
           "context --json") printf '%s\n' '{"schema":"iz4-context/1","text":"These invariants govern this work (stub).\nINVARIANT 5\nNothing is deleted.\n"}'; exit 0 ;;

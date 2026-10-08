@@ -167,7 +167,7 @@ sub result-exit(Str $result --> Int) is export {
 #|     iz4 check change --json      the change in the working directory
 #|     iz4 verify --json            the finished run
 #|
-#| Each check answers with an iz4-check/1 document: result, reason,
+#| Each check answers with an iz4-check document: result, reason,
 #| invariants_considered, evidence, proposed_invariant_change, limits.
 #| Which invariants exist, what they mean and what a change to one is are
 #| iz4's business; an iz4 too old to offer a command makes that point
@@ -205,7 +205,7 @@ class IZ4 does Controller is export {
         return %( subject => $doc<file>.Str, digest => 'sha256:' ~ $doc<sha256>.Str, available => False,
                   reason => 'the IZ4 is invalid: ' ~ @($doc<errors> // []).join('; ') ) unless $doc<valid>;
         %( subject => $doc<file>.Str, digest => 'sha256:' ~ $doc<sha256>.Str, available => True, reason => '',
-           invariants => [ |@($doc<invariants> // []).map({ ($_<number> // '').Str }) ] );
+           invariants => [ |@($doc<invariants> // []).map({ identity-of($_) }) ] );
     }
 
     #| Can this iz4 be driven at all, wherever it is asked?  (drivable,
@@ -266,7 +266,23 @@ class IZ4 does Controller is export {
     }
 }
 
-#| A Verdict from an iz4-check/1 document.  Anything that is not one is
+#| How iz4 identifies an invariant in one of its documents, as it gave
+#| it: 'id' (a name, since iz4-discover/2 and iz4-check/2), or 'number'
+#| from the documents before that.  An opaque string here.  321 passes it
+#| on and shows it; it never reads meaning into its shape, compares its
+#| parts, orders by it or builds one.
+sub identity-of($entry --> Str) {
+    return '' unless $entry ~~ Associative;
+    ($entry<id> // $entry<number> // '').Str;
+}
+
+#| The same, as a person is shown it: the identity itself, or
+#| 'Invariant N' for a document that still gives a number.
+sub identity-label($entry --> Str) {
+    $entry ~~ Associative && ($entry<id> // '').Str ne '' ?? $entry<id>.Str !! "Invariant {identity-of($entry)}";
+}
+
+#| A Verdict from an iz4-check document.  Anything that is not one is
 #| unavailable: an old iz4, an error, a crash.
 sub verdict-from(Str $point, Str $out, Str $otherwise --> Verdict) is export {
     my $doc = try parse-json($out);
@@ -284,7 +300,7 @@ sub verdict-from(Str $point, Str $out, Str $otherwise --> Verdict) is export {
             @lines.push('  ' ~ $p<summary>) if ($p<summary> // '') ne '';
             for @($p<changes> // []) -> $c {
                 next unless $c ~~ Associative;
-                @lines.push('  - ' ~ ($c<kind> // 'change') ~ (($c<number> // '') ne '' ?? " Invariant {$c<number>}" !! '')
+                @lines.push('  - ' ~ ($c<kind> // 'change') ~ (identity-of($c) ne '' ?? ' ' ~ identity-label($c) !! '')
                     ~ (($c<text> // $c<after> // '') ne '' ?? ": {($c<text> // $c<after>).Str.substr(0, 160)}" !! ''));
             }
             @lines.push('  to agree, a person runs: ' ~ $p<agree_with>) if ($p<agree_with> // '') ne '';
