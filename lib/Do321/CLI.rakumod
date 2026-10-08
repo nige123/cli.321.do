@@ -95,7 +95,7 @@ constant USAGE = q:to/END/;
                                     controller's verdict out in the harness's own terms
 
     Harness hooks, the older form (for a hook command such as 'iz4 hook'):
-      321 hooks install --workspace <dir> --command <cmd> [--strict] [--json]
+      321 hooks status|remove --workspace <dir> --command <cmd> [--json]   (older direct wiring; install is refused)
                                     wire <cmd> session-start|pre-edit|stop into every harness
                                     321 knows, in that workspace; --strict wires the two that refuse
       321 hooks status  --workspace <dir> --command <cmd> [--json]
@@ -485,7 +485,19 @@ sub cmd-doctor(Env $env, @args --> Int) {
         my @bindings;
         with $env.adapters.get('procedure') -> $p { @bindings = $p.bindings if $p ~~ ProcedureAdapter }
         my %d = doctor-document($env.adapters, @bindings, %trust);
-        %d<iz4> = %( binary => iz4-binary(), applied => iz4-binary() ne '' );
+        # What each harness can do at each control, in the one vocabulary:
+        # enforces (an answer can stop the thing), advises (text reaches the
+        # model and nothing more) or none.
+        for @(%d<adapters>) -> %rec {
+            my $a = $env.adapters.get(%rec<name>);
+            next unless $a.defined && $a.controls.elems > 0;
+            %rec<controls> = %( controls().map({ $_ => control-strength($a.controls, $_) }) );
+            %rec<headlessControls> = %( controls().map({ $_ => control-strength($a.headless-controls, $_) }) );
+        }
+        # Whether iz4 can really be driven is asked of iz4, not inferred from
+        # a file being on PATH.
+        my %probe = IZ4.new.probe;
+        %d<iz4> = %( binary => %probe<binary>, drivable => %probe<drivable>, applied => %probe<drivable>, reason => %probe<reason>, tool => %probe<tool> );
         $env.stdout.say(encode-json-pretty(%d));
         return $! ?? EXIT-FAILED !! 0;
     }
@@ -499,6 +511,16 @@ sub cmd-doctor(Env $env, @args --> Int) {
         my @no = features().grep({ !enforces(%enf, $_) });
         $env.stdout.say("      enforces:     {@yes.join(', ')}");
         $env.stdout.say("      not enforced: {@no.join(', ')}") if @no;
+        if $a.controls.elems > 0 {
+            my %c = $a.controls;
+            my @ce = controls().grep({ control-strength(%c, $_) eq STRENGTH-ENFORCES });
+            my @ca = controls().grep({ control-strength(%c, $_) eq STRENGTH-ADVISES });
+            my @cn = controls().grep({ control-strength(%c, $_) eq STRENGTH-NONE });
+            $env.stdout.say('      controls a controller can be driven from:');
+            $env.stdout.say("        enforces: {@ce.join(', ') || 'nothing'}");
+            $env.stdout.say("        advises:  {@ca.join(', ')}") if @ca;
+            $env.stdout.say("        cannot:   {@cn.join(', ')}") if @cn;
+        }
     }
     with $env.adapters.get('procedure') -> $p {
         if $p ~~ ProcedureAdapter {
@@ -508,10 +530,12 @@ sub cmd-doctor(Env $env, @args --> Int) {
             $env.stdout.say('  ' ~ $_) for @b;
         }
     }
-    my $iz4 = iz4-binary();
-    $env.stdout.say($iz4 ne ''
-        ?? "iz4: $iz4 (the IZ4 protocol is applied to model-driven runs in a workspace that keeps an IZ4)"
-        !! 'iz4: not on PATH (an IZ4 in a workspace is reported on the receipt, not applied)');
+    my %probe = IZ4.new.probe;
+    $env.stdout.say(%probe<drivable>
+        ?? "iz4: {%probe<binary>} ({%probe<tool>}; drivable: it is applied to model-driven runs in a workspace that keeps an IZ4)"
+        !! %probe<binary> ne ''
+            ?? "iz4: {%probe<binary>} is installed but cannot be driven: {%probe<reason>}. An IZ4 in a workspace is reported, not applied."
+            !! 'iz4: not on PATH (an IZ4 in a workspace is reported on the receipt, not applied)');
     my $cfg = try trust-of($env);
     if $! { $env.stdout.say("trust: {$!.message}"); return EXIT-FAILED }
     if $cfg.path.IO.e { $env.stdout.say("trust: {$cfg.path}, {$cfg.configured.elems} configured package(s)") }
@@ -667,31 +691,57 @@ sub cmd-hook(Env $env, @args --> Int) {
 
     my %found = $controller.discover($workspace);
     return 0 unless %found;                       # nothing governs here: stay out of the way
+    # What this harness can do at this control, here: it decides what a
+    # controller that cannot be asked leads to.  Enforcing stops; advisory
+    # warns.  Nothing is let through quietly.
+    my $strength = control-strength($headless ?? $adapter.headless-controls !! $adapter.controls, $control);
     my Verdict $v;
     my ($code, $out, $err) = 0, '', '';
-    if !%found<available> {
+    my sub answer() { ($code, $out, $err) = $adapter.answer($control, $v, :$headless, :$strength, :controller($name)) }
+    if $control eq CTRL-POST-RUN && %native<stop_hook_active> {
+        # The harness's own loop guard: this turn was already refused once.
+        # Nothing is asked again, and nothing is recorded as having passed.
+        $v = unavailable(POINT-VERIFY, 'not asked again: this turn end was already refused once (the harness\'s loop guard)');
+    }
+    elsif !%found<available> {
         $v = unavailable('', "{$name} cannot be driven here: {%found<reason>}");
-        ($code, $out, $err) = $adapter.answer($control, $v, :$headless);
+        answer();
     }
     elsif $control eq CTRL-AUTHORITATIVE-CONTEXT {
         my ($text, $why) = $controller.context($workspace);
-        if $why.defined { $v = unavailable(POINT-CONTEXT, "the context could not be read: $why"); $err = "321: {$v.reason}\n" }
+        if $why.defined {
+            # The context is told, never enforced: say, where the person will
+            # see it, that it was not delivered.
+            $v = unavailable(POINT-CONTEXT, "the context could not be read: $why");
+            ($code, $out, $err) = $adapter.answer($control, $v, :$headless, :strength(STRENGTH-ADVISES), :controller($name));
+        }
         else { $v = Verdict.new(:point(POINT-CONTEXT), :result(RESULT-PASS), :reason('the context was delivered')); $out = $text }
     }
     elsif $control eq CTRL-POST-RUN {
-        if %native<stop_hook_active> { $v = Verdict.new(:point(POINT-VERIFY), :result(RESULT-PASS), :reason('already asked once this turn')) }
-        else {
-            $v = $controller.verify($workspace, %( summary => $adapter.final-words(%native) ));
-            ($code, $out, $err) = $adapter.answer($control, $v, :$headless);
-        }
+        $v = $controller.verify($workspace, %( summary => $adapter.final-words(%native) ));
+        answer();
     }
     else {
         my $action = $adapter.translate-event($control, %native);
-        if $action.defined {
-            $v = $controller.check-action($workspace, $action);
-            ($code, $out, $err) = $adapter.answer($control, $v, :$headless);
+        if $action.defined { $v = $controller.check-action($workspace, $action) }
+        else               { $v = unavailable(POINT-ACTION, "{$harness} gave no action for $control") }
+        answer();
+    }
+    # The rule holds whatever an adapter's translation does or forgets: a
+    # control that can stop the thing never lets it through unchecked, and
+    # an unchecked pass-through is never silent.
+    my $asked = !($control eq CTRL-POST-RUN && %native<stop_hook_active>);
+    if $asked && !$v.ran {
+        my $stops = $strength eq STRENGTH-ENFORCES
+            && is-in($control, [CTRL-FILESYSTEM-GUARD, CTRL-SHELL-GUARD, CTRL-PRE-TOOL, CTRL-PRE-ACTION, CTRL-POST-RUN]);
+        if $stops && $code == 0 {
+            $code = 2;
+            $out = '';
+            $err = "321: {$name.uc} enforcement could not be performed: {$v.reason}\n";
         }
-        else { $v = unavailable(POINT-ACTION, "{$harness} gave no action for $control") }
+        elsif !$stops && $out eq '' && $err eq '' {
+            $err = "321: {$name.uc} did NOT check this: {$v.reason}. The work was let through unchecked.\n";
+        }
     }
     hook-log($name, $harness, $control, $v);
     $env.stdout.print($out) if $out ne '';
@@ -745,7 +795,17 @@ sub cmd-hooks(Env $env, Global $g, @args --> Int) {
     if $command eq '' { $env.stderr.say('321 hooks: --command names the hook command, such as "iz4 hook"'); return EXIT-USAGE }
     unless $workspace.IO.d { $env.stderr.say("321 hooks: no such directory {$workspace}"); return EXIT-USAGE }
     my @records = do given $sub {
-        when 'install' { install-all($workspace.IO, $command, :$strict) }
+        when 'install' {
+            # A hook 321 writes calls 321, which asks the controller.  This
+            # older command wrote the controller's own command straight into
+            # a harness, and no longer does: what is there is reported and
+            # left exactly as it is, and nothing new is written.
+            status-all($workspace.IO, $command).map({
+                %( |$_, action => 'refused',
+                   error => "321 no longer writes a controller's own command into a harness: hooks 321 installs call 321. "
+                          ~ "Nothing was written and nothing here was changed. Use: 321 <controller> install (for iz4: 321 iz4 install, with iz4 0.15.0 or later)" )
+            }).List
+        }
         when 'status'  { status-all($workspace.IO, $command) }
         when 'remove'  { remove-all($workspace.IO, $command) }
         default { $env.stderr.say($usage); return EXIT-USAGE }

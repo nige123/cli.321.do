@@ -15,7 +15,7 @@ is control-strength(%( CTRL-PRE-TOOL, 'mighty' ), CTRL-PRE-TOOL), STRENGTH-NONE,
 
 # ---- Claude Code: real, and honest about its gaps ------------------------------
 my %cc = ClaudeCode.new.controls;
-is control-strength(%cc, CTRL-AUTHORITATIVE-CONTEXT), STRENGTH-ENFORCES, 'claude_code: context is delivered';
+is control-strength(%cc, CTRL-AUTHORITATIVE-CONTEXT), STRENGTH-ADVISES, 'claude_code: the context is told to the agent, which is advice: nothing can be refused there';
 is control-strength(%cc, CTRL-PRE-TOOL), STRENGTH-ENFORCES, 'claude_code: a tool call can be refused';
 is control-strength(%cc, CTRL-FILESYSTEM-GUARD), STRENGTH-ENFORCES, 'claude_code: a write can be refused';
 is control-strength(%cc, CTRL-SHELL-GUARD), STRENGTH-ENFORCES, 'claude_code: a shell command can be refused';

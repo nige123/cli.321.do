@@ -524,7 +524,8 @@ class Governing {
     has Bool $.checked is rw = False;
     has Bool $.verified is rw = False;
     has Str $.human is rw = '';
-    has Int $.fired is rw = 0;
+    has Int $.fired is rw = 0;         # hooks that reported back with the controller's answer
+    has Int $.unanswered is rw = 0;    # hooks that fired and could not get one
     has @.checks;
     has @.gaps;
     has %.controls;
@@ -901,6 +902,15 @@ class Session is export {
             next unless $rec ~~ Associative;
             my $g = @!governing.first({ .controller.name eq ($rec<controller> // '') });
             next without $g;
+            # A hook that could not get the controller's answer checked
+            # nothing: it is counted apart and never as protection.
+            if ($rec<result> // '') eq RESULT-UNAVAILABLE {
+                $g.unanswered = $g.unanswered + 1;
+                $g.checks.push(%( point => (($rec<point> // '') || POINT-ACTION).Str, result => RESULT-UNAVAILABLE,
+                                  control => ($rec<control> // '').Str, reason => ($rec<reason> // '').Str ));
+                $g.gaps.push("a hook could not ask {$g.controller.name}: {($rec<reason> // '').Str}");
+                next;
+            }
             $g.fired = $g.fired + 1;
             next if ($rec<result> // '') eq RESULT-PASS;
             my %c = point => ($rec<point> // 'action').Str, result => ($rec<result> // '').Str, control => ($rec<control> // '').Str;
@@ -946,9 +956,19 @@ class Session is export {
                 my $v = $g.controller.verify($ws, %( summary => $words ));
                 $v = $g.controller.check-change($ws) unless $v.ran;
                 unless $v.ran {
+                    # The end-of-work check is one the runtime enforces.  When
+                    # it cannot be performed the work is not passed off as
+                    # completed: the run ends blocked, saying enforcement could
+                    # not be performed, for a person to look at.
                     self!uncertain("$label: the finished work was not checked: {$v.reason}");
                     $g.gaps.push("the finished work was not checked: {$v.reason}");
                     $g.checks.push(%( point => POINT-VERIFY, result => RESULT-UNAVAILABLE, reason => $v.reason ));
+                    if %r<status> ne STATUS-BLOCKED {
+                        %r<status> = STATUS-BLOCKED;
+                        %r<blockedOn> = "$label enforcement could not be performed: the finished work was not checked ({$v.reason}). "
+                                      ~ 'Nothing here says the work is wrong; a person should look before it is taken as done.';
+                        self.emit(EVENT-PROGRESS, %( text => "$label policy: the finished work could not be checked; the run is blocked, not completed" ));
+                    }
                     next;
                 }
                 if $v.parts {
@@ -983,7 +1003,10 @@ class Session is export {
         @levels.push(PROTECT-AWARE) if $g.aware;
         @levels.push(PROTECT-CHECKED) if $g.checked;
         if $g.guards {
-            if $g.fired > 0 { @levels.push(PROTECT-GUARDED) }
+            if $g.fired > 0 && $g.unanswered == 0 { @levels.push(PROTECT-GUARDED) }
+            elsif $g.unanswered > 0 {
+                $g.gaps.push("interception was wired, but {$g.unanswered} hook call(s) could not ask {$g.controller.name}; those actions were stopped, and the run is not counted as guarded");
+            }
             else { $g.gaps.push('interception was wired, but no hook reported back, so it is not counted as guarded') }
         }
         @levels.push(PROTECT-VERIFIED) if $g.verified;

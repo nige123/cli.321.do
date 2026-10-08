@@ -114,18 +114,49 @@ sub iz4-binary(--> Str) is export {
     $found.defined ?? $found.Str !! '';
 }
 
-#| Run a command in a directory; returns (exit code, stdout, stderr), or
-#| (-1, '', message) when it could not start.
-sub run-in(Str $dir, @argv, Str :$in --> List) {
-    my $p = try run |@argv, :cwd($dir), :in, :out, :err, :env(%*ENV);
-    return (-1, '', $!.message) if $!;
+#| How long a controller is given to answer, in seconds, by the kind of
+#| question.  A question about one action or the context is quick; a
+#| check of the change or the finished work may run the project's tests.
+#| X321_CONTROLLER_TIMEOUT overrides every one of them.
+sub controller-timeout(Str $point --> Int) is export {
+    with %*ENV<X321_CONTROLLER_TIMEOUT> { return .Int if $_ ~~ /^ \d+ $/ && .Int > 0 }
+    $point eq POINT-CHANGE || $point eq POINT-VERIFY ?? 900 !! 30;
+}
+
+#| The command that puts a time limit on another, or an empty list where
+#| this system has none: `timeout` where it exists, else Perl's alarm.
+sub time-limited(Int $seconds --> List) {
+    with on-path('timeout') { return (.Str, $seconds.Str) }
+    with on-path('perl')    { return (.Str, '-e', 'alarm shift; exec @ARGV or exit 127', $seconds.Str) }
+    ();
+}
+
+#| Run a command in a directory under a time limit.  Returns (exit code,
+#| stdout, stderr, why): why is '' when the command ran to its own end, and
+#| otherwise says how it did not (could not start, timed out, was killed).
+#| A command that did not run to its own end has no exit code worth
+#| reading, so the code is -1 whenever why is not ''.
+sub run-in(Str $dir, @argv, Str :$in, Int :$seconds = 30 --> List) {
+    my @limit = time-limited($seconds);
+    my $p = try run |@limit, |@argv, :cwd($dir), :in, :out, :err, :env(%*ENV);
+    return (-1, '', '', "could not start: {$!.message.lines.head // ''}") if $!;
     $p.in.print($in) with $in;
     # Raku++ returns the Proc from closing stdin; sinking an unsuccessful
     # one throws, and the exit code is what we want, read below.
     try { $p.in.close; Nil };
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
-    ($p.exitcode, $out, $err);
+    my $signal = (try $p.signal) // 0;
+    return (-1, $out, $err, "timed out after {$seconds}s") if @limit && ($p.exitcode == 124 || $signal == 14);
+    return (-1, $out, $err, "was killed by signal $signal") if $signal != 0;
+    return (-1, $out, $err, 'could not start: not found') if $p.exitcode == 127 && $out eq '';
+    ($p.exitcode, $out, $err, '');
+}
+
+#| The exit code a result must come with (iz4's contract: pass and warn 0,
+#| needs_human 2, block 3).  Exit 1 is "the check could not run".
+sub result-exit(Str $result --> Int) is export {
+    $result eq RESULT-NEEDS-HUMAN ?? 2 !! $result eq RESULT-BLOCK ?? 3 !! 0;
 }
 
 #| The IZ4 driver.  It calls iz4's machine interface and nothing else:
@@ -161,13 +192,14 @@ class IZ4 does Controller is export {
             return %() without $file;
             return %( subject => $file.Str, digest => '', available => False, reason => 'iz4 is not installed' );
         }
-        my ($code, $out, $err) = run-in($workspace, [$bin, 'discover', '--json']);
+        my ($code, $out, $err, $why) = run-in($workspace, [$bin, 'discover', '--json'], :seconds(controller-timeout(POINT-CONTEXT)));
         my $doc = try parse-json($out);
-        unless $code == 0 && $doc ~~ Associative && ($doc<schema> // '') ~~ Str && $doc<schema>.starts-with('iz4-discover/') {
+        unless $why eq '' && $code == 0 && $doc ~~ Associative && ($doc<schema> // '') ~~ Str && $doc<schema>.starts-with('iz4-discover/') {
             my $file = find-iz4-file($workspace);
             return %() without $file;
             return %( subject => $file.Str, digest => '', available => False,
-                      reason => "this iz4 offers no machine interface (iz4 discover: {($err.trim.lines.head // "exit $code")})" );
+                      reason => $why ne '' ?? "iz4 discover $why"
+                          !! "this iz4 offers no machine interface (iz4 discover: {($err.trim.lines.head // "exit $code")}); iz4 0.15.0 or later has it" );
         }
         return %() unless $doc<present>;
         return %( subject => $doc<file>.Str, digest => 'sha256:' ~ $doc<sha256>.Str, available => False,
@@ -176,9 +208,24 @@ class IZ4 does Controller is export {
            invariants => [ |@($doc<invariants> // []).map({ ($_<number> // '').Str }) ] );
     }
 
+    #| Can this iz4 be driven at all, wherever it is asked?  (drivable,
+    #| reason, version).  Asked of the command itself, never inferred from
+    #| a file being on PATH: an iz4 with no machine interface is installed
+    #| and is not drivable.
+    method probe(--> Hash) {
+        my $bin = self.binary;
+        return %( binary => '', drivable => False, reason => 'iz4 is not installed', tool => '' ) if $bin eq '';
+        my ($code, $out, $err, $why) = run-in($*TMPDIR.Str, [$bin, 'discover', '--json'], :seconds(controller-timeout(POINT-CONTEXT)));
+        my $doc = try parse-json($out);
+        my $ok = $why eq '' && $code == 0 && $doc ~~ Associative && ($doc<schema> // '') ~~ Str && $doc<schema>.starts-with('iz4-discover/');
+        %( binary => $bin, drivable => $ok, tool => ($ok ?? ($doc<tool> // '').Str !! ''),
+           reason => $ok ?? '' !! $why ne '' ?? "iz4 discover $why"
+                         !! "this iz4 offers no machine interface (iz4 discover: {($err.trim.lines.head // "exit $code")}); iz4 0.15.0 or later has it" );
+    }
+
     method context(Str $workspace --> List) {
-        my ($code, $out, $err) = run-in($workspace, [self.binary, 'context', '--json']);
-        return ('', $err) if $code == -1;
+        my ($code, $out, $err, $why) = run-in($workspace, [self.binary, 'context', '--json'], :seconds(controller-timeout(POINT-CONTEXT)));
+        return ('', "iz4 context $why") if $why ne '';
         my $doc = try parse-json($out);
         return ('', ($err.trim || "iz4 context exited $code")) unless $code == 0 && $doc ~~ Associative && ($doc<text> // '') ~~ Str;
         ($doc<text>, Str);
@@ -205,9 +252,17 @@ class IZ4 does Controller is export {
     method !check(Str $point, Str $workspace, @args, Str :$in --> Verdict) {
         my $bin = self.binary;
         return unavailable($point, 'iz4 is not installed') if $bin eq '';
-        my ($code, $out, $err) = run-in($workspace, [$bin, |@args], :$in);
-        return unavailable($point, "iz4 {@args.head(2).join(' ')} did not run: $err") if $code == -1;
-        verdict-from($point, $out, "iz4 {@args.head(2).join(' ')} (exit $code): {$err.trim.lines.head // 'no result document'}");
+        my $name = "iz4 {@args.head($point eq POINT-VERIFY ?? 1 !! 2).join(' ')}";
+        my ($code, $out, $err, $why) = run-in($workspace, [$bin, |@args], :$in, :seconds(controller-timeout($point)));
+        return unavailable($point, "$name $why") if $why ne '';
+        # Exit 1 is iz4 saying the check could not run, whatever it printed.
+        return unavailable($point, "$name could not run (exit 1): {$err.trim.lines.head // 'no reason given'}") if $code == 1;
+        my $v = verdict-from($point, $out, "$name (exit $code): {$err.trim.lines.head // 'no result document'}");
+        # A result is believed only with the exit code that belongs to it: a
+        # document saying pass beside a failing exit is not a pass.
+        return unavailable($point, "$name answered \"{$v.result}\" with exit $code, which do not agree; treated as not run")
+            if $v.ran && $code != result-exit($v.result);
+        $v;
     }
 }
 
@@ -243,8 +298,11 @@ sub verdict-from(Str $point, Str $out, Str $otherwise --> Verdict) is export {
         :@uncertain, :$proposal, :limits(($doc<limits> // '').Str), :@parts, :evidence($doc));
 }
 
-#| The IZ4 file above a directory, for the case where iz4 itself cannot be
-#| asked.  Presence only: the runtime never reads what it says.
+#| The IZ4 file above a directory, for the one case where iz4 itself
+#| cannot be asked (it is missing, or too old to answer `discover`).
+#| Presence only, so that a status can say "an IZ4 is here and is not
+#| being driven" instead of staying silent: the runtime never reads what
+#| the file says, and whenever iz4 can be asked, iz4 is what answers.
 sub find-iz4-file(Str $workspace --> IO::Path) is export {
     return IO::Path if $workspace eq '';
     my $dir = $workspace.IO;

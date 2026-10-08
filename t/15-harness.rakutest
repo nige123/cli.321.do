@@ -226,7 +226,11 @@ sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@(
     is %s<headline>, 'CHECKED', 'CHECKED, not GUARDED';
     ok %s<controls>.first({ .<control> eq CTRL-FILESYSTEM-GUARD })<state> eq 'unavailable', 'the write guard is unavailable there';
     ok %s<warnings>.grep(*.contains('Filesystem guard is not available in weakling')), 'which the status warns about';
-    ok %s<warnings>.grep(*.contains('Context injection only advises')), 'and an advisory context is called advisory';
+    nok %s<warnings>.grep(*.contains('Context injection only advises')), 'a context is advice in every harness, so that needs no warning';
+    my $soft = new-fake(Any, :name<softy>, :controls(%( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ADVISES, CTRL-FILESYSTEM-GUARD, STRENGTH-ADVISES, CTRL-POST-RUN, STRENGTH-ADVISES )));
+    my %soft = install-enforcement($soft, $iz4, iz4-workspace(), '321');
+    ok %soft<warnings>.grep(*.contains('Filesystem guard only advises in softy')), 'a guard that can only advise is called advisory';
+    nok %soft<levels>.grep('guarded'), 'and a guard that only advises is never counted as guarded';
 
     my $deaf = new-fake(Any, :name<deaf>, :controls(%( CTRL-POST-TOOL, STRENGTH-ADVISES )));
     %s = install-enforcement($deaf, $iz4, $ws, '321');
@@ -275,8 +279,55 @@ sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@(
     ($code, $out, $err) = $cc.answer(CTRL-POST-RUN, v(RESULT-BLOCK));
     ok $code == 2 && $err.contains('because block'), 'at the end of a turn a block refuses the stop';
     is $cc.answer(CTRL-POST-RUN, v(RESULT-PASS))[0], 0, 'and a pass lets it end';
-    ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, unavailable('action', 'iz4 is not installed'));
-    ok $code == 0 && $err.contains('iz4 is not installed'), 'an unavailable controller lets the call through and says so: a visible gap';
+    ($code, $out, $err) = $cc.answer(CTRL-SHELL-GUARD, v(RESULT-WARN), :controller<iz4>);
+    like parse-json($out)<systemMessage>, /'IZ4 warns: because warn'/, 'and the person at the session is shown the warning too';
+    ($code, $out, $err) = $cc.answer(CTRL-POST-RUN, v(RESULT-WARN), :controller<iz4>);
+    ok $code == 0 && parse-json($out)<systemMessage>.contains('IZ4 warns: because warn'), 'a warning at the end of a turn lets it end and is shown, not dropped';
+    ($code, $out, $err) = $cc.answer(CTRL-POST-RUN, v(RESULT-NEEDS-HUMAN, :proposal('IZ4: agree?')));
+    ok $code == 2 && $err.contains('IZ4: agree?'), 'needs_human at the end of a turn refuses the stop: it is never an approval';
+}
+
+# ---- when the controller cannot be asked: enforcing stops, advisory warns -----------
+{
+    my $gone = unavailable('action', 'iz4 is not installed');
+    # an enforcing guard before a tool call
+    my ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, $gone, :strength(STRENGTH-ENFORCES), :controller<iz4>);
+    is $code, 2, 'an enforcing guard STOPS the action when the controller cannot be asked';
+    like $err, /'IZ4 enforcement could not be performed: iz4 is not installed'/, 'saying that enforcement could not be performed, and why';
+    like $err, /'not a finding about the action'/, 'and that this is not a finding';
+    like $err, /'321 iz4 remove'/, 'and how a person takes the wiring out';
+    is $out, '', 'nothing on stdout that could read as permission';
+    ($code, $out, $err) = $cc.answer(CTRL-SHELL-GUARD, $gone, :strength(STRENGTH-ENFORCES), :controller<iz4>, :headless);
+    is $code, 2, 'headless the same: stopped';
+    # the end-of-turn check is enforcing too
+    ($code, $out, $err) = $cc.answer(CTRL-POST-RUN, unavailable('verify', 'iz4 verify timed out after 5s'), :strength(STRENGTH-ENFORCES), :controller<iz4>);
+    ok $code == 2 && $err.contains('IZ4 enforcement could not be performed: iz4 verify timed out'), 'the end of a turn is not let through as checked';
+    like $err, /'could not check the work'/, 'and the agent is told to say so';
+    # the same guard, where the harness can only advise: allowed, with a visible warning
+    ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, $gone, :strength(STRENGTH-ADVISES), :controller<iz4>);
+    is $code, 0, 'an advisory control lets the action through';
+    like parse-json($out)<systemMessage>, /'IZ4 did NOT check this: iz4 is not installed' .* 'unchecked'/, 'with a warning shown to the person that it was NOT checked';
+    nok ($out ~ $err) ~~ /:i 'passed' | 'checked this' <!before ':'> /, 'and nothing that claims a check';
+    # the context can only ever be told
+    ($code, $out, $err) = $cc.answer(CTRL-AUTHORITATIVE-CONTEXT, unavailable('context', 'the context could not be read'), :strength(STRENGTH-ENFORCES), :controller<iz4>);
+    ok $code == 0 && parse-json($out)<systemMessage>.contains('did NOT check'), 'a context that could not be delivered warns; a session start cannot be refused';
+    # after the fact, likewise
+    ($code, $out, $err) = $cc.answer(CTRL-POST-TOOL, $gone, :strength(STRENGTH-ADVISES), :controller<iz4>);
+    is $code, 0, 'a control after the fact cannot stop anything';
+    # the default strength is the strict one: forgetting to say is never a way to fail open
+    ($code, $out, $err) = $cc.answer(CTRL-FILESYSTEM-GUARD, $gone);
+    is $code, 2, 'with no strength given, a guard is taken as enforcing';
+}
+
+# ---- every hook 321 writes calls 321, never the controller ------------------------------
+{
+    my %entries = claude-entries('321', 'iz4', controls());
+    my @commands = %entries.values.map({ |@$_ }).map({ |@(.<hooks>) }).map(*<command>);
+    ok @commands.elems >= 4, 'there are hook commands to look at';
+    for @commands -> $c {
+        ok $c.starts-with('321 hook claude_code iz4 '), "'$c' calls 321, which asks the controller";
+        nok $c ~~ /^ 'iz4' /, 'and never iz4 directly';
+    }
 }
 
 done-testing;

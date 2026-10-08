@@ -1,19 +1,17 @@
 unit module Do321::Hooks;
 
-#| Harness hooks: wiring a harness-neutral hook command into whatever
-#| harnesses 321 knows, and saying honestly what each of them enforces.
+#| The older direct wiring: a controller's own hook command (iz4's
+#| `iz4 hook`, say) written straight into a harness's settings, as 321
+#| before 0.4 and iz4 before 0.15 did.
 #|
-#| The command is somebody else's (iz4's `iz4 hook`, say): it reads the
-#| harness's JSON on standard input, prints for the model on standard
-#| output, and refuses with exit code 2.  321 knows the harnesses'
-#| configuration files, event names and quirks, so it writes the wiring
-#| and keeps up with them; the command's owner keeps the protocol.
-#|
-#| Three events are wired: session-start, pre-edit and stop.  A harness
-#| that can refuse an edit or a turn end at a hook enforces those; one
-#| that only injects text at a session start advises.  Everything here
-#| merges: entries that are not ours are kept, ours are replaced, and
-#| remove takes only ours away.
+#| 321 writes that no longer.  A hook 321 installs calls 321, which
+#| translates the harness's event and asks the controller (Do321::
+#| ClaudeHooks, `321 <controller> install`), so that a harness changing
+#| its events changes 321 and nothing else.  What is left here only reads
+#| and removes: it reports the three events an older installation wired
+#| (session-start, pre-edit, stop), says honestly what each can do, and
+#| takes them out on request.  Entries that are not that command's are
+#| never touched.
 
 use Do321::JSON;
 use Do321::Protocol;
@@ -48,59 +46,12 @@ sub harness-available(Harness $h --> Bool) is export {
 
 # ----------------------------------------------------------- Claude Code
 
-#| The hook entries for Claude Code's settings.json, calling $command
-#| with the event name.  Session start is always wired; pre-edit and stop
-#| only when :strict, because they refuse.  Matches the shape iz4 writes
-#| for itself, so the two installers agree.
-sub claude-hooks(Str $command, Bool :$strict = False --> Hash) is export {
-    my sub entry(Str $event, Str :$matcher --> Hash) {
-        my %e = hooks => [ %( type => 'command', command => "$command $event" ), ];
-        %e<matcher> = $matcher with $matcher;
-        %e;
-    }
-    my %h = SessionStart => [ entry('session-start', :matcher<startup|resume|compact>), ];
-    if $strict {
-        %h<PreToolUse> = [ entry('pre-edit', :matcher<Edit|Write|MultiEdit|NotebookEdit>), ];
-        %h<Stop>       = [ entry('stop'), ];
-    }
-    %h;
-}
-
 sub ours($entry, Str $command --> Bool) {
     $entry ~~ Associative && so @($entry<hooks> // []).grep({ $_ ~~ Associative && ($_<command> // '') ~~ Str && $_<command>.starts-with($command ~ ' ') });
 }
 
 #| Readable JSON for a settings file: two-space indent, keys sorted.
 sub settings-json($v --> Str) is export { encode-json-pretty($v) ~ "\n" }
-
-#| Install or refresh the hooks in a workspace's .claude/settings.json,
-#| keeping every other setting and every hook that is not ours.  Returns
-#| 'installed', 'updated' or 'unchanged'; refuses to touch a file it
-#| cannot parse.
-sub install-claude-hooks(IO::Path $workspace, Str $command, Bool :$strict = False --> Str) is export {
-    my $target = $workspace.add(CLAUDE-SETTINGS);
-    my %settings;
-    if $target.e {
-        my $parsed = try parse-json($target.slurp);
-        die "{CLAUDE-SETTINGS} is not valid JSON; fix it by hand, nothing was changed" unless $parsed ~~ Associative;
-        %settings = %$parsed;
-    }
-    my $before = canonical(%settings);
-    my %hooks = %(%settings<hooks> // %());
-    for %hooks.keys -> $event {
-        %hooks{$event} = [ |@(%hooks{$event} // []).grep({ !ours($_, $command) }) ];
-        %hooks{$event}:delete unless %hooks{$event}.elems;
-    }
-    for claude-hooks($command, :$strict).kv -> $event, $entries {
-        %hooks{$event} = [ |@(%hooks{$event} // []), |@$entries ];
-    }
-    %settings<hooks> = %hooks;
-    my $after = canonical(%settings);
-    return 'unchanged' if $after eq $before;
-    mkdir-p($target.parent);
-    $target.spurt(settings-json(%settings));
-    $before eq '{}' ?? 'installed' !! 'updated';
-}
 
 #| Take only our entries out; 'removed' or 'unchanged'.
 sub remove-claude-hooks(IO::Path $workspace, Str $command --> Str) is export {
@@ -150,16 +101,6 @@ sub harness-record(Harness $h, IO::Path $workspace, Str $command, Str :$action =
         note => 'a wired hook is only as strong as the harness: pre-edit and stop can refuse, session-start can only inject';
     %r<action> = $action if $action ne '';
     %r;
-}
-
-#| Wire the command into every known harness; returns the records.
-sub install-all(IO::Path $workspace, Str $command, Bool :$strict = False --> List) is export {
-    known-harnesses().map(-> $h {
-        my $action = try install-claude-hooks($workspace, $command, :$strict);
-        my %r = harness-record($h, $workspace, $command, :action($action // 'failed'));
-        %r<error> = $!.message if $!;
-        %r;
-    }).List;
 }
 
 sub remove-all(IO::Path $workspace, Str $command --> List) is export {

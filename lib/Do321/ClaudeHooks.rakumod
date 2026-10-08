@@ -221,6 +221,10 @@ sub claude-action(%native --> Action) is export {
     }
 }
 
+#| A line Claude Code shows to the person at the session, whatever the
+#| model does with it.
+sub claude-system-message(Str $text --> Str) is export { encode-json(%( systemMessage => $text )) ~ "\n" }
+
 #| A verdict in Claude Code's terms: (exit code, stdout, stderr).
 #|
 #| Before a tool call: a block refuses it (exit 2, the reason to the
@@ -229,12 +233,41 @@ sub claude-action(%native --> Action) is export {
 #| ask, so it refuses and tells the agent to stop and put the proposal to a
 #| person.  A warning lets the call through and says why.  At the end of a
 #| turn a block or needs_human refuses the stop, so the agent says what is
-#| outstanding instead of ending silently.  An unavailable controller lets
-#| the call through and says so on stderr: a gap, visibly, never a pass.
-sub claude-answer(Str $control, Verdict $v, Bool :$headless = False --> List) is export {
+#| outstanding instead of ending silently, and a warning is shown to the
+#| person.
+#|
+#| When the controller could not be asked at all (it is missing, crashed,
+#| timed out, gave no result), what happens depends on what this control
+#| can do, never on convenience:
+#|
+#|   an ENFORCING control (a guard before a tool call, the check at the
+#|   end of a turn) STOPS the thing it guards and says that enforcement
+#|   could not be performed.  It never quietly becomes advice.
+#|
+#|   an ADVISORY control (it can only tell: the context at session start,
+#|   a note after a tool, or any control this harness can only advise on)
+#|   lets the work through and shows the person a warning that the
+#|   controller did NOT check it.
+#|
+#| :strength is what the harness can do at this control here (enforces or
+#| advises); :controller names who was asked, for the message.
+sub claude-answer(Str $control, Verdict $v, Bool :$headless = False, Str :$strength = STRENGTH-ENFORCES,
+                  Str :$controller = 'the controller' --> List) is export {
     my ($event) = claude-event($control);
     my $why = $v.proposal ne '' ?? $v.proposal !! $v.reason;
-    return (0, '', "321: {$v.reason}\n") unless $v.ran;
+    my $who = $controller.uc;
+    unless $v.ran {
+        my $can-stop = $strength eq STRENGTH-ENFORCES && (($event // '') eq 'PreToolUse' || ($event // '') eq 'Stop');
+        if $can-stop {
+            my $what = ($event // '') eq 'Stop'
+                ?? "The finished work was not checked, so this turn was not allowed to end as if it had been. Say plainly to the person that $who could not check the work, and why."
+                !! "This action was stopped because the check that guards it did not run; that is not a finding about the action. Do not work around it: tell the person.";
+            return (2, '', "321: $who enforcement could not be performed: {$v.reason}\n$what\n"
+                         ~ "A person can put it right (restore {$controller}) or take the wiring out: 321 {$controller} remove\n");
+        }
+        my $note = "321: $who did NOT check this: {$v.reason}. The work was let through unchecked.";
+        return (0, claude-system-message($note), "$note\n");
+    }
     if ($event // '') eq 'PreToolUse' {
         given $v.result {
             when RESULT-BLOCK { return (2, '', "$why\n") }
@@ -244,14 +277,18 @@ sub claude-answer(Str $control, Verdict $v, Bool :$headless = False --> List) is
                     permissionDecisionReason => $why ) )) ~ "\n", '');
             }
             when RESULT-WARN {
-                return (0, encode-json(%( hookSpecificOutput => %( hookEventName => 'PreToolUse', additionalContext => $why ) )) ~ "\n", '');
+                return (0, encode-json(%( hookSpecificOutput => %( hookEventName => 'PreToolUse', additionalContext => $why ),
+                                          systemMessage => "321: $who warns: {$v.reason}" )) ~ "\n", '');
             }
             default { return (0, '', '') }
         }
     }
     if ($event // '') eq 'Stop' {
         return (2, '', "$why\n") if $v.stops;
+        return (0, claude-system-message("321: $who warns: {$v.reason}"), '') if $v.result eq RESULT-WARN;
         return (0, '', '');
     }
+    # After the fact nothing can be stopped; what was found is still shown.
+    return (0, claude-system-message("321: $who: {$v.reason}"), '') if $v.result ne RESULT-PASS;
     return (0, '', '');
 }

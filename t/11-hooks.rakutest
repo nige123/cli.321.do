@@ -3,6 +3,7 @@
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
 use Do321Test;
+use Do321ControlTest;
 use Do321::JSON;
 use Do321::Protocol;
 use Do321::Hooks;
@@ -11,30 +12,25 @@ use Do321::Wire;
 my $ws = temp-dir();
 my $settings = $ws.add('.claude/settings.json');
 
-# ---- install, idempotent, strict, remove ---------------------------------------
-is install-claude-hooks($ws, 'iz4 hook'), 'installed', 'a fresh install';
+# ---- the older direct wiring: read and removed, never written ----------------
+# 321 before 0.4 (and iz4 before 0.15) wrote a controller's own command
+# into the harness.  The fixture writes exactly that; 321 itself no longer can.
+legacy-wiring($ws, :!strict);
 my $parsed = parse-json($settings.slurp);
-is $parsed<hooks><SessionStart>[0]<hooks>[0]<command>, 'iz4 hook session-start', 'session start is wired';
-is $parsed<hooks><SessionStart>[0]<matcher>, 'startup|resume|compact', 'for startup, resume and compaction';
-ok !$parsed<hooks><PreToolUse>.defined && !$parsed<hooks><Stop>.defined, 'without --strict the refusing hooks are not wired';
-is install-claude-hooks($ws, 'iz4 hook'), 'unchanged', 'a second install changes nothing';
-is install-claude-hooks($ws, 'iz4 hook', :strict), 'updated', 'strict adds the refusing hooks';
-$parsed = parse-json($settings.slurp);
-is $parsed<hooks><PreToolUse>[0]<matcher>, 'Edit|Write|MultiEdit|NotebookEdit', 'pre-edit on the editing tools';
-is $parsed<hooks><PreToolUse>[0]<hooks>[0]<command>, 'iz4 hook pre-edit', 'calling the command with the event';
-is $parsed<hooks><Stop>[0]<hooks>[0]<command>, 'iz4 hook stop', 'and stop';
-is install-claude-hooks($ws, 'iz4 hook', :strict), 'unchanged', 'strict twice changes nothing';
+is $parsed<hooks><SessionStart>[0]<hooks>[0]<command>, 'iz4 hook session-start', 'an advisory older wiring has session start';
 my %status = claude-hooks-status($ws, 'iz4 hook');
-ok %status<session-start> && %status<pre-edit> && %status<stop>, 'status sees all three';
+ok %status<session-start> && !%status<pre-edit> && !%status<stop>, 'and status sees exactly that';
+$settings.unlink;
+legacy-wiring($ws);
+%status = claude-hooks-status($ws, 'iz4 hook');
+ok %status<session-start> && %status<pre-edit> && %status<stop>, 'a strict older wiring: status sees all three';
 
 # entries that are not ours survive, and only ours are removed
 my %other = parse-json($settings.slurp);
 %other<permissions> = { allow => ['Bash(ls:*)'] };
-# foreign entries ahead of ours: a reinstall re-appends ours, so ours must already be last
 %other<hooks><Stop>.unshift(%( hooks => [ %( type => 'command', command => 'other-tool stop' ), ] ));
 %other<hooks><PreToolUse>.unshift(%( matcher => 'Bash', hooks => [ %( type => 'command', command => 'lint' ), ] ));
 $settings.spurt(settings-json(%other));
-is install-claude-hooks($ws, 'iz4 hook', :strict), 'unchanged', 'a reinstall over foreign entries changes nothing';
 is remove-claude-hooks($ws, 'iz4 hook'), 'removed', 'remove takes ours away';
 $parsed = parse-json($settings.slurp);
 is $parsed<permissions><allow>[0], 'Bash(ls:*)', 'other settings stay';
@@ -48,48 +44,39 @@ ok !%status<session-start> && !%status<pre-edit> && !%status<stop>, 'status sees
 
 # an unparseable settings file is never touched
 $settings.spurt('{ not json');
-throws-like { install-claude-hooks($ws, 'iz4 hook') }, Exception, message => /'not valid JSON'/, 'a broken file is refused';
+throws-like { remove-claude-hooks($ws, 'iz4 hook') }, Exception, message => /'not valid JSON'/, 'a broken file is refused';
 is $settings.slurp, '{ not json', 'and left alone';
 $settings.unlink;
 
 # ---- the records ------------------------------------------------------------------
-my @recs = install-all($ws, 'iz4 hook', :strict);
-is @recs.elems, 1, 'one known harness';
-my %r = @recs[0];
+legacy-wiring($ws);
+my @st = status-all($ws, 'iz4 hook');
+is @st.elems, 1, 'one known harness';
+my %r = @st[0];
 is %r<harness>, 'claude_code', 'claude_code';
-is %r<action>, 'installed', 'installed';
-is %r<events><stop>, 'wired', 'stop wired';
+ok !%r<action>.defined && %r<events><pre-edit> eq 'wired' && %r<events><stop> eq 'wired', 'status records carry no action';
 is %r<enforced>.join(','), 'pre-edit,stop', 'pre-edit and stop refuse';
 is %r<advisory>.join(','), 'session-start', 'session start only injects';
-my @st = status-all($ws, 'iz4 hook');
-ok !@st[0]<action>.defined && @st[0]<events><pre-edit> eq 'wired', 'status records carry no action';
 my @rm = remove-all($ws, 'iz4 hook');
 is @rm[0]<action>, 'removed', 'remove records';
 is @rm[0]<enforced>.elems, 0, 'and nothing is enforced afterwards';
 
-# ---- the same shape iz4 writes for itself ---------------------------------------
-my $iz4 = (%*ENV<PATH> // '').split(':').map({ .IO.add('iz4') }).first(*.x);
-if $iz4.defined {
-    my $theirs = temp-dir();
-    my $p = run $iz4.Str, 'init', '--for-what=Hooks parity.', '--for-who=Testers.', '--/agents', :cwd($theirs.Str), :out, :err;
-    $p.out.slurp(:close); $p.err.slurp(:close);
-    $p = run $iz4.Str, 'agent', 'install', '--hooks', '--strict', :cwd($theirs.Str), :out, :err;
-    $p.out.slurp(:close); $p.err.slurp(:close);
-    my $mine = temp-dir();
-    install-claude-hooks($mine, 'iz4 hook', :strict);
-    is canonical(parse-json($mine.add('.claude/settings.json').slurp)), canonical(parse-json($theirs.add('.claude/settings.json').slurp)),
-        '321 hooks install writes exactly what iz4 agent install --hooks --strict writes';
-}
-else { skip 'iz4 is not on PATH here', 1 }
+# ---- 321 holds nothing that writes a controller's own command into a harness ---
+nok 'lib/Do321/Hooks.rakumod'.IO.slurp ~~ / 'sub install' /, 'the older hooks module has no installer';
 
 # ---- through the CLI -----------------------------------------------------------
 my $cws = temp-dir();
 my ($rc, $out, $err) = x321('hooks', 'install', '--workspace', $cws.Str, '--command', 'iz4 hook', '--strict', '--json');
-is $rc, 0, 'hooks install --json exits 0' or diag $err;
+is $rc, EXIT-FAILED, 'hooks install is refused: 321 no longer writes a controller\'s own command into a harness';
 my $doc = parse-json($out);
-is $doc<schema>, 'hooks.v1', 'a hooks.v1 document';
-is $doc<harnesses>[0]<action>, 'installed', 'installed';
-is $doc<harnesses>[0]<events><stop>, 'wired', 'stop wired';
+is $doc<schema>, 'hooks.v1', 'still a hooks.v1 document, for an older caller to read';
+is $doc<harnesses>[0]<action>, 'refused', 'the action is refused';
+like $doc<harnesses>[0]<error>, /'hooks 321 installs call 321' .* '321 iz4 install'/, 'and it says what to use instead';
+nok $cws.add('.claude/settings.json').e, 'nothing was written';
+my $before = legacy-wiring($cws).slurp;
+($rc, $out, $err) = x321('hooks', 'install', '--workspace', $cws.Str, '--command', 'iz4 hook', '--strict');
+is $cws.add('.claude/settings.json').slurp, $before, 'and an older wiring already there is left byte for byte';
+ok $out.contains('stop: wired'), 'while the refusal still reports what is there';
 ($rc, $out, $err) = x321('hooks', 'status', '--workspace', $cws.Str, '--command', 'iz4 hook');
 ok $rc == 0 && $out.contains('claude_code') && $out.contains('stop: wired') && $out.contains('enforced: pre-edit, stop'), 'status in text' or diag $out;
 ($rc, $out, $err) = x321('hooks', 'remove', '--workspace', $cws.Str, '--command', 'iz4 hook');
@@ -112,5 +99,23 @@ is %by<claude_code><hooks><session-start>, 'advises', 'or only advise';
 ok %by<procedure><hooks>.elems == 0, 'the procedure executor is not a harness people drive';
 ok $doc<tools>.elems == 1 && $doc<tools>[0].starts-with('dp:'), 'the tool bindings';
 ok $doc<trust><path>.defined && $doc<iz4><binary>.defined, 'trust and iz4 are reported';
+is %by<claude_code><controls><filesystem_guard>, 'enforces', 'doctor says per control what the harness can do: a write can be refused';
+is %by<claude_code><controls><authoritative_context>, 'advises', 'the context is told, not enforced';
+is %by<claude_code><controls><network_guard>, 'none', 'and network use cannot be intercepted at all';
+is %by<claude_code><headlessControls><human_approval>, 'none', 'headless, nobody can be asked';
+ok !%by<procedure><controls>.defined, 'an adapter with no controls reports none';
+ok $doc<iz4><drivable>:exists && $doc<iz4><reason>:exists, 'whether iz4 can be driven is reported, with the reason when it cannot';
+{
+    # an iz4 that is installed but has no machine interface is not "applied"
+    my $old = stub-iz4();
+    my ($rc, $out, $err) = x321('doctor', '--json', :env(%( X321_IZ4 => $old, STUB_OLD => '1' )));
+    my $d = parse-json($out);
+    ok $d<iz4><binary> ne '' && !$d<iz4><drivable> && !$d<iz4><applied>, 'an iz4 that cannot be driven is installed and not applied';
+    like $d<iz4><reason>, /'no machine interface'/, 'and doctor says why';
+    ($rc, $out, $err) = x321('doctor', :env(%( X321_IZ4 => $old, STUB_OLD => '1' )));
+    like $out, /'is installed but cannot be driven'/, 'in text too';
+    ($rc, $out, $err) = x321('doctor', '--json', :env(%( X321_IZ4 => stub-iz4() )));
+    ok parse-json($out)<iz4><drivable>, 'a drivable iz4 is reported as such';
+}
 
 done-testing;

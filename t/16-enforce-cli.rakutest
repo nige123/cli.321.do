@@ -48,7 +48,7 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str);
     is $rc, 0, 'install' or diag "$out\n$err";
     ok $out.contains('IZ4 integration installed (.claude/settings.json).'), 'it says what it did and where';
-    like $out, /^^ 'Context injection' \s+ 'yes' $$/, 'context: yes';
+    like $out, /^^ 'Context injection' \s+ 'yes (told to the agent; nothing is refused)' $$/, 'context: yes, and called what it is';
     like $out, /^^ 'Filesystem guard' \s+ 'yes' $$/, 'write guard: yes';
     like $out, /^^ 'Shell guard' \s+ 'yes' $$/, 'shell guard: yes';
     like $out, /^^ 'Post-run verification' \s+ 'yes' $$/, 'final verification: yes';
@@ -115,7 +115,7 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     my ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, '--harness', 'fake', :env(%weak));
     is $rc, 0, 'install into a weaker harness' or diag "$out\n$err";
     ok $out.contains('Effective enforcement: CHECKED (aware, checked)'), 'CHECKED, not GUARDED';
-    like $out, /^^ 'Context injection' \s+ 'yes (advises only)' $$/, 'context that only advises is said to only advise';
+    like $out, /^^ 'Context injection' \s+ 'yes (told to the agent; nothing is refused)' $$/, 'a context is told, never said to be enforced';
     like $out, /^^ 'Filesystem guard' \s+ 'no' $$/, 'there is no write guard';
     ok $out.contains('Filesystem guard is not available in fake'), 'and the warning says so';
     ($rc, $out, $err) = c('harness', 'detect', :env(%weak));
@@ -182,9 +182,52 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     ($rc, $out, $err) = c('hook', 'claude_code', 'iz4', 'filesystem_guard', :in(encode-json(%( cwd => $bare.Str, |%write ))), :env(%( STUB_ACTION => 'block' )));
     ok $rc == 0 && $out eq '' && $err eq '', 'where no IZ4 governs, the glue does nothing at all';
 
-    # iz4 cannot be driven: let it through, visibly
+    # iz4 cannot be asked.  What follows depends on what the control can do.
+    # An enforcing guard STOPS the action and says enforcement could not be
+    # performed, whatever the way iz4 failed.
     ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_OLD => '1');
-    ok $rc == 0 && $err.contains('cannot be driven'), 'an iz4 that cannot be driven lets the call through and says so';
+    ok $rc == 2 && $err.contains('IZ4 enforcement could not be performed') && $err.contains('cannot be driven'),
+        'an iz4 that cannot be driven: the write guard stops the write and says why' or diag "$rc $out $err";
+    for <exit1 garbage crash mismatch> -> $how {
+        ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_FAIL => $how);
+        ok $rc == 2 && $err.contains('IZ4 enforcement could not be performed'), "iz4 failing ($how): the write guard stops the write" or diag "$rc $out $err";
+        is $out, '', "and prints nothing that could be read as permission ($how)";
+        ($rc, $out, $err) = hook('shell_guard', %( tool_name => 'Bash', tool_input => %( command => 'ls' ) ), STUB_FAIL => $how);
+        is $rc, 2, "the shell guard likewise ($how)";
+        ($rc, $out, $err) = hook('post_run', %( stop_hook_active => False ), STUB_FAIL => $how);
+        ok $rc == 2 && $err.contains('IZ4 enforcement could not be performed'), "and the end-of-turn check is not let through as checked ($how)" or diag "$rc $out $err";
+        # the context can only be told: the session starts, and the person is warned
+        ($rc, $out, $err) = hook('authoritative_context', %( source => 'startup' ), STUB_FAIL => $how);
+        ok $rc == 0 && $out.contains('systemMessage') && $out.contains('did NOT check'), "a context that cannot be delivered warns the person; the session is not refused ($how)" or diag "$rc $out $err";
+    }
+    # a check that never answers is cut off and counted as not run
+    ($rc, $out, $err) = hook('filesystem_guard', %write, STUB_FAIL => 'hang', X321_CONTROLLER_TIMEOUT => '2');
+    ok $rc == 2 && $err.contains('timed out after 2s'), 'an iz4 that hangs is cut off, and the guard stops the write' or diag "$rc $out $err";
+    # the binary gone altogether, with an IZ4 still in the project
+    ($rc, $out, $err) = c('hook', 'claude_code', 'iz4', 'filesystem_guard', :in(encode-json(%( cwd => $ws.Str, |%write ))), :env(%( X321_IZ4 => '/nonexistent/iz4' )));
+    ok $rc == 2 && $err.contains('iz4 is not installed'), 'iz4 missing altogether: the guard stops the write' or diag "$rc $out $err";
+    # the loop guard: a turn end already refused once is not asked again, and is not recorded as a pass
+    my $log2 = temp-dir().add('hooks2.ndjson');
+    ($rc, $out, $err) = c('hook', 'claude_code', 'iz4', 'post_run', :in(encode-json(%( cwd => $ws.Str, stop_hook_active => True ))),
+        :env(%( X321_IZ4 => stub-iz4(), STUB_VERIFY => 'block', X321_HOOK_LOG => $log2.Str )));
+    is $rc, 0, 'a turn end already refused once is let end, so a session is never trapped';
+    my $rec = parse-json($log2.lines.tail);
+    is $rec<result>, 'unavailable', 'and it is recorded as not asked, never as a pass';
+
+    # An ADVISORY control lets the work through and says it was NOT checked.
+    {
+        my %adv = DO321_FAKE_CONTROLS => encode-json(%( authoritative_context => 'advises', filesystem_guard => 'advises', post_run => 'advises' ));
+        ($rc, $out, $err) = c('hook', 'fake', 'iz4', 'filesystem_guard', :in(encode-json(%( cwd => $ws.Str, |%write ))),
+            :env(%( |%adv, X321_IZ4 => stub-iz4(), STUB_FAIL => 'exit1' )));
+        is $rc, 0, 'where the harness can only advise, the same failure lets the write through';
+        like $err, /'IZ4 did NOT check this' .* 'unchecked'/, 'with a warning that says it was not checked';
+        nok ($out ~ $err).contains('enforcement could not be performed'), 'and no claim that anything was enforced';
+        my %enf = DO321_FAKE_CONTROLS => encode-json(%( authoritative_context => 'advises', filesystem_guard => 'enforces', post_run => 'enforces' ));
+        ($rc, $out, $err) = c('hook', 'fake', 'iz4', 'filesystem_guard', :in(encode-json(%( cwd => $ws.Str, |%write ))),
+            :env(%( |%enf, X321_IZ4 => stub-iz4(), STUB_FAIL => 'exit1' )));
+        ok $rc == 2 && $err.contains('IZ4 enforcement could not be performed'),
+            'and where it can refuse, the write is stopped even though that adapter translates nothing: the rule is the runtime\'s' or diag "$rc $out $err";
+    }
 
     # misuse
     is c('hook', 'claude_code', 'iz4')[0], EXIT-USAGE, 'the glue needs all three names';

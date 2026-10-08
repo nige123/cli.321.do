@@ -116,7 +116,10 @@ role Adapter is export {
     #| is not an action.
     method translate-event(Str $control, %native --> Action) { Action }
     #| A verdict in the harness's own terms: (exit code, stdout, stderr).
-    method answer(Str $control, Verdict $v, Bool :$headless = False --> List) { (0, '', '') }
+    #| :strength is what this harness can do at this control here (enforces
+    #| or advises), which decides what a controller that could not be asked
+    #| leads to: an enforcing control stops, an advisory one warns.
+    method answer(Str $control, Verdict $v, Bool :$headless = False, Str :$strength = STRENGTH-ENFORCES, Str :$controller = 'the controller' --> List) { (0, '', '') }
     #| The agent's last words, from the harness's own end-of-turn event.
     method final-words(%native --> Str) { '' }
 }
@@ -945,7 +948,10 @@ class ClaudeCode does Adapter is export {
     #| session to decide; a headless run has nobody to ask, which is what
     #| headless-controls reports.
     method controls(--> Hash) {
-        %( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-PRE-ACTION, STRENGTH-ENFORCES,
+        # The context is told to the model at session start: text reaches it
+        # and nothing can be refused there, so that control advises.  It is
+        # never reported as interception.
+        %( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ADVISES, CTRL-PRE-ACTION, STRENGTH-ENFORCES,
            CTRL-PRE-TOOL, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD, STRENGTH-ENFORCES,
            CTRL-SHELL-GUARD, STRENGTH-ENFORCES, CTRL-POST-RUN, STRENGTH-ENFORCES,
            CTRL-HUMAN-APPROVAL, STRENGTH-ENFORCES,
@@ -969,7 +975,9 @@ class ClaudeCode does Adapter is export {
         my ($event) = claude-event($control);
         ($event // '') eq 'PreToolUse' || ($event // '') eq 'PostToolUse' ?? claude-action(%native) !! Action;
     }
-    method answer(Str $control, Verdict $v, Bool :$headless = False --> List) { claude-answer($control, $v, :$headless) }
+    method answer(Str $control, Verdict $v, Bool :$headless = False, Str :$strength = STRENGTH-ENFORCES, Str :$controller = 'the controller' --> List) {
+        claude-answer($control, $v, :$headless, :$strength, :$controller)
+    }
     method final-words(%native --> Str) { claude-last-words((%native<transcript_path> // '').Str) }
 
     #| The whole invocation, exported so the surface is testable without a

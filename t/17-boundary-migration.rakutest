@@ -1,0 +1,260 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# Two things that must not regress.
+#
+# The boundary: 321 owns environment knowledge and IZ4 owns intent.  321
+# talks to iz4 only through its documented machine interface (discover,
+# context, check action, check change, verify), reads only the documents
+# those print, and holds none of iz4's policy.
+#
+# The migration: a repository wired by iz4 0.14 or earlier ('iz4 hook
+# session-start | pre-edit | stop' written straight into the harness)
+# must never be left with a hook that points at something that is not
+# there, in whatever order iz4 and 321 are upgraded.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321ControlTest;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Wire;
+
+my $lib = $?FILE.IO.parent.parent.add('lib/Do321');
+my %base = X321_CLAUDE_BINARY => fake-claude().Str;
+sub c(*@args, :%env, Str :$in = '', IO::Path :$cwd) { x321(|@args, :env(%( |%base, |%env )), :$in, |($cwd ?? (:$cwd) !! ())) }
+sub commands(IO::Path $ws --> List) {
+    my $f = $ws.add('.claude/settings.json');
+    return () unless $f.e;
+    my %s = parse-json($f.slurp);
+    (%s<hooks> // {}).values.map({ |@$_ }).map({ |@(.<hooks> // []) }).map({ (.<command> // '').Str }).List;
+}
+
+# ---------------------------------------------------------------- the boundary
+# One module, and only one, runs iz4.
+for $lib.dir.grep(*.extension eq 'rakumod').sort -> $f {
+    next if $f.basename eq 'Controller.rakumod';
+    nok $f.slurp ~~ / 'iz4-binary()' <-[\n]>* 'run' | "run 'iz4'" | 'run "iz4"' /, "{$f.basename} does not run iz4 itself";
+    nok $f.slurp ~~ / 'X321_IZ4' /, "{$f.basename} does not look for the iz4 executable" unless $f.basename eq 'Run.rakumod';
+}
+# And it asks only the five documented things.  Every argv it can build:
+my $controller = $lib.add('Controller.rakumod').slurp;
+my @asked = $controller.match(/ '[' \s* ['$bin' | 'self.binary'] \s* ',' \s* (<-[\]]>+) ']' /, :g).map({ ~.[0] }).grep({ !.starts-with('|@args') });
+my @checks = $controller.match(/ "['" ('check' | 'verify') "'" <-[\]]>* ']' | "'verify', '--worktree', '--json'" /, :g).map(*.Str);
+ok @asked.elems >= 2 && @checks.elems >= 3, 'the calls 321 can make to iz4 are found in the source';
+for @asked -> $a { like $a, / "'discover', '--json'" | "'context', '--json'" /, "a direct call is discover or context: $a" }
+for @checks -> $a { like $a, / "'check', 'action', '--json'" | "'check', 'change', '--worktree', '--json'" | "'verify', '--worktree', '--json'" /, "a check is one of the documented three: $a" }
+# 321 holds none of iz4's policy: it never reads an IZ4's words, and never runs iz4's own gate, approval or older hook.
+for $lib.dir.grep(*.extension eq 'rakumod').sort -> $f {
+    my $src = $f.slurp;
+    nok $src ~~ / "'approve'" | "'gate'" | "'agent', 'packet'" | "'hook', 'stop'" | "'hook', 'pre-edit'" /, "{$f.basename} never runs iz4 approve, gate, the packet or the older hook";
+    nok $src ~~ / 'INVARIANT ' \d | "IS FOR WHAT" | 'IS FOR WHO' /, "{$f.basename} parses nothing of an IZ4's own text";
+}
+
+# Behaviour: across a whole cycle (detect, status, install, every hook, a
+# refusal, remove) the only things iz4 is ever asked are the five.
+{
+    my $ws = iz4-workspace();
+    my $log = temp-dir().add('iz4-calls.log');
+    my %env = X321_IZ4 => stub-iz4(), STUB_LOG => $log.Str;
+    my %write = tool_name => 'Write', tool_input => %( file_path => $ws.add('lib/a.txt').Str, content => 'x' );
+    c('harness', 'detect', '--workspace', $ws.Str, :%env);
+    c('doctor', '--json', :%env);
+    c('iz4', 'status', '--workspace', $ws.Str, :%env);
+    c('iz4', 'install', '--workspace', $ws.Str, :%env);
+    for <authoritative_context filesystem_guard shell_guard post_run> -> $control {
+        c('hook', 'claude_code', 'iz4', $control, :in(encode-json(%( cwd => $ws.Str, |%write ))), :%env);
+        c('hook', 'claude_code', 'iz4', $control, :in(encode-json(%( cwd => $ws.Str, |%write ))), :env(%( |%env, STUB_ACTION => 'needs_human', STUB_VERIFY => 'block' )));
+    }
+    c('iz4', 'install', '--workspace', $ws.Str, '--advisory', :%env);
+    c('iz4', 'remove', '--workspace', $ws.Str, :%env);
+    my @calls = $log.lines.grep(*.trim.chars);
+    ok @calls.elems > 10, "iz4 was asked {@calls.elems} times across the cycle";
+    my @allowed = 'discover --json', 'context --json', 'check action --json', 'check change --worktree --json', 'verify --worktree --json';
+    my @other = @calls.map({ .subst(/ ' --summary=' \S+ /, '') }).unique.grep({ $_ ne any(@allowed) });
+    is @other.join(' | '), '', 'and never anything but discover, context, check action, check change and verify';
+}
+
+# Every hook 321 writes calls 321.
+{
+    my $ws = iz4-workspace();
+    my ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => stub-iz4() )));
+    my @cmds = commands($ws);
+    ok @cmds.elems >= 4, 'install wrote hook commands';
+    nok @cmds.grep({ $_ ~~ /^ 'iz4' >> / || .contains('iz4 hook ') }), 'none of them calls iz4 directly';
+    ok @cmds.map({ so $_ ~~ /^ '321 hook claude_code iz4 ' \w+ $/ }).all, 'each is: 321 hook claude_code iz4 <control>' or diag @cmds.raku;
+}
+
+# -------------------------------------------------------------- the migration
+# The stand-ins for the two generations of iz4:
+#   old   answers 'iz4 hook ...' and has no machine interface (iz4 <= 0.14)
+#   new   has the machine interface and STILL answers 'iz4 hook ...' (iz4 0.15)
+# A wired command is "live" when the iz4 of the moment answers it, or when
+# it is 321's own and 321 can ask the iz4 of the moment.
+my $old-iz4 = temp-dir().add('iz4');
+$old-iz4.spurt: q:to/SH/;
+    #!/bin/sh
+    case "$1 $2" in
+      "hook session-start") echo "IZ4 agent packet (0.14)"; exit 0 ;;
+      "hook pre-edit")      exit 0 ;;
+      "hook stop")          exit 0 ;;
+      "agent packet")       echo "IZ4 agent packet (0.14)"; exit 0 ;;
+      *) echo "Usage: iz4 ..." >&2; exit 2 ;;
+    esac
+    SH
+$old-iz4.chmod(0o755);
+my $new-iz4 = stub-iz4();      # the machine interface; the 0.15 shim is exercised against the real iz4 below
+
+sub live(IO::Path $ws, Str $iz4-bin --> List) {
+    # run every wired command the way a harness would, and say which did not answer
+    my @dead;
+    for commands($ws) -> $cmd {
+        my @w = $cmd.words;
+        my ($rc, $out, $err);
+        if @w[0] eq 'iz4' {
+            my $p = run $iz4-bin, |@w[1 .. *], :in, :out, :err, :cwd($ws.Str);
+            $p.in.print('{}'); try { $p.in.close; Nil };
+            $out = $p.out.slurp(:close); $err = $p.err.slurp(:close); $rc = $p.exitcode;
+            @dead.push("$cmd (exit $rc: {$err.trim.lines.head // ''})") if $err.contains('Usage:') || $rc == 127;
+        }
+        elsif @w[0] eq '321' {
+            ($rc, $out, $err) = c(|@w[1 .. *], :in(encode-json(%( cwd => $ws.Str, tool_name => 'Write', tool_input => %( file_path => 'a.txt', content => 'x' ) ))),
+                                  :env(%( X321_IZ4 => $iz4-bin )));
+            @dead.push("$cmd (exit $rc: {$err.trim.lines.head // ''})") if $err.contains('usage:') || $err.contains('could not be performed') || $err.contains('did NOT check');
+        }
+        else { @dead.push("$cmd (not a command this test knows)") }
+    }
+    @dead.List;
+}
+
+for <advisory strict> -> $mode {
+    # ---- order A: iz4 first (the recommended order) ----
+    {
+        my $ws = iz4-workspace();
+        my $wired = legacy-wiring($ws, :strict($mode eq 'strict'));
+        my $before = $wired.slurp;
+        is live($ws, $old-iz4.Str).join('; '), '', "$mode, start: every wired command is answered by the iz4 that wrote it";
+
+        # iz4 is upgraded; 321 is still the old one or absent.  Nothing rewrites the settings.
+        is $wired.slurp, $before, "$mode, iz4 upgraded: the wiring is untouched";
+        # (that iz4 0.15 still answers 'iz4 hook ...' is proved against the real iz4, below and in iz4's own suite)
+
+        # 321 0.4 arrives.  Before anyone installs, status tells the truth and changes nothing.
+        my ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, :env(%( X321_IZ4 => $new-iz4 )));
+        like $out, /'Managed by: legacy IZ4 wiring'/, "$mode, 321 upgraded: status reports the older wiring";
+        like $out, /"Legacy wiring: $mode"/, "and says how strong it is: $mode";
+        like $out, /'Effective enforcement: AWARE'/, 'at AWARE: it puts no action and no change to iz4';
+        unlike $out, /'Effective enforcement: NONE'/, 'never as nothing';
+        if $mode eq 'strict' {
+            like $out, /'refuses one edit made before the context was delivered'/, 'and says what the strict older hooks still do';
+            like $out, /'refuses one turn end that changed files without a report'/, 'at both moments';
+        }
+        ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, '--json', :env(%( X321_IZ4 => $new-iz4 )));
+        is parse-json($out)<harnesses>[0]<legacyMode>, $mode, 'the JSON carries the mode';
+        is $wired.slurp, $before, 'status changed nothing';
+
+        # install adopts: each old command becomes 321's for the same moment, once.
+        ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, |($mode eq 'advisory' ?? ('--advisory',) !! ()), :env(%( X321_IZ4 => $new-iz4 )));
+        is $rc, 0, "$mode: install adopts the older wiring" or diag "$out\n$err";
+        like $out, /'Adopted the wiring an earlier iz4 wrote'/, 'and says so';
+        nok commands($ws).grep(*.contains('iz4 hook ')), 'no older command is left';
+        is commands($ws).elems, commands($ws).unique.elems, 'and none is duplicated';
+        is live($ws, $new-iz4).join('; '), '', "$mode, adopted: every wired command is answered (321's, asking the new iz4)";
+        my $after = $wired.slurp;
+        c('iz4', 'install', '--workspace', $ws.Str, |($mode eq 'advisory' ?? ('--advisory',) !! ()), :env(%( X321_IZ4 => $new-iz4 )));
+        is $wired.slurp, $after, 'adopting again changes not a byte';
+    }
+
+    # ---- order B: 321 first, iz4 still the old one ----
+    {
+        my $ws = iz4-workspace();
+        my $wired = legacy-wiring($ws, :strict($mode eq 'strict'));
+        $wired.spurt(encode-json-pretty(%( |parse-json($wired.slurp), permissions => %( allow => ['Bash(ls:*)'] ) )) ~ "\n");
+        my $before = $wired.slurp;
+        # 321 0.4 with an iz4 it cannot drive: it must not adopt, or the hooks it wrote could only fail.
+        my ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => $old-iz4.Str )));
+        isnt $rc, 0, "$mode, 321 first: install is refused while iz4 cannot be driven";
+        like $out, /'cannot be driven here' .* 'nothing was wired and nothing was changed'/, 'saying nothing was changed';
+        like $out, /'hooks an earlier iz4 wrote are untouched and still active'/, 'and that the older hooks still work';
+        like $out, /'iz4 0.15.0 or later'/, 'and what is needed';
+        is $wired.slurp, $before, 'the settings are byte for byte as they were';
+        is live($ws, $old-iz4.Str).join('; '), '', "$mode, 321 first: every wired command is still answered by the old iz4";
+        ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, '--advisory', :env(%( X321_IZ4 => $old-iz4.Str )));
+        is $wired.slurp, $before, 'an advisory install is refused the same way';
+        # then iz4 is upgraded, and install adopts
+        ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => $new-iz4 )));
+        is $rc, 0, 'once iz4 can be driven, install adopts';
+        is live($ws, $new-iz4).join('; '), '', 'and every wired command is answered';
+        is parse-json($wired.slurp)<permissions><allow>[0], 'Bash(ls:*)', 'with everything else in the settings kept';
+    }
+}
+
+# ---- a repository with no older wiring and an iz4 that cannot be driven: nothing is written ----
+{
+    my $ws = iz4-workspace();
+    my ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => $old-iz4.Str )));
+    isnt $rc, 0, 'with nothing to drive, install fails';
+    nok $ws.add('.claude/settings.json').e, 'and writes no settings at all';
+    ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => '/nonexistent/iz4' )));
+    ok $rc != 0 && !$ws.add('.claude/settings.json').e, 'the same when iz4 is not installed';
+}
+
+# ---- remove takes out only what is iz4's or 321's-for-iz4 ----
+{
+    my $ws = iz4-workspace();
+    my $wired = legacy-wiring($ws);
+    my %s = parse-json($wired.slurp);
+    %s<hooks><Stop>.unshift(%( hooks => [ %( type => 'command', command => 'other-tool stop' ), ] ));
+    %s<model> = 'someone-elses-setting';
+    $wired.spurt(encode-json-pretty(%s) ~ "\n");
+    c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => $new-iz4 )));
+    ok commands($ws).grep('other-tool stop'), 'another tool\'s hook survives the adoption';
+    c('iz4', 'remove', '--workspace', $ws.Str, :env(%( X321_IZ4 => $new-iz4 )));
+    is commands($ws).join(','), 'other-tool stop', 'and after remove it is the only hook left';
+    is parse-json($wired.slurp)<model>, 'someone-elses-setting', 'with every other setting';
+    my $after = $wired.slurp;
+    c('iz4', 'remove', '--workspace', $ws.Str, :env(%( X321_IZ4 => $new-iz4 )));
+    is $wired.slurp, $after, 'removing again changes nothing';
+}
+
+# ---- against real iz4 binaries, when the test is given them --------------------------
+# X321_TEST_IZ4_OLD: an iz4 0.14.x executable; X321_TEST_IZ4_NEW: an iz4 0.15+ one.
+{
+    my ($old, $new) = %*ENV<X321_TEST_IZ4_OLD> // '', %*ENV<X321_TEST_IZ4_NEW> // '';
+    if $old ne '' && $new ne '' && $old.IO.x && $new.IO.x {
+        my $ws = temp-dir();
+        my sub sh(Str $bin, *@a, Str :$in = '{}') { my $p = run $bin, |@a, :in, :out, :err, :cwd($ws.Str), :env(%( |%*ENV, IZ4_NO_321 => '1', IZ4_ENFORCE => '0' ));
+            $p.in.print($in); try { $p.in.close; Nil }; my $o = $p.out.slurp(:close); my $e = $p.err.slurp(:close); ($p.exitcode, $o, $e) }
+        run 'git', 'init', '-q', $ws.Str;
+        sh($old, 'init', '--for-what=A test.', '--for-who=Testers.', '--/agents');
+        my ($rc, $out, $err) = sh($old, 'agent', 'install', '--hooks', '--strict');
+        ok commands($ws).grep(*.starts-with('iz4 hook ')).elems == 3, 'real iz4 0.14 wrote its three hook commands' or diag "$out $err";
+        my $before = $ws.add('.claude/settings.json').slurp;
+        for commands($ws) -> $cmd {
+            my ($c1, $o1, $e1) = sh($old, |$cmd.words[1 .. *], :in(encode-json(%( session_id => 'm-' ~ (^1_000_000).pick ))));
+            nok $e1.contains('Usage:'), "real 0.14 answers '$cmd'";
+            my ($c2, $o2, $e2) = sh($new, |$cmd.words[1 .. *], :in(encode-json(%( session_id => 'm-' ~ (^1_000_000).pick ))));
+            nok $e2.contains('Usage:'), "real 0.15 still answers '$cmd': no dead hook after iz4 is upgraded";
+            is $c2, $c1, 'with the same exit code';
+        }
+        ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => $old )));
+        ok $rc != 0 && $ws.add('.claude/settings.json').slurp eq $before, '321 with real iz4 0.14: install refused, settings untouched';
+        ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, :env(%( X321_IZ4 => $new )));
+        is $rc, 0, '321 with real iz4 0.15: install adopts' or diag "$out\n$err";
+        nok commands($ws).grep(*.contains('iz4 hook ')), 'no older command is left';
+        for commands($ws) -> $cmd {
+            ($rc, $out, $err) = c(|$cmd.words[1 .. *], :in(encode-json(%( cwd => $ws.Str, tool_name => 'Write', tool_input => %( file_path => $ws.add('notes.txt').Str, content => 'x' ) ))), :env(%( X321_IZ4 => $new )));
+            if $cmd.ends-with(' post_run') {
+                # the settings file changed and nobody wrote a report: real iz4 says so, through 321
+                ok $rc == 2 && $err.contains('per-invariant report') && !$err.contains('could not be performed'),
+                    "'$cmd' reaches real iz4 0.15, which asks for the report the changed files owe" or diag "$rc $out $err";
+            }
+            else {
+                ok $rc == 0 && !$err.contains('could not be performed'), "'$cmd' reaches real iz4 0.15 and an ordinary write passes" or diag "$rc $out $err";
+            }
+        }
+        ($rc, $out, $err) = c('hook', 'claude_code', 'iz4', 'filesystem_guard', :in(encode-json(%( cwd => $ws.Str, tool_name => 'Write', tool_input => %( file_path => $ws.add('IZ4').Str, content => 'x' ) ))), :env(%( X321_IZ4 => $new, X321_HEADLESS => '1' )));
+        ok $rc == 2 && $err.contains('person'), 'and a write to the IZ4 itself is stopped for a person, through 321, by real iz4' or diag "$rc $out $err";
+    }
+    else { skip 'X321_TEST_IZ4_OLD and X321_TEST_IZ4_NEW not given: the real-binary migration is not exercised here', 1 }
+}
+
+done-testing;

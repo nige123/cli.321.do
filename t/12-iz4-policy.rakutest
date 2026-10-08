@@ -105,6 +105,18 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     is %g<digest>, 'sha256:abc123', 'and its content identity';
     is %g<levels>.join(','), 'aware,checked,guarded,verified', 'all four levels, each earned';
     is %g<hooksFired>, 2, 'the hooks that reported back are counted';
+
+    # hooks that fired but could not ask iz4 checked nothing: never counted as guarded
+    {
+        my @unasked = %( controller => 'iz4', harness => 'answering', control => 'filesystem_guard', point => 'action', result => 'unavailable', reason => 'iz4 check action timed out after 30s' ),
+                      %( controller => 'iz4', harness => 'answering', control => 'filesystem_guard', point => 'action', result => 'pass', reason => 'ok' );
+        my %u = go(Answering.new(:summary($report), :has-controls(%full), :carries-hooks, :fire(@unasked)), $ws);
+        my %ug = governed(%u);
+        nok is-in('guarded', %ug<levels>), 'a run in which a guard could not ask iz4 is not counted as guarded';
+        is %ug<hooksFired>, 1, 'only the hook that really got an answer is counted as fired';
+        ok %ug<gaps>.grep(*.contains('could not ask iz4')), 'and the gap says a hook could not ask iz4';
+        ok %ug<checks>.grep({ .<result> eq 'unavailable' && .<control> eq 'filesystem_guard' }), 'with the unanswered check on the receipt';
+    }
     is %g<controls>{CTRL-AUTHORITATIVE-CONTEXT}, 'in the prompt', 'context: in the prompt';
     is %g<controls>{CTRL-FILESYSTEM-GUARD}, 'registered for this run (enforces)', 'the write guard: registered for this run';
     is %g<humanDecision>, 'none was needed', 'no human decision was needed';
@@ -154,6 +166,29 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     ok %r<blockedOn>.contains('IZ4: verify block'), 'on iz4\'s own reason' or diag %r<blockedOn>;
     ok @(%r<uncertain>).grep(*.contains('IZ4: verify block')), 'which is on the uncertain list too';
     is governed(%r)<humanDecision>, 'none was needed', 'a block is not a question for a person';
+
+    # the final check cannot be performed at all: the run is not passed off as completed
+    for <exit1 garbage crash mismatch> -> $how {
+        %r = ran(STUB_FAIL => $how, STUB_FAIL_ONLY => 'verify check');
+        is %r<status>, STATUS-BLOCKED, "when iz4 cannot check the finished work ($how), the run ends blocked";
+        like %r<blockedOn>, /'IZ4 enforcement could not be performed' .* 'not checked'/, 'saying enforcement could not be performed';
+        like %r<blockedOn>, /'Nothing here says the work is wrong'/, 'and that this is not a finding about the work';
+        my %u = governed(%r);
+        ok !is-in('verified', %u<levels>) && !is-in('checked', %u<levels>), 'neither checked nor verified is claimed';
+        ok %u<checks>.grep({ .<point> eq 'verify' && .<result> eq 'unavailable' }), 'the unavailable check is on the receipt as unavailable';
+        ok %u<gaps>.grep(*.contains('the finished work was not checked')), 'with the gap named';
+        ok !validate-run-receipt(%r), 'and the receipt validates' or diag validate-run-receipt(%r).Str;
+    }
+
+    # an approval for something else can never stand in for a person's decision here
+    {
+        my $trust = temp-dir().add('trust.json');
+        $trust.spurt(encode-json(%( schema => 'trust-config.v1', policy => %( standingApprovals => [ %( action => 'deploy.execute', target => '*', approvedBy => 'operator/test' ), ] ) )));
+        temp %*ENV<X321_TRUST> = $trust.Str;
+        %r = ran(STUB_VERIFY => 'needs_human');
+        is %r<status>, STATUS-BLOCKED, 'a standing approval (which is for deploys) leaves an IZ4 needs_human blocked';
+        ok governed(%r)<humanDecision>.contains('none has'), 'and the receipt still says no person has agreed';
+    }
 
     # a warning
     %r = ran(STUB_VERIFY => 'warn');

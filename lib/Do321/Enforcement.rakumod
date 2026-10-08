@@ -49,6 +49,17 @@ sub levels-from(%operating, @answers --> List) is export {
     @l.List;
 }
 
+#| What a controller's own old hook command does at a control, in words:
+#| the truth about wiring 321 did not write and does not drive.
+sub legacy-does(Str $control --> Str) is export {
+    given $control {
+        when CTRL-AUTHORITATIVE-CONTEXT { 'it delivers the context at session start' }
+        when CTRL-FILESYSTEM-GUARD      { 'it refuses one edit made before the context was delivered, and checks no action' }
+        when CTRL-POST-RUN              { 'it refuses one turn end that changed files without a report, and checks no change' }
+        default                         { 'it is not driven by 321' }
+    }
+}
+
 #| The status of one controller in one harness for a workspace.
 sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $workspace, Bool :$headless = False --> Hash) is export {
     my %found = $controller.discover($workspace.Str);
@@ -71,10 +82,12 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
         @rows.push(%( control => $c, label => control-label($c), harness => $strength, wanted => $wanted, state => $state ));
         @warnings.push("{control-label($c)} is not available in {$adapter.name}: this harness cannot intercept it.")
             if $strength eq STRENGTH-NONE && ($wanted || is-in($c, [CTRL-NETWORK-GUARD, CTRL-PRE-COMMIT]));
-        @warnings.push("{control-label($c)} is wired the old way (the controller's own hook command), which only delivers the context and looks for a report; install again to route it through 321.")
+        @warnings.push("{control-label($c)} is wired the old way (the controller's own hook command): {legacy-does($c)}. It is still active and is left exactly as it is; install to route it through 321.")
             if $state eq 'legacy';
+        # Telling is all a context ever is, in any harness, so that one needs
+        # no warning; a guard or an end check that can only advise does.
         @warnings.push("{control-label($c)} only advises in {$adapter.name}: text reaches the model, nothing is refused.")
-            if $wanted && $strength eq STRENGTH-ADVISES;
+            if $wanted && $strength eq STRENGTH-ADVISES && $c ne CTRL-AUTHORITATIVE-CONTEXT;
     }
     my @levels = (%found && %found<available>) ?? levels-from(%operating, $controller.answers) !! ();
     # Asking a person is not wired separately: a guard that meets
@@ -99,6 +112,11 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
         managedBy  => (@rows.grep({ $_<state> eq 'installed' }) ?? '321'
                         !! @rows.grep({ $_<state> eq 'legacy' }) ?? "legacy {$controller.name} wiring" !! ''),
         legacy     => [ |@rows.grep({ $_<state> eq 'legacy' }).map(*<control>) ],
+        # How strong the old wiring is, said separately from the levels: it
+        # refuses things of its own (strict) or only tells (advisory), and
+        # either way it puts no action and no change to the controller.
+        legacyMode => (@rows.grep({ $_<state> eq 'legacy' && $_<control> ne CTRL-AUTHORITATIVE-CONTEXT }) ?? 'strict'
+                        !! @rows.grep({ $_<state> eq 'legacy' }) ?? 'advisory' !! ''),
         controls   => @rows,
         levels     => [ |@levels ],
         headline   => headline(@levels),
@@ -114,6 +132,21 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
 #| refused.  A project can start there and install fully later.
 sub install-enforcement(Adapter $adapter, Controller $controller, IO::Path $workspace, Str $self, Bool :$advisory = False --> Hash) is export {
     my %caps = $adapter.controls;
+    # Every hook 321 writes calls 321, which has to be able to ask the
+    # controller.  Where it cannot (the controller is missing, or too old
+    # to be driven), wiring it in would replace whatever works today with
+    # hooks that can only fail.  So nothing is written and nothing already
+    # there is touched: an older direct wiring keeps doing what it does.
+    my %found = $controller.discover($workspace.Str);
+    if %found && !%found<available> {
+        my %s = enforcement-status($adapter, $controller, $workspace);
+        %s<action> = 'failed';
+        %s<mode>   = $advisory ?? 'advisory' !! 'full';
+        %s<error>  = "{$controller.name} cannot be driven here ({%found<reason>}), so nothing was wired and nothing was changed."
+            ~ (@(%s<legacy>) ?? " The hooks an earlier {$controller.name} wrote are untouched and still active." !! '')
+            ~ " Make {$controller.name} drivable, then install again.";
+        return %s;
+    }
     # What is already wired here is never taken away by an install: an
     # advisory install over fuller wiring, or over a controller's own old
     # hook commands, keeps every moment that was covered.  Removing is
@@ -168,9 +201,10 @@ sub status-lines(%s --> List) is export {
         my $say = %c<control> eq CTRL-HUMAN-APPROVAL && %c<harness> ne STRENGTH-NONE
                 ?? (%c<state> eq 'through the guards' ?? 'yes (a guard asks the person at the session)' !! 'not installed')
             !! !%c<wanted> ?? (%c<harness> eq STRENGTH-NONE ?? 'no' !! 'available, not used')
-            !! %c<state> eq 'installed' ?? (%c<harness> eq STRENGTH-ADVISES ?? 'yes (advises only)' !! 'yes')
+            !! %c<state> eq 'installed' ?? (%c<control> eq CTRL-AUTHORITATIVE-CONTEXT ?? 'yes (told to the agent; nothing is refused)'
+                                            !! %c<harness> eq STRENGTH-ADVISES ?? 'yes (advises only)' !! 'yes')
             !! %c<state> eq 'unavailable' ?? 'no'
-            !! %c<state> eq 'legacy' ?? 'old wiring'
+            !! %c<state> eq 'legacy' ?? 'old wiring, still active'
             !! 'not installed';
         @l.push(sprintf('%-24s %s', %c<label>, $say));
     }
@@ -178,6 +212,7 @@ sub status-lines(%s --> List) is export {
     @l.push("Effective enforcement: {%s<headline>}" ~ (%s<levels> ?? " ({@(%s<levels>).join(', ')})" !! ''));
     if @(%s<legacy> // []) {
         @l.push("Managed by: legacy {%s<controller>.uc} wiring (its own hook commands in {%s<wiring>}; still active, left as it is)");
+        @l.push("Legacy wiring: {%s<legacyMode> // 'advisory'} (" ~ @(%s<legacy>).map({ legacy-does($_) }).join('; ') ~ ')');
         @l.push("Migration: 321 {%s<controller>} install adopts it: each old command is replaced by 321's, once");
     }
     elsif (%s<managedBy> // '') eq '321' { @l.push('Managed by: 321') }

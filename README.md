@@ -413,6 +413,22 @@ continuation handle.
 
 **321 knows how the harness works. IZ4 knows what must remain true.**
 
+- **IZ4 owns intent.** 321 never decides what an invariant means, and holds
+  none of IZ4's policy.
+- **321 owns environment knowledge.** Which harnesses exist, where each
+  keeps its settings, what it can intercept, how to wire and verify it.
+- **Drivers translate.** 321 turns a harness's events into IZ4's stable
+  interface (`iz4 discover`, `context`, `check action`, `check change`,
+  `verify`, each one JSON document) and its results back into the
+  harness's terms. It calls nothing else of iz4 and reads no other output.
+- **Hooks 321 installs call 321**, never iz4 directly.
+- **Only a person approves a change to intent.**
+
+At run time the calls go one way: iz4's conveniences may ask 321, 321 asks
+iz4's core, and the core never calls back. Each project keeps its own IZ4
+and can gate changes to the other's repository; that is governance of
+source code, not a dependency between running programs.
+
 A harness is an agent environment: Claude Code today, others as their
 adapters are written. Each one keeps configuration somewhere different,
 exposes different lifecycle events, and changes them when it likes. 321 is
@@ -440,8 +456,8 @@ IZ4       knows the applicable invariants, whether an action or a change is
 $ 321 harness detect
 claude_code    detected 2.1.292 (Claude Code)
     project wiring: .claude/settings.json (none yet)
-    enforces: authoritative_context, pre_action, pre_tool, filesystem_guard, shell_guard, human_approval, post_run
-    advises:  post_action, post_tool
+    enforces: pre_action, pre_tool, filesystem_guard, shell_guard, human_approval, post_run
+    advises:  authoritative_context, post_action, post_tool
     cannot:   network_guard, pre_commit, post_commit
 ```
 
@@ -470,7 +486,7 @@ IZ4 integration installed (.claude/settings.json).
 Project: IZ4 enabled (/repo/IZ4)
 Harness: claude_code
 
-Context injection        yes
+Context injection        yes (told to the agent; nothing is refused)
 Filesystem guard         yes
 Shell guard              yes
 Network interception     no
@@ -524,9 +540,26 @@ refuses the tool call with the reason; `needs_human` asks the person at an
 interactive session, and in a headless run refuses and tells the agent to
 put the proposal to a person; a warning lets the call through and says why;
 an end of turn that does not pass is refused once, so the agent says what is
-outstanding. A controller that cannot be driven lets the call through and
-says so on stderr: a visible gap, never a silent pass. When Claude Code
-changes its hook mechanism, `lib/Do321/ClaudeHooks.rakumod` changes and IZ4
+outstanding, and a warning there is shown to the person. A turn end that
+was already refused once is not asked again (the harness's own loop guard),
+and is recorded as not asked, never as a pass.
+
+**When the controller cannot be asked.** iz4 missing, crashed, timed out
+(every call has a time limit), exiting 1, printing no result document, or
+giving a result that disagrees with its exit code: none of these is a
+result, and what happens depends on what the control can do.
+
+| The control | What 321 does |
+|---|---|
+| **enforcing** (a guard before a tool call, the check at the end of a turn) | **stops** the action or the turn end, and says that the controller's enforcement could not be performed and why. It never quietly becomes advice. |
+| **advisory** (the context at session start, a note after a tool, or any control this harness can only advise on) | lets the work through and shows the person a warning that the controller did **not** check it |
+
+The rule is the runtime's, applied whatever an adapter's translation does.
+A control is reported as guarded only when its check really ran: on a
+receipt, a hook that fired and could not ask the controller is counted
+apart and the run is not called guarded.
+
+When Claude Code changes its hook mechanism, `lib/Do321/ClaudeHooks.rakumod` changes and IZ4
 does not.
 
 ### The levels, and what they do not mean
@@ -552,7 +585,7 @@ lacks:
 
 ```
 $ 321 iz4 install --harness <one that only advises, and has no tool hooks>
-Context injection        yes (advises only)
+Context injection        yes (told to the agent; nothing is refused)
 Filesystem guard         no
 Shell guard              no
 Post-run verification    yes
@@ -583,10 +616,13 @@ first. 321:
 
 `needs_human` and `block` end the run **blocked**, not completed, with the
 proposal a person must decide on, or the reason, in `blockedOn`. A warning
-and a check that could not run go on `uncertain`. The runtime never records
-a person's agreement, and treats nothing as one: not the agent's text, not
-silence, not the run continuing. Agreement is a person running
-`iz4 approve` at a terminal.
+goes on `uncertain`. **Only a person approves a change to intent.** The
+runtime never records a person's agreement, and treats nothing as one: not
+the agent's text, not an agent saying "approved", not silence, not the run
+continuing, not an approval given earlier or for different work, and not a
+standing approval (those are for deploys). Headless, where nobody can be
+asked, it stops. Agreement is a person running `iz4 approve` at a
+terminal.
 
 The receipt carries the evidence under `evidence.controllers`:
 
@@ -610,9 +646,11 @@ Which IZ4 applied and its content identity, the harness, how each control
 was operated, every check and its result, any gap, and whether a human
 decision is outstanding. Procedures (no model) are outside all of this, and
 a workspace with no IZ4 runs exactly as it did before. When an IZ4 is there
-and `iz4` is missing, too old to be driven, or the IZ4 is invalid, the run
-is not blocked: the receipt lists the IZ4 with no level claimed and says
-why. `X321_IZ4` names the `iz4` to use and, when set, is the only one used.
+and `iz4` is missing, too old to be driven, or the IZ4 is invalid, nothing
+was ever being enforced, so the run is not blocked: the receipt lists the
+IZ4 with no level claimed and says why. When iz4 was driving the run and
+then cannot check the finished work, the run ends **blocked**, saying
+enforcement could not be performed: work is never passed off as checked. `X321_IZ4` names the `iz4` to use and, when set, is the only one used.
 
 ### Adding a harness
 
@@ -646,13 +684,24 @@ A second controller is a class that does `role Controller`
 whichever of `check-action`, `check-change` and `verify` it can answer. The
 ones it leaves out answer `unavailable`, which is reported as a gap.
 
-### The older hook command
+### The older direct wiring
 
-`321 hooks install | status | remove --command "<cmd>"` writes a hook
-command of somebody else's straight into a harness's settings (session
-start always; pre-edit and stop with `--strict`). It predates controllers
-and stays for callers that use it. `321 iz4 install` replaces such wiring
-for IZ4 instead of running both.
+Before 0.4, `321 hooks install --command "<cmd>"` wrote a controller's own
+command (iz4's `iz4 hook ...`) straight into a harness's settings, and iz4
+before 0.15 did the same itself. 321 writes that no longer: **a hook 321
+installs calls 321**, so a harness changing its events changes 321 and
+nothing else. `321 hooks install` is refused, writing nothing and changing
+nothing; `321 hooks status | remove --command "<cmd>"` still report on and
+take out the older entries.
+
+Wiring of that kind already in a project keeps working exactly as it did.
+`321 iz4 status` reports it as active, managed by legacy IZ4 wiring, at
+AWARE, with its strength (`advisory`, or `strict` when its own hooks also
+refuse an early edit and a turn end with no report), and
+`321 iz4 install` adopts it. Adoption needs an iz4 that can be driven
+(0.15.0 or later): with an older one, install is refused and the settings
+are left byte for byte, so no hook is ever pointed at something that
+cannot answer. The safe order is iz4 first, then 321.
 
 ## Prompt-only runs
 
@@ -691,7 +740,7 @@ lib/Do321/Wire         the NDJSON machine protocol
 lib/Do321/Controller   the controller seam, and the IZ4 driver
 lib/Do321/ClaudeHooks  what 321 knows about Claude Code's hooks: wiring, translation, answers
 lib/Do321/Enforcement  what is really wired, and the levels it adds up to
-lib/Do321/Hooks        the older hook command, and the doctor's JSON
+lib/Do321/Hooks        the older direct wiring (read and removed, never written), and the doctor's JSON
 lib/Do321/CLI          the front door
 packages/prompt        the local package for prompt-only runs
 t/                     the suite; t/lib holds its helpers and the binary seam
