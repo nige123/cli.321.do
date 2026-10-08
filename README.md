@@ -507,6 +507,12 @@ Warning:
 321 iz4 remove  [--workspace <dir>] [--harness <name>] [--json]
 ```
 
+A person rarely has to type this. After a change of intent (`iz4 init`,
+`iz4 add`, an approval), iz4 makes sure a 321 that can drive a harness is
+present, fetching the official one if it is missing, and runs
+`321 iz4 install` itself. That does not move any harness knowledge into
+iz4: what follows is still all 321's.
+
 Install detects the harnesses here, asks IZ4 whether one governs the
 project, wires in everything the harness can enforce, and then reads the
 wiring back: a control that should be there and is not makes the install a
