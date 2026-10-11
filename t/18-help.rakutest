@@ -1,0 +1,204 @@
+# Help a person can hold in their head, and a Next line on every path:
+# one screen per topic, each short, each with an example, each ending in
+# what to do next; and every outcome of a run, every inspection command
+# and every usage error says what should happen next, with a command
+# that can be typed as it stands.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+use Do321::Help;
+
+sub trust-file(%cfg --> IO::Path) {
+    my $p = temp-dir().add('trust.json');
+    $p.spurt(to-wire('TrustConfig', load('TrustConfig', %cfg)));
+    $p;
+}
+
+sub helper-trust(--> IO::Path) {
+    my $dir = fixture('example.test/helper');
+    trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { helper => 'example.test/helper' },
+        policy => { adapters => { preferred => ['fake'] } } });
+}
+
+sub operator-trust(--> IO::Path) {
+    my $dir = fixture('example.test/operator');
+    trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { operator => { path => $dir.Str, version => '0.1.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { op => 'example.test/operator' } });
+}
+
+#| Run the CLI with a fresh home and no agents unless a trust file is given.
+sub cli(IO::Path $trust, *@args, :%env, Str :$in = '', IO::Path :$cwd --> List) {
+    my $home = temp-dir();
+    my %e = X321_HOME => $home.Str, DP_BIN => '', DP_EXECUTE => '', |%env;
+    my ($rc, $out, $err) = x321(|($trust.defined ?? ('--trust', $trust.Str) !! ('--trust', $home.add('no-trust.json').Str)), |@args, :env(%e), :$in, |($cwd ?? (:$cwd) !! ()));
+    ($rc, $out, $err, $home);
+}
+
+sub has-next(Str $text --> Bool) {
+    # "Next: <advice>" followed by an indented "e.g.  <command>" that is not empty
+    so $text ~~ / 'Next: ' \S .* \n \s+ 'e.g.  ' \S /;
+}
+
+# ---- the first screen -------------------------------------------------------------
+{
+    my ($rc, $out) = cli(IO::Path, 'help');
+    is $rc, 0, 'help exits 0';
+    ok $out.contains('321 <agent> <request...>'), 'the request form is on the first screen';
+    ok $out.lines.elems <= SCREEN-LINES, "the first screen fits in {SCREEN-LINES} lines ({$out.lines.elems})";
+    ok has-next($out), 'and ends with Next and an example' or diag $out;
+    ok $out.contains('321 help agents') && $out.contains('no agent is configured'), 'with no agents the next step is to configure one' or diag $out;
+    for topic-names() -> $t { ok $out.contains("321 help $t"), "the first screen offers 'help $t'" }
+    ok !$out.contains('1da') && $out.contains('321 helper'), 'examples name the unbranded helper, never an official agent';
+
+    my ($rc2, $out2) = cli(IO::Path);
+    is $rc2, EXIT-USAGE, 'no arguments is a usage exit';
+    is $out2, $out, 'and shows the same first screen';
+
+    ($rc2, $out2) = cli(IO::Path, '--help');
+    ok $rc2 == 0 && $out2 eq $out, '--help is the same screen';
+}
+
+# ---- examples are the person's own agents --------------------------------------------
+{
+    my ($rc, $out) = cli(helper-trust(), 'help');
+    ok $out.contains('e.g.  321 helper status') && $out.contains('321 agents'), 'with an agent configured the example uses its alias and the next step is the list' or diag $out;
+    ($rc, $out) = cli(helper-trust(), 'help', 'ask');
+    ok $out.contains('321 helper note:'), 'topic examples use the alias too' or diag $out;
+}
+
+# ---- every topic: one short screen, one example, a Next line ----------------------------
+for topic-names() -> $t {
+    my ($rc, $out, $err) = cli(IO::Path, 'help', $t);
+    is $rc, 0, "help $t exits 0" or diag $err;
+    ok has-next($out), "help $t ends with Next and an example" or diag $out;
+    next if $t eq 'all';
+    ok $out.lines.elems <= SCREEN-LINES, "help $t fits in {SCREEN-LINES} lines ({$out.lines.elems})";
+    ok $out.contains('e.g.'), "help $t carries an example";
+    ok $out.lines.elems >= 8, "help $t is a screen, not a stub ({$out.lines.elems} lines)";
+    ok $out.lines.map(*.chars).max <= 100, "help $t fits an ordinary terminal";
+}
+for (ask => 'never handed to a shell', receipt => 'COMPLETED', agents => 'trust-config.v1', deploy => 'deploy.invoke',
+     run => '321 run --package', harness => '321 harness detect', packages => 'packages validate', options => '--workspace <dir>') -> $want {
+    my ($rc, $out) = cli(IO::Path, 'help', $want.key);
+    ok $out.contains($want.value), "help {$want.key} says what it is for" or diag $out;
+}
+{
+    my ($rc, $out) = cli(IO::Path, 'help', 'all');
+    ok $out.contains('Exit codes:') && $out.contains('--package-dir <dir>') && $out.contains('321 run --package'), 'help all is the whole reference';
+    ok $out.contains('321 help') , 'and points back to one topic at a time';
+}
+
+# ---- an unknown topic lists the topics, it does not dump the reference --------------------
+{
+    my ($rc, $out, $err) = cli(IO::Path, 'help', 'banana');
+    is $rc, EXIT-USAGE, 'an unknown topic is a usage error';
+    ok $err.contains('no topic "banana"') && $err.contains('321 help ask') && has-next($err), 'it lists the topics and the way back' or diag $err;
+    ok !$err.contains('Exit codes:'), 'without the reference wall';
+}
+
+# ---- deploy help tells the truth about this machine's bindings ---------------------------
+{
+    my ($rc, $out) = cli(IO::Path, 'help', 'deploy');
+    ok $out.contains('dp is not bound here') && $out.contains('execute is unset'), 'unbound and disabled are said so' or diag $out;
+    ($rc, $out) = cli(IO::Path, 'help', 'deploy', :env({ DP_BIN => '/opt/engine/bin/dp', DP_EXECUTE => 'dev' }));
+    ok $out.contains('dp is bound here (/opt/engine/bin/dp)') && $out.contains('execute is enabled for dev'), 'a binding is shown as it is' or diag $out;
+}
+
+# ---- usage errors say where the help is ---------------------------------------------------
+{
+    my ($rc, $out, $err) = cli(IO::Path, '--bogus', 'helper', 'x');
+    ok $rc == EXIT-USAGE && $err.contains('unknown option') && $err.contains('321 help options') && has-next($err), 'an unknown option points at the options screen' or diag $err;
+    ok !$err.contains('Exit codes:'), 'and does not print the reference wall';
+    ($rc, $out, $err) = cli(IO::Path, 'run', '--bogus');
+    ok $rc == EXIT-USAGE && $err.contains('321 help run'), 'run points at its own screen' or diag $err;
+    ($rc, $out, $err) = cli(IO::Path, 'packages');
+    ok $rc == EXIT-USAGE && $err.contains('321 help packages'), 'packages points at its screen' or diag $err;
+    ($rc, $out, $err) = cli(IO::Path, 'trust', 'banana');
+    ok $rc == EXIT-USAGE && $err.contains('321 trust show'), 'trust suggests show' or diag $err;
+    ($rc, $out, $err) = cli(IO::Path, 'harness');
+    ok $rc == EXIT-USAGE && $err.contains('321 help harness'), 'harness points at its screen' or diag $err;
+    ($rc, $out, $err) = cli(helper-trust(), 'helper');
+    ok $rc == EXIT-USAGE && $err.contains('what should helper do') && $err.contains('e.g.  321 helper status'), 'an empty request shows one' or diag $err;
+    ($rc, $out, $err) = cli(IO::Path, 'nobody', 'do', 'it');
+    ok $rc == EXIT-DENIED && $err.contains('321 help agents'), 'an unknown agent with no trust file points at setup' or diag $err;
+    ($rc, $out, $err) = cli(helper-trust(), 'nobody', 'do', 'it');
+    ok $rc == EXIT-DENIED && $err.contains('e.g.  321 agents'), 'an unknown agent with agents configured points at the list' or diag $err;
+}
+
+# ---- inspection commands end with a next step ------------------------------------------------
+{
+    my ($rc, $out) = cli(IO::Path, 'agents');
+    ok $rc == 0 && $out.contains('No agents') && $out.contains('321 help agents'), 'agents, none configured' or diag $out;
+    ($rc, $out) = cli(helper-trust(), 'agents');
+    ok $rc == 0 && $out.contains('e.g.  321 helper <request...>'), 'agents suggests asking the first one' or diag $out;
+    ($rc, $out) = cli(helper-trust(), 'trust', 'show');
+    ok $rc == 0 && $out.contains('e.g.  321 trust check'), 'trust show suggests check' or diag $out;
+    ($rc, $out) = cli(helper-trust(), 'trust', 'check');
+    ok $rc == 0 && $out.contains('e.g.  321 agents'), 'trust check suggests the list' or diag $out;
+    ($rc, $out) = cli(helper-trust(), 'doctor');
+    ok $rc == 0 && has-next($out) && $out.contains('321 agents'), 'doctor ends with a next step' or diag $out;
+    ($rc, $out) = cli(IO::Path, 'packages', 'digest', fixture('local/helper').Str);
+    ok $rc == 0 && $out.contains('--write'), 'digest suggests writing it' or diag $out;
+    ($rc, $out) = cli(IO::Path, 'packages', 'validate', fixture('local/helper').Str);
+    ok $rc == 0 && $out.contains('OK local/helper') && has-next($out), 'validate ends with a next step' or diag $out;
+}
+
+# ---- after a run: the Next line fits the outcome and never overclaims -------------------------
+{
+    # completed, no files, a procedure: ask the next thing the same way.  Run from an
+    # empty directory so no enclosing repository becomes the workspace.
+    my ($rc, $out) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()));
+    ok $rc == 0 && $out.contains('COMPLETED') && has-next($out), 'a completed run ends with Next' or diag $out;
+    ok $out.contains("e.g.  321 --package-dir {fixture('local/helper')} helper <request...>"), 'the example is the invocation the person used, by path' or diag $out;
+    ok $out.lines.tail.contains('e.g.'), 'Next is the last thing printed';
+}
+{
+    my $tp = operator-trust();
+    my $log = temp-dir().add('engine.log');
+    my %bound = DP_BIN => fake-engine().Str, FAKE_ENGINE_LOG => $log.Str;
+
+    # status completed: suggest a plan, naming no service the tool did not see
+    my ($rc, $out) = cli($tp, 'op', 'status', :env(%bound));
+    ok $rc == 0 && $out.contains('e.g.  321 op plan <service> <target>'), 'after status: plan something' or diag $out;
+
+    # a plan where this machine cannot execute: say so, and show what enabling it would take
+    ($rc, $out) = cli($tp, '--non-interactive', 'op', 'plan', 'alpha.web', 'live', 'revision', '0f94b03', :env(%bound));
+    ok $rc == 0 && $out.contains('live is not in DP_EXECUTE on this machine') && $out.contains('e.g.  DP_EXECUTE=live 321 op go alpha.web live'), 'a plan without execution enabled never reads as deployable here' or diag $out;
+
+    # the same plan where execution is enabled for the target: typing the go is the approval
+    ($rc, $out) = cli($tp, '--non-interactive', 'op', 'plan', 'alpha.web', 'live', 'revision', '0f94b03', :env(%( |%bound, DP_EXECUTE => 'live' )));
+    ok $rc == 0 && $out.contains('typing it is your approval') && $out.contains('e.g.  321 op go alpha.web live'), 'with execution enabled the next step is the go' or diag $out;
+
+    # blocked on a question: answer it in a new request
+    ($rc, $out) = cli($tp, '--non-interactive', 'op', 'plan', 'live', :env(%bound));
+    ok $rc == EXIT-BLOCKED && $out.contains('Next: answer it in a new request: Which service') && $out.contains('e.g.  321 op plan live <answer>'), 'blocked on a question' or diag $out;
+
+    # prepared, not executed: nothing was deployed, and what is not enabled
+    ($rc, $out) = cli($tp, '--non-interactive', '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', 'revision', '0f94b03', :env(%bound));
+    ok $rc == EXIT-BLOCKED && $out.contains('nothing was deployed') && $out.contains('DP_EXECUTE') && has-next($out), 'prepared-not-executed says nothing was deployed' or diag $out;
+
+    # failed for want of the engine: bind it, then ask again
+    ($rc, $out) = cli($tp, '--non-interactive', 'op', 'status', :env(%( DP_BIN => '' )));
+    ok $rc == EXIT-FAILED && $out.contains('e.g.  DP_BIN=/path/to/dp 321 op status'), 'an unbound engine: bind it and ask again' or diag $out;
+
+    # unsupported: the agent's own question, answered in a new request
+    ($rc, $out) = cli($tp, '--non-interactive', 'op', 'dance', :env(%bound));
+    ok $rc == EXIT-BLOCKED && has-next($out), 'an unsupported request still ends with Next' or diag $out;
+}
+
+# ---- --json output is for machines: no Next line in it --------------------------------------
+{
+    my ($rc, $out) = cli(IO::Path, '--json', '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk');
+    ok $rc == 0 && !$out.contains('Next:'), 'JSON output carries no Next line';
+}
+
+done-testing;

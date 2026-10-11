@@ -22,6 +22,7 @@ use Do321::Wire;
 use Do321::Hooks;
 use Do321::Controller;
 use Do321::Enforcement;
+use Do321::Help;
 
 #| Stamped at build time in the release workflow.
 constant VERSION is export = '0.4.0';
@@ -38,80 +39,6 @@ class Env is export {
     has Bool $.interactive = False;
     has Bool $.signals = False;
 }
-
-constant USAGE = q:to/END/;
-    321 - run an agent
-
-      321 <agent> <request...>            ask a configured agent to do something here
-      321 <publisher>/<agent> <request>   the same, by canonical id
-      321 <agent> -                       the request from standard input, to its end
-
-    Options before the agent:
-      --workspace <dir>       where the work happens (default: the enclosing git repo, else none)
-      --package-dir <dir>     load an unsigned local package from a directory (identity local/<name>)
-      --attach <file>         make a file available to the agent (repeatable)
-      --done <condition>      a completion condition, in order (repeatable)
-      --grant <capability>    grant an optional capability within local policy (repeatable)
-      --placement client|server|either
-      --network none|provider_only|open
-                              the agent's own network access (default: local policy, else provider_only).
-                              shell.run does not imply network: with a shell granted and no open
-                              network, no adapter that cannot deny the network will be selected
-      --adapter <name>        insist on one adapter
-      --non-interactive       never read steering from the terminal
-      --json                  print events as JSON lines instead of a transcript
-      --trust <file>          trust configuration (default ~/.321/trust.json)
-
-    Machine invocation:
-      321 run --package <file|-> [--workspace <dir>] [--receipt <file>] [--events <file>]
-              [--run-id <id>] [--history-dir <dir>] [--adapter <name>] [--package-dir <dir>]
-              [--continue <receipt.json>]   continue a blocked run of the SAME package: cost and
-                                            attempts carry forward, the old receipt is linked
-          stdin:  the work package (when --package -), then work directives, one JSON object per line
-          stdout: run events, then exactly one run receipt; a protocol error when no package can be identified
-
-    Inspection:
-      321 agents                    configured packages, their trust and aliases
-      321 packages validate <dir>   check a package directory against agent-package.v1
-      321 packages digest <dir> [--write]
-      321 packages builtin prompt   write the built-in prompt-only package under ~/.321/packages and print its path
-      321 trust show | check
-      321 doctor [--json]           installed adapters and what each actually enforces, and bound tools
-
-    Harnesses and what protects the work in them:
-      321 harness detect [--workspace <dir>] [--json]
-                                    the agent environments 321 knows, whether each is here,
-                                    and the controls it lets a controller operate
-      321 iz4 status  [--workspace <dir>] [--harness <name>] [--json]
-                                    how strongly the project's IZ4 is enforced in a harness
-      321 iz4 install [--workspace <dir>] [--harness <name>] [--advisory] [--json]
-                                    wire IZ4 into the harness, as strongly as it allows, and
-                                    verify the wiring; installing again changes nothing.
-                                    --advisory wires only the context: nothing is refused
-      321 iz4 remove  [--workspace <dir>] [--harness <name>] [--json]
-                                    take out only what 321 installed for IZ4
-      321 hook <harness> <controller> <control>
-                                    the glue a harness calls: native event in, the
-                                    controller's verdict out in the harness's own terms
-
-    Harness hooks, the older form (for a hook command such as 'iz4 hook'):
-      321 hooks status|remove --workspace <dir> --command <cmd> [--json]   (older direct wiring; install is refused)
-                                    wire <cmd> session-start|pre-edit|stop into every harness
-                                    321 knows, in that workspace; --strict wires the two that refuse
-      321 hooks status  --workspace <dir> --command <cmd> [--json]
-      321 hooks remove  --workspace <dir> --command <cmd> [--json]
-
-    Tool bindings (procedures only, by explicit path, never by PATH lookup):
-      DP_BIN             the deployment engine entry point a package's dp
-                                    tool steps may call: status (deploy.read), plan (deploy.plan)
-                                    and execute (deploy.invoke)
-      DP_EXECUTE         comma-separated targets on which an approved execute may run;
-                                    unset, execute is not performed
-      321 version | help
-
-    Exit codes: 0 completed or no change, 2 blocked, 3 stopped, 4 failed, 5 denied,
-    64 usage, 65 malformed input, 70 internal error.
-    END
 
 #| The installed adapter set: the procedure executor and the fake (hidden,
 #| selectable only by name) and Claude Code.  X321_CLAUDE_BINARY names the
@@ -187,6 +114,7 @@ sub parse-global(@args --> List) {
     while $i < @args {
         my $a = @args[$i];
         return ($g, [ |@args[$i + 1 .. *] ]) if $a eq '--';
+        return ($g, ['help', |@args[$i + 1 .. *]]) if $a eq '-h' || $a eq '--help';   # help is never an unknown option
         last unless $a.starts-with('-');
         my ($name, $value, $has-value) = $a.contains('=') ?? (|$a.split('=', 2), True) !! ($a, '', False);
         my sub need() {
@@ -235,15 +163,15 @@ sub cli-main(Env $env is copy --> Int) is export {
     my ($g, $rest) = try parse-global($env.args);
     if $! {
         $env.stderr.say("321: {$!.message}");
-        $env.stderr.print(USAGE);
+        $env.stderr.say(next-text('see the options that go before the agent name', '321 help options'));
         return EXIT-USAGE;
     }
     my @rest = @$rest;
     $env = Env.new(:stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :args($env.args), :trust-path($g.trust-path),
         :home($env.home), :adapters($env.adapters), :interactive($env.interactive), :signals($env.signals)) if $g.trust-path ne '';
-    unless @rest { $env.stdout.print(USAGE); return EXIT-USAGE }
+    unless @rest { $env.stdout.print(help-page('', help-ctx($env))); return EXIT-USAGE }
     given @rest[0] {
-        when 'help' | '-h' | '--help' { $env.stdout.print(USAGE); return 0 }
+        when 'help' | '-h' | '--help' { return cmd-help($env, @rest[1 .. *]) }
         when 'version' | '--version' { $env.stdout.say("321 {VERSION}"); return 0 }
         when 'run'      { return cmd-run($env, $g, @rest[1 .. *]) }
         when 'agents'   { return cmd-agents($env) }
@@ -257,6 +185,26 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'iz4'      { return cmd-controller($env, $g, 'iz4', @rest[1 .. *]) }
     }
     cmd-agent($env, $g, @rest[0], @rest[1 .. *]);
+}
+
+# ----------------------------------------------------------------- help
+
+#| What the help screens need to make their examples the person's own:
+#| the configured aliases, whether a trust file exists, the dp binding.
+sub help-ctx(Env $env --> Hash) {
+    my $cfg = try trust-of($env);
+    my @agents = $cfg.defined ?? $cfg.configured.map({ .alias ne '' ?? .alias !! .id.Str }) !! ();
+    %( agents => @agents, trust-exists => ($cfg.defined && $cfg.path.IO.e),
+       dp-bound => ((%*ENV<DP_BIN> // '') ne ''), dp-bin => (%*ENV<DP_BIN> // '').Str, dp-execute => (%*ENV<DP_EXECUTE> // '').Str );
+}
+
+#| `321 help [<topic>]`: one screen at a time, each ending with Next.
+sub cmd-help(Env $env, @args --> Int) {
+    my $topic = @args ?? @args[0].Str !! '';
+    my $page = help-page($topic, help-ctx($env));
+    without $page { $env.stderr.print(unknown-topic($topic)); return EXIT-USAGE }
+    $env.stdout.print($page);
+    0;
 }
 
 # ------------------------------------------------------------------ run
@@ -288,7 +236,7 @@ sub cmd-run(Env $env, Global $g, @args --> Int) {
             }
             Str;
         };
-        if $! { $env.stderr.say("321 run: {$!.message}"); return EXIT-USAGE }
+        if $! { $env.stderr.say("321 run: {$!.message}"); $env.stderr.say(next-text('see the machine invocation', '321 help run')); return EXIT-USAGE }
         $i++;
     }
     my $cfg = try trust-of($env);
@@ -307,6 +255,7 @@ sub cmd-agents(Env $env --> Int) {
     unless @list {
         $env.stdout.say("No agents are configured in {$cfg.path}.");
         $env.stdout.say('Add a pinned publisher package or a local package there, or use --package-dir <dir> for an unsigned local package.');
+        $env.stdout.say(next-text('set one up', '321 help agents'));
         return 0;
     }
     for @list -> $r {
@@ -314,6 +263,8 @@ sub cmd-agents(Env $env --> Int) {
         my $version = $r.pin.defined ?? '  ' ~ $r.pin<version> !! '';
         $env.stdout.say(sprintf('%-32s %-12s%s%s', $r.id.Str, $r.level, $version, $alias));
     }
+    my $first = @list[0].alias ne '' ?? @list[0].alias !! @list[0].id.Str;
+    $env.stdout.say(next-text('ask one of them', "321 $first <request...>"));
     0;
 }
 
@@ -392,7 +343,7 @@ sub materialise-builtin(Str $name, IO::Path $home --> IO::Path) is export {
 
 sub cmd-packages(Env $env, @args --> Int) {
     my $usage = 'usage: 321 packages validate <dir> | digest <dir> [--write] | show <id> | builtin <name>';
-    if @args < 2 { $env.stderr.say($usage); return EXIT-USAGE }
+    if @args < 2 { $env.stderr.say($usage); $env.stderr.say(next-text('see what each does', '321 help packages')); return EXIT-USAGE }
     given @args[0] {
         when 'builtin' {
             my $dir = try materialise-builtin(@args[1], home-of($env));
@@ -400,12 +351,14 @@ sub cmd-packages(Env $env, @args --> Int) {
             my ($m, $d) = try validate-package($dir);
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
             $env.stdout.say($dir.Str);
+            $env.stdout.say(next-text('run it by path, no trust file needed', "321 --package-dir $dir {@args[1]} <request...>"));
             return 0;
         }
         when 'validate' {
             my ($m, $d) = try validate-package(@args[1].IO);
-            if $! { $env.stdout.say("INVALID: {$!.message}"); return EXIT-FAILED }
+            if $! { $env.stdout.say("INVALID: {$!.message}"); $env.stdout.say(next-text('fix what it names, then validate again', "321 packages validate {@args[1]}")); return EXIT-FAILED }
             $env.stdout.say("OK {$m<id>} {$m<version>} $d");
+            $env.stdout.say(next-text('pin it in the trust file so it can be asked by name', '321 help agents'));
             return 0;
         }
         when 'digest' {
@@ -416,6 +369,9 @@ sub cmd-packages(Env $env, @args --> Int) {
                 if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
             }
             $env.stdout.say("$d ({@$entries.elems} files)");
+            $env.stdout.say(@args > 2 && @args[2] eq '--write'
+                ?? next-text('validate the package', "321 packages validate {@args[1]}")
+                !! next-text('write it into the package as its DIGEST file', "321 packages digest {@args[1]} --write"));
             return 0;
         }
         when 'show' {
@@ -435,10 +391,12 @@ sub cmd-packages(Env $env, @args --> Int) {
             $env.stdout.say("placement:  {@(%m<placement><allowed> // []).join(', ')}");
             my @procs = @(%m<procedures> // []);
             $env.stdout.say("procedures: {@procs.map({ $_<name> }).join(', ')}") if @procs;
+            $env.stdout.say(next-text('ask it', "321 {@args[1]} <request...>"));
             return 0;
         }
     }
     $env.stderr.say($usage);
+    $env.stderr.say(next-text('see what each does', '321 help packages'));
     EXIT-USAGE;
 }
 
@@ -461,6 +419,7 @@ sub cmd-trust(Env $env, @args --> Int) {
             }
             $env.stdout.say("local/$_ {$cfg.local{$_}<path>}") for $cfg.local.keys.sort;
             $env.stdout.say("alias $_ -> {$cfg.aliases{$_}}") for $cfg.aliases.keys.sort;
+            $env.stdout.say(next-text('check that every agent named here loads', '321 trust check'));
             return 0;
         }
         when 'check' {
@@ -470,10 +429,13 @@ sub cmd-trust(Env $env, @args --> Int) {
                 if $! { $env.stdout.say("FAIL {$r.id}: {$!.message}"); $problems++; next }
                 $env.stdout.say("ok   {$r.id} ({$r.level})");
             }
+            $env.stdout.say($problems ?? next-text('fix the pins that failed; the digest or path is what usually moved', '321 help agents')
+                                      !! next-text('see them as a list', '321 agents'));
             return $problems ?? EXIT-FAILED !! 0;
         }
     }
     $env.stderr.say('usage: 321 trust show | check');
+    $env.stderr.say(next-text('see what the trust file holds', '321 trust show'));
     EXIT-USAGE;
 }
 
@@ -541,6 +503,7 @@ sub cmd-doctor(Env $env, @args --> Int) {
     if $cfg.path.IO.e { $env.stdout.say("trust: {$cfg.path}, {$cfg.configured.elems} configured package(s)") }
     else { $env.stdout.say("trust: no file at {$cfg.path} (only --package-dir packages can run)") }
     $env.stdout.say("policy: {to-wire('Policy', $cfg.policy)}");
+    $env.stdout.say($cfg.configured.elems ?? next-text('see who you can ask', '321 agents') !! next-text('configure an agent', '321 help agents'));
     0;
 }
 
@@ -584,7 +547,7 @@ sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
 
 sub cmd-harness(Env $env, Global $g, @args --> Int) {
     my $usage = 'usage: 321 harness detect [--workspace <dir>] [--json]';
-    if !@args || @args[0] ne 'detect' { $env.stderr.say($usage); return EXIT-USAGE }
+    if !@args || @args[0] ne 'detect' { $env.stderr.say($usage); $env.stderr.say(next-text('see the harness commands', '321 help harness')); return EXIT-USAGE }
     my ($workspace, $, $json) = try parse-harness-options($env, $g, @args[1 .. *], 'harness detect');
     if $! { $env.stderr.say("321 harness: {$!.message}"); return EXIT-USAGE }
     my @records;
@@ -621,7 +584,7 @@ sub cmd-harness(Env $env, Global $g, @args --> Int) {
 #| harness detected here.
 sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
     my $usage = "usage: 321 $name install|status|remove [--workspace <dir>] [--harness <name>] [--json]";
-    if !@args || !is-in(@args[0], <install status remove>) { $env.stderr.say($usage); return EXIT-USAGE }
+    if !@args || !is-in(@args[0], <install status remove>) { $env.stderr.say($usage); $env.stderr.say(next-text('see the harness commands', '321 help harness')); return EXIT-USAGE }
     my $sub = @args[0];
     my ($workspace, $harness, $json, $advisory) = try parse-harness-options($env, $g, @args[1 .. *], "$name $sub");
     if $! { $env.stderr.say("321 $name: {$!.message}"); return EXIT-USAGE }
@@ -674,7 +637,7 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
 #| in the harness's terms.  Each call is appended to X321_HOOK_LOG when
 #| that is set, which is how a run proves its hooks really fired.
 sub cmd-hook(Env $env, @args --> Int) {
-    if @args != 3 { $env.stderr.say('usage: 321 hook <harness> <controller> <control>   (called by a harness, with its event on stdin)'); return EXIT-USAGE }
+    if @args != 3 { $env.stderr.say('usage: 321 hook <harness> <controller> <control>   (called by a harness, with its event on stdin)'); $env.stderr.say(next-text('a person wires a harness with', '321 iz4 install')); return EXIT-USAGE }
     my ($harness, $name, $control) = @args;
     my $adapter = $env.adapters.get($harness);
     my $controller = controller-named($name);
@@ -765,7 +728,7 @@ sub hook-log(Str $controller, Str $harness, Str $control, Verdict $v) {
 
 sub cmd-hooks(Env $env, Global $g, @args --> Int) {
     my $usage = 'usage: 321 hooks install|status|remove --workspace <dir> --command <cmd> [--strict] [--json]';
-    if !@args { $env.stderr.say($usage); return EXIT-USAGE }
+    if !@args { $env.stderr.say($usage); $env.stderr.say(next-text('the newer wiring is 321 iz4 install', '321 help harness')); return EXIT-USAGE }
     my $sub = @args[0];
     my ($workspace, $command, $strict, $json) = $g.workspace, '', False, $g.json-out;
     my $i = 1;
@@ -1047,7 +1010,7 @@ sub render-event($w, %e) {
     }
 }
 
-sub render-receipt($w, %r, IO::Path $run-dir) {
+sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefix = '', Str :$workspace = '') {
     $w.say('');
     $w.say("{%r<status>.uc}: {%r<summary>}");
     if %r<status> eq STATUS-FAILED || %r<status> eq STATUS-DENIED {
@@ -1085,6 +1048,8 @@ sub render-receipt($w, %r, IO::Path $run-dir) {
         default { $w.say(sprintf('Cost: $%.2f, %d turns, %d attempt(s) (%s)', %r<cost><usd>, %r<cost><turns>, @(%r<attempts>).elems, %r<cost><basis>)) }
     }
     $w.say("Receipt: {$run-dir.add('receipt.json')}");
+    $w.say(next-after-run(%r, :$invocation, :$prefix, :$workspace, :dp-bound((%*ENV<DP_BIN> // '') ne ''), :dp-execute((%*ENV<DP_EXECUTE> // '').Str)))
+        if $invocation ne '';
 }
 
 #| `321 <agent> <request…>`: build a WorkPackage under local policy and
@@ -1103,6 +1068,7 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     }
     if $request eq '' {
         $env.stderr.say("321: what should $name do? Give the request after the agent name.");
+        $env.stderr.say(next-text('say it in plain words', "321 $name status"));
         return EXIT-USAGE;
     }
     my $cfg = try trust-of($env);
@@ -1120,7 +1086,11 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
         $agent = try load-resolved($cfg.resolve($name));
         $err = $!.message if $!;
     }
-    with $err { $env.stderr.say("321: $err"); return EXIT-DENIED }
+    with $err {
+        $env.stderr.say("321: $err");
+        $env.stderr.say($cfg.configured.elems ?? next-text('see who is configured here', '321 agents') !! next-text('configure an agent first', '321 help agents'));
+        return EXIT-DENIED;
+    }
 
     my ($workspace, $kind) = resolve-workspace($g.workspace);
     # A package that can never read or write files gets no workspace:
@@ -1168,6 +1138,10 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     try $run-dir.add('receipt.json').spurt(to-pretty('RunReceipt', %receipt) ~ "\n");
     with %receipt<evidence><proposal> { try $run-dir.add('proposal.json').spurt(to-pretty('DeploymentProposal', $_) ~ "\n") }
     if $g.json-out { $out.say(to-wire('RunReceipt', %receipt)) }
-    else { render-receipt($out, %receipt, $run-dir) }
+    else {
+        my $prefix = '321 ' ~ ($g.package-dir ne '' ?? "--package-dir {$g.package-dir} " !! '') ~ $name;
+        my $invocation = $prefix ~ ' ' ~ ($request.contains("\n") ?? '-' !! $request);
+        render-receipt($out, %receipt, $run-dir, :$invocation, :$prefix, :$workspace);
+    }
     exit-for(%receipt<status>);
 }

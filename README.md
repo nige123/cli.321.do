@@ -14,6 +14,7 @@ repository. The runtime hard-codes no agent name.
 321 <agent> <request words...>            a configured agent, by alias
 321 <publisher-domain>/<agent> <request>   the same, by canonical id
 321 run --package <file|->                 machine invocation over NDJSON
+321 help [<topic>]                       one screen of help at a time; every screen ends with what to do next
 ```
 
 Standalone use needs no account, database or network service. When a work
