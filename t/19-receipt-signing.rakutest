@@ -1,0 +1,113 @@
+# A receipt can be shown to come from this 321: a key under the home signs
+# every receipt over its digest, and anyone holding the public half can
+# check it.  No key, no signature, nothing else changes.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Keys;
+
+# ---- the key itself ---------------------------------------------------------
+my $home = temp-dir;
+nok load-key($home).defined, 'a fresh home has no key';
+my %pub = new-key($home);
+like %pub<keyId>, /^ <xdigit> ** 16 $/, 'a new key has a sixteen-hex key id';
+ok %pub<publicKey> ne '' && !(%pub<privateKey>:exists), 'what new-key returns carries the public half only';
+ok key-path($home).f, 'the key file is written under the home';
+my $k = load-key($home);
+is $k<keyId>, %pub<keyId>, 'and loads back as the same key';
+throws-like { new-key($home) }, X::Do321::Keys, message => /'already exists'/, 'a second key is refused: the first may have signed receipts';
+
+# ---- signing and checking a receipt ------------------------------------------
+my %r = schema => 'run-receipt.v1', receiptId => 'r1', packageId => 'p1', runId => 'run1', status => 'completed', conditions => [];
+%r<receiptDigest> = receipt-digest(%r);
+my %signed = sign-receipt(%r, %$k);
+is %signed<signature><keyId>, %pub<keyId>, 'the signature names the key';
+is %signed<signature><algorithm>, 'ed25519', 'and the algorithm';
+is receipt-digest(%signed), %r<receiptDigest>, 'the digest is unchanged by the signature: it is over the content, signature left out';
+is verify-receipt(%signed, %pub<publicKey>), %pub<keyId>, 'the receipt verifies under the public key';
+my %tampered = %signed; %tampered<status> = 'failed';
+throws-like { verify-receipt(%tampered, %pub<publicKey>) }, X::Do321::Keys, message => /'digest does not match'/, 'a changed receipt no longer matches its digest';
+%tampered<receiptDigest> = receipt-digest(%tampered);
+throws-like { verify-receipt(%tampered, %pub<publicKey>) }, Exception, message => /'verification failed'/, 'and re-digesting it does not help without the key';
+throws-like { verify-receipt(%r, %pub<publicKey>) }, X::Do321::Keys, message => /'no signature'/, 'an unsigned receipt is not verified, it is reported unsigned';
+my %other = new-key(temp-dir);
+throws-like { verify-receipt(%signed, %other<publicKey>) }, Exception, 'another key does not verify it';
+is-deeply sign-receipt-if-keyed(%r, temp-dir), %r, 'with no key under the home the receipt comes back as it was';
+ok sign-receipt-if-keyed(%r, $home)<signature>.defined, 'with one it is signed';
+
+# ---- the receipt's own validation knows the shape -----------------------------
+my %full = |%signed, agent => { id => 'local/x', digest => '' }, harness => { adapter => 'fake' },
+    packageDigest => 'sha256:' ~ ('a' x 64), conditionsDigest => 'sha256:' ~ ('b' x 64), startedAt => '2026-10-17T00:00:00Z', endedAt => '2026-10-17T00:00:01Z',
+    directives => { received => [], applied => [], rejected => [] };
+ok !validate-run-receipt(%full).list.grep(*.path.starts-with("signature")), 'a well-formed signature passes the shape check';
+my %bad = %full; %bad<signature> = %( keyId => 'x', algorithm => 'rsa', value => '' );
+ok validate-run-receipt(%bad).list.grep(*.path eq "signature.algorithm"), 'another algorithm is a shape problem';
+
+# ---- through the CLI ------------------------------------------------------------
+{
+    my $h = temp-dir;
+    my %env = X321_HOME => $h.Str;
+    my ($rc, $out, $err) = x321('key', :%env);
+    is $rc, 0, '321 key with no key exits 0';
+    like $out, /'No signing key' .* '321 key new'/, 'and says receipts are unsigned, with the next step';
+    ($rc, $out, $err) = x321('key', 'new', :%env);
+    is $rc, 0, '321 key new exits 0' or diag $err;
+    like $out, /'key ' <xdigit> ** 16 ' made at' .* 'public key: '/, 'and says what it made';
+    ($rc, $out, $err) = x321('key', 'new', :%env);
+    is $rc, 4, 'a second 321 key new is refused' or diag $out;
+    like $err, /'already exists'/, 'and says why';
+    ($rc, $out, $err) = x321('--json', 'key', :%env);
+    my $j = parse-json($out);
+    ok $j<publicKey> && $j<keyId> && !($j<privateKey>:exists), '--json key gives the public half as data, never the private';
+
+    # a receipt file: verify it against the home key, against the right key, against the wrong one
+    my $f = $h.add('r.json'); $f.spurt(encode-json(sign-receipt(%r, %(load-key($h)))));
+    ($rc, $out, $err) = x321('receipt', 'verify', $f.Str, :%env);
+    is $rc, 0, '321 receipt verify passes a receipt signed by this home' or diag $err;
+    like $out, /'digest matches its content and the signature verifies under key ' <xdigit> ** 16/, 'and says both things it checked';
+    ($rc, $out, $err) = x321('receipt', 'verify', $f.Str, '--key', %other<publicKey>, :%env);
+    is $rc, 4, 'under another key it fails';
+    like $err, /'does not name this key' | 'verification failed'/, 'and says so';
+    $f.spurt(encode-json(%r));
+    ($rc, $out, $err) = x321('receipt', 'verify', $f.Str, :%env);
+    is $rc, 4, 'an unsigned receipt does not verify';
+    like $err, /'no signature'/, 'and is called unsigned, not forged';
+}
+
+# ---- a real run writes a signed receipt when the home has a key -----------------
+{
+    use Do321::Shape;
+    use Do321::Trust;
+    my $helper = fixture('local/helper');
+    my $loaded = load-path($helper);
+    my sub pkg(--> Hash) {
+        doc('WorkPackage', schema => SCHEMA-WORK-PACKAGE, packageId => new-ulid(), issuer => { kind => 'test', id => 't' }, issuedAt => now-stamp(),
+            agent => { id => $loaded.id, digest => $loaded.digest }, placement => PLACEMENT-CLIENT,
+            workspace => { kind => 'none', ownership => 'caller' }, objective => 'sign me',
+            completion => { conditions => ['done'] }, capabilities => { granted => [] });
+    }
+    my $script = temp-dir().add('script.json');
+    $script.spurt(encode-json([ %( kind => 'assert', condition => 1, met => True, proof => 'ok' ) ]));
+    for False, True -> $keyed {
+        my $h = temp-dir;
+        new-key($h) if $keyed;
+        my $receipt = temp-dir().add('receipt.json');
+        my ($rc, $out, $err) = x321('run', '--package-dir', $helper.Str, '--package', '-', '--adapter', 'fake', '--receipt', $receipt.Str,
+            :in(to-wire('WorkPackage', pkg()) ~ "\n"), :env(X321_HOME => $h.Str, DO321_FAKE_SCRIPT => '@' ~ $script.Str));
+        is $rc, 0, "a run {$keyed ?? 'with' !! 'without'} a key under the home completes" or diag $err;
+        my %w = parse-json($receipt.slurp);
+        my %last = parse-json($out.lines.grep(*.trim).tail);
+        if $keyed {
+            ok %w<signature>.defined && %last<signature>.defined, 'the receipt is signed, in the file and on the wire';
+            is verify-receipt(%w, load-key($h)<publicKey>), load-key($h)<keyId>, 'and verifies under the home key';
+            is %w<receiptDigest>, receipt-digest(%w), 'with its digest still over the content alone';
+        }
+        else {
+            nok %w<signature>.defined, 'without a key the receipt is unsigned, as before';
+        }
+    }
+}
+
+done-testing;

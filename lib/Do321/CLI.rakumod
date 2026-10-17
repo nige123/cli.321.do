@@ -14,6 +14,7 @@ use Do321::Shape;
 use Do321::Protocol;
 use Do321::Async;
 use Do321::Digest;
+use Do321::Keys;
 use Do321::Trust;
 use Do321::Tool;
 use Do321::Adapter;
@@ -178,6 +179,8 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'packages' { return cmd-packages($env, @rest[1 .. *]) }
         when 'trust'    { return cmd-trust($env, @rest[1 .. *]) }
         when 'doctor'   { return cmd-doctor($env, @rest[1 .. *]) }
+        when 'key'      { return cmd-key($env, $g, @rest[1 .. *]) }
+        when 'receipt'  { return cmd-receipt($env, $g, @rest[1 .. *]) }
         when 'hooks'    { return cmd-hooks($env, $g, @rest[1 .. *]) }
         when 'harness'  { return cmd-harness($env, $g, @rest[1 .. *]) }
         when 'hook'     { return cmd-hook($env, @rest[1 .. *]) }
@@ -199,6 +202,78 @@ sub help-ctx(Env $env --> Hash) {
 }
 
 #| `321 help [<topic>]`: one screen at a time, each ending with Next.
+# ------------------------------------------------------------------ key
+
+#| The runtime's signing key: show it, or make one.  With a key under the
+#| home every receipt this 321 writes is signed over its digest; the
+#| public half is what an issuer pins to check them.
+sub cmd-key(Env $env, Global $g, @args --> Int) {
+    my $home = home-of($env);
+    my $sub = @args ?? @args[0] !! 'show';
+    given $sub {
+        when 'new' {
+            my %pub = try new-key($home);
+            if $! { $env.stderr.say("321 key: {$!.message}"); return EXIT-FAILED }
+            if $g.json-out { $env.stdout.say(encode-json(%pub)); return 0 }
+            $env.stdout.say("key {%pub<keyId>} made at {key-path($home)}; receipts from this 321 are signed with it from now on.");
+            $env.stdout.say("public key: {%pub<publicKey>}");
+            $env.stdout.say(next-text('pin the public key where receipts are checked', '321 key'));
+            0;
+        }
+        when 'show' {
+            my $k = try load-key($home);
+            if $! { $env.stderr.say("321 key: {$!.message}"); return EXIT-FAILED }
+            without $k {
+                if $g.json-out { $env.stdout.say(encode-json(%())); return 0 }
+                $env.stdout.say("No signing key at {key-path($home)}: receipts from this 321 are unsigned.");
+                $env.stdout.say(next-text('make one', '321 key new'));
+                return 0;
+            }
+            my %pub = public-part(%$k);
+            if $g.json-out { $env.stdout.say(encode-json(%pub)); return 0 }
+            $env.stdout.say("key {%pub<keyId>} at {key-path($home)}");
+            $env.stdout.say("public key: {%pub<publicKey>}");
+            0;
+        }
+        default { $env.stderr.say("321 key: unknown subcommand \"$sub\" (show, new)"); EXIT-USAGE }
+    }
+}
+
+# -------------------------------------------------------------- receipt
+
+#| Check a receipt file: its digest against its content, and its signature
+#| against a public key (--key <base64>, else this home's own).
+sub cmd-receipt(Env $env, Global $g, @args --> Int) {
+    my $sub = @args ?? @args[0] !! '';
+    unless $sub eq 'verify' {
+        $env.stderr.say("321 receipt: say what to do: 321 receipt verify <file> [--key <base64>]");
+        return EXIT-USAGE;
+    }
+    my ($file, $key) = (Str, Str);
+    my @rest = @args[1 .. *];
+    my $i = 0;
+    while $i < @rest {
+        given @rest[$i] {
+            when '--key' { $i++; $key = @rest[$i] // Str }
+            when /^ '--key=' (.*) $/ { $key = ~$0 }
+            default { $file = $_ }
+        }
+        $i++;
+    }
+    without $file { $env.stderr.say('321 receipt verify: which file?'); return EXIT-USAGE }
+    my $r = try parse-json($file.IO.slurp);
+    if $! || $r !~~ Associative { $env.stderr.say("321 receipt verify: {$file} is not a receipt: {$!.message // 'not a JSON object'}"); return EXIT-FAILED }
+    without $key {
+        my $k = try load-key(home-of($env));
+        $key = $k<publicKey> with $k;
+    }
+    without $key { $env.stderr.say("321 receipt verify: no key to check against: give --key <base64>, or make this 321's own with '321 key new'"); return EXIT-USAGE }
+    my $id = try verify-receipt(%$r, $key);
+    if $! { $env.stderr.say("321 receipt verify: {$file}: {$!.message}"); return EXIT-FAILED }
+    $env.stdout.say("receipt {$r<receiptId>} for package {$r<packageId>}: digest matches its content and the signature verifies under key $id.");
+    0;
+}
+
 sub cmd-help(Env $env, @args --> Int) {
     my $topic = @args ?? @args[0].Str !! '';
     my $page = help-page($topic, help-ctx($env));
@@ -242,7 +317,7 @@ sub cmd-run(Env $env, Global $g, @args --> Int) {
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321 run: {$!.message}"); return EXIT-INTERNAL }
     my $opts = WireOptions.new(|%o, :stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :runner(runner-of($env)),
-        :signals($env.signals), :trust($cfg));
+        :signals($env.signals), :trust($cfg), :home(home-of($env).Str));
     serve(Cancel.new, $opts);
 }
 
@@ -1135,6 +1210,7 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$sink, :history-dir($run-dir.Str),
         :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8'))));
     $ctx.cancel;
+    %receipt = sign-receipt-if-keyed(%receipt, home-of($env));
     try $run-dir.add('receipt.json').spurt(to-pretty('RunReceipt', %receipt) ~ "\n");
     with %receipt<evidence><proposal> { try $run-dir.add('proposal.json').spurt(to-pretty('DeploymentProposal', $_) ~ "\n") }
     if $g.json-out { $out.say(to-wire('RunReceipt', %receipt)) }

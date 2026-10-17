@@ -84,6 +84,9 @@ constant REFERENCE is export = q:to/END/;
       321 packages builtin prompt   write the built-in prompt-only package under ~/.321/packages and print its path
       321 trust show | check
       321 doctor [--json]           installed adapters and what each actually enforces, and bound tools
+      321 key [new]                 this 321's receipt-signing key: show it, or make one
+      321 receipt verify <file> [--key <base64>]
+                                    a receipt's digest against its content, its signature against a key
 
     Harnesses and what protects the work in them:
       321 harness detect [--workspace <dir>] [--json]
@@ -186,7 +189,8 @@ sub page-receipt(%ctx --> Str) {
       Tool:      an external call, with the exact arguments used
       Proposal:  a deployment plan; a plan is not an approval
       Cost:      what the harness reported; "none" means no model was used
-      Receipt:   the whole record, as JSON, for anyone who needs to check
+      Receipt:   the whole record, as JSON, for anyone who needs to check;
+                 signed over its digest when this 321 has a key (321 key new)
 
     Exit codes: 0 completed, 2 blocked, 3 stopped, 4 failed, 5 denied,
                 64 usage, 65 malformed input, 70 internal error

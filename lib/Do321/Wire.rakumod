@@ -30,6 +30,7 @@ use Do321::Protocol;
 use Do321::Async;
 use Do321::Trust;
 use Do321::Run;
+use Do321::Keys;
 
 constant EXIT-COMPLETED is export = 0;
 constant EXIT-BLOCKED   is export = 2;
@@ -73,6 +74,7 @@ class WireOptions is export {
     has $.trust;                        # a Trust Config, or Any
     has Runner $.runner;
     has Bool $.signals = False;         # SIGTERM and SIGINT become a stop directive
+    has Str $.home = '';                # ~/.321 (or X321_HOME): where a signing key would be
 }
 
 #| Lines from a handle, pulled one at a time, so the first frame can be
@@ -301,6 +303,7 @@ sub serve(Cancel $ctx, WireOptions $opts --> Int) is export {
     if $! { %receipt = $opts.runner.deny($wp, 'the agent package could not be loaded', [$!.message], $run-options) }
     else { %receipt = $opts.runner.run($run-ctx, $wp, $agent, $run-options) }
     $run-ctx.cancel;
+    %receipt = sign-receipt-if-keyed(%receipt, ($opts.home ne '' ?? $opts.home !! (%*ENV<X321_HOME> // $*HOME.add('.321').Str)).IO);
     trace('serve: run ended ' ~ %receipt<status>);
     if $opts.receipt-path ne '' {
         try $opts.receipt-path.IO.spurt(to-pretty('RunReceipt', %receipt) ~ "\n");

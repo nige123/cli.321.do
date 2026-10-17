@@ -609,6 +609,12 @@ sub validate-run-receipt(%r --> Problems) is export {
     if $c.require('receiptDigest', %r<receiptDigest>) {
         $c.add('receiptDigest', "does not match the receipt's content") if receipt-digest(%r) ne %r<receiptDigest>;
     }
+    # a signature, when there is one, has a shape; whether it verifies needs a key, and is a separate question
+    with %r<signature> -> %s {
+        $c.require('signature.keyId', %s<keyId>);
+        $c.add('signature.algorithm', 'must be ed25519') if $c.require('signature.algorithm', %s<algorithm>) && %s<algorithm> ne 'ed25519';
+        $c.require('signature.value', %s<value>);
+    }
     $c;
 }
 

@@ -248,6 +248,15 @@ condition list, so the issuer can prove the receipt answers the package it
 issued, condition by condition. Its `receiptDigest` is over its own
 canonical content.
 
+A receipt can also be signed. `321 key new` makes this 321 an Ed25519 key
+under `~/.321/key.json` (or `X321_HOME`); from then on every receipt it
+writes carries `signature` over its `receiptDigest`, and `321 key` shows
+the public half for an issuer to pin. `321 receipt verify <file> [--key
+<base64>]` checks a receipt's digest against its content and its signature
+against that key. Without a key receipts are unsigned, as before; the
+digest check does not depend on the signature, and a receipt that was
+signed cannot be altered and re-digested without the key.
+
 ## Tools, deployment planning and the execution boundary
 
 A package's deterministic procedure may reach an external program through
