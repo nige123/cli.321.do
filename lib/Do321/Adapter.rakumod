@@ -911,7 +911,7 @@ sub consume-stream(@lines, $transcript, Control $ctl --> List) is export {
 #| What it does not enforce, and says so: repo_scope, network_deny,
 #| live_steer, pause.
 class ClaudeCode does Adapter is export {
-    has Str $.binary = '';           # '' means "claude"; the CLI sets it from DO321_CLAUDE_BINARY
+    has Str $.binary = '';           # '' means "claude"; the CLI sets it from DO_321_CLAUDE_BINARY
     has Numeric $.kill-wait = 15;
     has $.stderr;                    # where the harness's stderr is teed; Any discards
     has $.transcript;                # readable transcript of the stream; Any discards

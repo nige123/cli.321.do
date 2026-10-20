@@ -506,11 +506,11 @@ class DirectiveState {
 #| here reads an IZ4.  Procedures (no model) are outside all of this.
 
 #| The 321 command a harness should call back from this run's hooks: this
-#| very program.  X321_HOOK_SELF overrides it (the suite runs from
+#| very program.  DO_321_HOOK_SELF overrides it (the suite runs from
 #| source).  '' when the runtime cannot name itself, which is reported as
 #| a gap, never papered over.
 sub run-hook-self(--> Str) is export {
-    with %*ENV<X321_HOOK_SELF> { return $_ if $_ ne '' }
+    with %*ENV<DO_321_HOOK_SELF> { return $_ if $_ ne '' }
     my $exe = $*EXECUTABLE.Str;
     $exe.IO.basename ~~ m:P5/^(rakupp|raku|rakudo|perl6)/ ?? '' !! $exe;
 }
@@ -887,7 +887,7 @@ class Session is export {
             $!hook-log = $*TMPDIR.add("321-hooks-{%!receipt<runId>}-{(^1_000_000).pick}.ndjson").Str;
             try $!hook-log.IO.spurt('');
         }
-        %( hook-controls => %by, hook-self => run-hook-self(), hook-env => %( X321_HEADLESS => '1', X321_HOOK_LOG => $!hook-log ) );
+        %( hook-controls => %by, hook-self => run-hook-self(), hook-env => %( DO_321_HEADLESS => '1', DO_321_HOOK_LOG => $!hook-log ) );
     }
 
     #| Read what the hooks reported since the last look.  A refusal or a

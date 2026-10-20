@@ -29,7 +29,7 @@ sub dev-trust(Bool :$prefer-fake = True --> IO::Path) {
 #| Run the CLI with a fresh home; returns (code, stdout, stderr, home).
 sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     my $home = temp-dir();
-    my %e = X321_HOME => $home.Str, |%env;
+    my %e = DO_321_HOME => $home.Str, |%env;
     my ($rc, $out, $err) = x321(|($trust.defined ?? ('--trust', $trust.Str) !! ()), |@args, :env(%e), :$in);
     ($rc, $out, $err, $home);
 }
@@ -37,7 +37,7 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
 # ---- usage and reserved words ------------------------------------------------
 {
     my ($rc, $out) = cli(IO::Path, 'help');
-    ok $rc == 0 && $out.contains('321 <agent> <request...>'), 'help';
+    ok $rc == 0 && $out.contains(' <request...>') && $out.contains('321 help more'), 'help';
     ($rc, $out, my $err) = cli(IO::Path);
     is $rc, EXIT-USAGE, 'no args is a usage error';
     ($rc, $out, $err) = cli(IO::Path, '--bogus', 'helper', 'x');
@@ -118,7 +118,7 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     ($rc, $out) = cli($tp, 'packages', 'show', 'helper');
     ok $rc == 0 && $out.contains('administrator-pinned') && $out.contains('procedures:'), 'packages show' or diag $out;
     ($rc, $out) = cli($tp, 'trust', 'check');
-    ok $rc == 0 && $out.contains('ok   example.test/helper'), 'trust check' or diag $out;
+    ok $rc == 0 && $out.contains('✓ example.test/helper'), 'trust check' or diag $out;
     ($rc, $out) = cli($tp, 'trust', 'show');
     ok $rc == 0 && $out.contains('alias helper -> example.test/helper'), 'trust show';
     ($rc, $out) = cli($tp, 'doctor');
@@ -132,7 +132,7 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
         keys => [ %( keyId => key-id($pub), publicKey => encode-public-key($pub) ), ],
         packages => { helper => { path => $signed.Str, version => '1.2.0', digest => $d } } } } });
     ($rc, $out) = cli($verified, 'trust', 'check');
-    ok $rc == 0 && $out.contains('ok   example.test/helper (verified)'), 'trust check verifies a signed pin' or diag $out;
+    ok $rc == 0 && $out.contains('✓ example.test/helper (verified)'), 'trust check verifies a signed pin' or diag $out;
     my $bad = trust-file({ schema => SCHEMA-TRUST-CONFIG, aliases => { run => 'local/x' } });
     ($rc, $out, my $err) = cli($bad, 'agents');
     ok $rc == EXIT-INTERNAL && $err.contains('reserved'), 'a reserved alias is refused at load';
@@ -143,7 +143,7 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
 # ---- shell does not imply network, and the grant must be explicit ---------------
 {
     my $tp = dev-trust(:!prefer-fake);   # the only visible adapter is claude_code, which cannot deny the network
-    my %env = X321_CLAUDE_BINARY => fake-claude().Str, FAKE_CLAUDE_MODE => 'complete';
+    my %env = DO_321_CLAUDE_BINARY => fake-claude().Str, FAKE_CLAUDE_MODE => 'complete';
     my ($rc, $out, $err) = cli($tp, '--grant', 'shell.run', 'helper', 'build something', :%env);
     ok $rc == EXIT-DENIED && $out.contains('network_deny'), 'a shell without a network grant is denied naming network_deny' or diag "$out\n$err";
     ($rc, $out, $err) = cli($tp, '--grant', 'shell.run', '--network', 'open', '--adapter', 'claude_code', 'helper', 'build something', :%env);
@@ -209,7 +209,7 @@ sub operator-env(Bool $bound, *%extra --> List) {
 # operator go executes under assumed approval when execution is enabled and a person is at the terminal
 {
     my $tp = operator-trust();
-    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live', DO321_INTERACTIVE => '1');
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live', DO_321_INTERACTIVE => '1');
     my ($rc, $out, $err, $home) = cli($tp, 'op', 'go', 'alpha.web', 'live', :env(%$env));
     is $rc, 0, 'the go completes' or diag "$out\n$err";
     ok $err.contains('operator approval assumed'), 'the assumed-approval note is on stderr' or diag $err;

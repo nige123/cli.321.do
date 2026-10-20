@@ -16,7 +16,7 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
 
 # ---- absent: the controller does not apply ----------------------------------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
+    temp %*ENV<DO_321_IZ4> = stub-iz4();
     my $bare = iz4-workspace(:!iz4);
     is $iz4.discover($bare.Str).elems, 0, 'no IZ4: the controller does not apply';
     is $iz4.discover('').elems, 0, 'no workspace: it does not apply';
@@ -24,7 +24,7 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
 
 # ---- present and driven -----------------------------------------------------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
+    temp %*ENV<DO_321_IZ4> = stub-iz4();
     my $ws = iz4-workspace();
     $ws.add('src').mkdir;
     my %d = $iz4.discover($ws.add('src').Str);
@@ -89,14 +89,14 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
 {
     my $ws = iz4-workspace();
     {
-        temp %*ENV<X321_IZ4> = '/nonexistent/iz4';
+        temp %*ENV<DO_321_IZ4> = '/nonexistent/iz4';
         temp %*ENV<PATH> = '/nonexistent';
         my %d = $iz4.discover($ws.Str);
         ok %d<subject> eq $ws.add('IZ4').Str && !%d<available> && %d<reason>.contains('not installed'), 'no iz4: the IZ4 is seen and reported as not driven';
         is $iz4.check-change($ws.Str).result, RESULT-UNAVAILABLE, 'and a check is unavailable, not a pass';
     }
     {
-        temp %*ENV<X321_IZ4> = stub-iz4();
+        temp %*ENV<DO_321_IZ4> = stub-iz4();
         temp %*ENV<STUB_OLD> = '1';
         my %d = $iz4.discover($ws.Str);
         ok !%d<available> && %d<reason>.contains('no machine interface'), 'an iz4 from before the machine interface is reported as such' or diag %d.raku;
@@ -104,7 +104,7 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
         ok $v.result eq RESULT-UNAVAILABLE && !$v.ran && !$v.stops, 'its checks are unavailable';
     }
     {
-        temp %*ENV<X321_IZ4> = stub-iz4();
+        temp %*ENV<DO_321_IZ4> = stub-iz4();
         temp %*ENV<STUB_INVALID> = '1';
         my %d = $iz4.discover($ws.Str);
         ok !%d<available> && %d<reason>.contains('invalid'), 'an invalid IZ4 is not driven, and the reason says why';
@@ -153,7 +153,7 @@ ok !controller-named('nope').defined, 'and an unknown one is not invented';
     my $real = on-path('iz4');
     my $ok = $real.defined && do { my $p = run $real.Str, 'discover', '--json', :out, :err, :cwd(temp-dir().Str); my $o = $p.out.slurp(:close); $p.err.slurp(:close); $o.contains('iz4-discover/') };
     if $ok {
-        temp %*ENV<X321_IZ4> = $real.Str;
+        temp %*ENV<DO_321_IZ4> = $real.Str;
         my $ws = iz4-workspace(:!iz4);
         is IZ4.new.discover($ws.Str).elems, 0, 'real iz4: no IZ4, does not apply';
         my $p = run $real.Str, 'init', '--for-what=A test.', '--for-who=Testers.', '--namespace=test.example', '--/agents', :cwd($ws.Str), :out, :err; $p.out.slurp(:close); $p.err.slurp(:close);

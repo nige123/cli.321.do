@@ -29,7 +29,7 @@ constant LEVEL-LOCAL       is export = 'local';
 constant MANIFEST-FILE is export = 'agent.json';
 
 #| Reserved names an alias may never shadow.
-constant RESERVED is export = <run agents packages trust doctor help version hooks hook harness iz4>;
+constant RESERVED is export = <run agents packages trust doctor help version hooks hook harness iz4 status key receipt>;
 
 class X::Do321::Trust is Exception is export {
     has Str $.message;
@@ -37,9 +37,9 @@ class X::Do321::Trust is Exception is export {
 
 sub trust-error(Str $m) { X::Do321::Trust.new(message => $m).throw }
 
-#| ~/.321/trust.json, or X321_TRUST.
+#| ~/.321/trust.json, or DO_321_TRUST.
 sub default-trust-path(--> IO::Path) is export {
-    return %*ENV<X321_TRUST>.IO if %*ENV<X321_TRUST>;
+    return %*ENV<DO_321_TRUST>.IO if %*ENV<DO_321_TRUST>;
     $*HOME.add('.321').add('trust.json');
 }
 

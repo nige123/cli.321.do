@@ -1,0 +1,128 @@
+# `321 status`: what is going on with this 321, on one screen, ending with
+# the next step the newest run that needs a person is waiting for.  It is
+# the runtime's own state, never an agent called "status".
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+use Do321::Help;
+
+sub trust-file(%cfg --> IO::Path) {
+    my $p = temp-dir().add('trust.json');
+    $p.spurt(to-wire('TrustConfig', load('TrustConfig', %cfg)));
+    $p;
+}
+
+sub operator-trust(--> IO::Path) {
+    my $dir = fixture('example.test/operator');
+    trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { operator => { path => $dir.Str, version => '0.1.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { op => 'example.test/operator' } });
+}
+
+#| Run the CLI in a given home (so runs accumulate across calls), from an
+#| empty directory (so no enclosing repository becomes the workspace).
+sub cli(IO::Path $home, IO::Path $trust, *@args, :%env --> List) {
+    my %e = DO_321_HOME => $home.Str, DP_BIN => '', DP_EXECUTE => '', |%env;
+    my ($rc, $out, $err) = x321(|($trust.defined ?? ('--trust', $trust.Str) !! ('--trust', $home.add('no-trust.json').Str)), |@args, :env(%e), :cwd(temp-dir()));
+    ($rc, $out, $err);
+}
+
+sub has-next(Str $text --> Bool) { so $text ~~ / 'next:  ' \S .* \n \h+ \S / }
+constant SCREEN-LINES = 24;
+
+# ---- a fresh 321: nothing configured, no runs ---------------------------------------
+{
+    my $home = temp-dir();
+    my ($rc, $out, $err) = cli($home, IO::Path, 'status');
+    is $rc, 0, 'status exits 0' or diag $err;
+    like $out, / ^ ['❮▣❯' | '<#>'] ' 321 status: ' \d+ '.' \d+ .* ' on ' /, 'it opens with its header, naming the runtime and the host' or diag $out;
+    ok $out.contains('here:') && $out.contains('no workspace'), 'from an empty directory there is no workspace' or diag $out;
+    like $out, / ^^ 'agents:' \s+ 'none' /, 'no agents' or diag $out;
+    ok $out.contains('dp not bound') && $out.contains('execute not enabled'), 'the deploy binding is said as it is' or diag $out;
+    like $out, / ^^ 'receipts:' \s+ 'unsigned' /, 'no signing key yet' or diag $out;
+    like $out, / ^^ 'last runs:' \s+ 'none yet' /, 'no runs yet' or diag $out;
+    ok has-next($out) && $out.contains('321 help trust'), 'the next step is to configure an agent' or diag $out;
+    ok $out.lines.elems <= SCREEN-LINES, "one screen ({$out.lines.elems} lines)";
+    ok !$out.contains('what should status do'), 'status is never read as an agent';
+}
+
+# ---- it is a reserved word ------------------------------------------------------------
+{
+    my $dir = fixture('example.test/operator');
+    my $bad = trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { operator => { path => $dir.Str, version => '0.1.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { status => 'example.test/operator' } });
+    my ($rc, $out, $err) = cli(temp-dir(), $bad, 'agents');
+    ok $rc != 0 && $err.contains('reserved'), 'an alias "status" is refused at load' or diag $err;
+    ($rc, $out, $err) = cli(temp-dir(), IO::Path, 'status', 'extra');
+    ok $rc == EXIT-USAGE && $err.contains("not 'extra'") && $err.contains('321 status --runs N'), 'a stray argument is a usage error that shows how status is called' or diag $err;
+}
+
+# ---- runs accumulate, and the next step follows the newest one that needs a person ------
+{
+    my $home = temp-dir();
+    my $tp = operator-trust();
+    my $log = temp-dir().add('engine.log');
+    my %bound = DP_BIN => fake-engine().Str, FAKE_ENGINE_LOG => $log.Str;
+
+    # a failure first: it is the newest run, so it is the news
+    my ($rc, $out) = cli($home, $tp, '--non-interactive', 'op', 'status', :env(%( DP_BIN => '' )));
+    is $rc, EXIT-FAILED, 'an unbound engine fails';
+    ($rc, $out) = cli($home, $tp, 'status', :env(%bound));
+    ok $out.contains('FAILED') && $out.contains('op') && $out.contains('status'), 'the failed run is listed with its agent and request' or diag $out;
+    ok $out.contains('the last run failed') && $out ~~ / \n \h+ '321 op status' \n /, 'the next step is to fix the cause and ask again' or diag $out;
+    like $out, / ^^ 'agents:' \s+ '1 configured (op)' /, 'the alias is shown' or diag $out;
+    ok $out.contains('a receipt says what ran and what changed, never that the work is right'), 'and what a receipt is not';
+    ok $out.contains('dp bound') && $out.contains('execute not enabled'), 'bound but not enabled, said as it is' or diag $out;
+
+    # then a success: the older failure is no longer the news
+    ($rc, $out) = cli($home, $tp, 'op', 'status', :env(%bound));
+    is $rc, 0, 'status by alias completes';
+    ($rc, $out) = cli($home, $tp, 'status', :env(%bound));
+    ok $out.lines.grep(*.contains('COMPLETED')).elems == 1 && $out.lines.grep(*.contains('FAILED')).elems == 1, 'both runs are listed' or diag $out;
+    ok !$out.contains('the last run failed') && $out ~~ / \n \h+ '321 op <request...>' \n /, 'an older failure that later runs moved past is not news' or diag $out;
+    ok $out.lines.first(*.contains('COMPLETED')) ~~ /^ \s+ \d\d ':' \d\d \s/, 'a run from today shows its time' or diag $out;
+
+    # a run waiting on an answer wins over everything newer
+    ($rc, $out) = cli($home, $tp, '--non-interactive', 'op', 'plan', 'live', :env(%bound));
+    is $rc, EXIT-BLOCKED, 'an ambiguous plan blocks';
+    ($rc, $out) = cli($home, $tp, 'op', 'status', :env(%bound));
+    ($rc, $out) = cli($home, $tp, 'status', :env(%bound));
+    ok $out.contains('BLOCKED') && $out.contains('Which service'), 'the blocked run shows its question' or diag $out;
+    ok $out.contains('a run is waiting on an answer') && $out ~~ / \n \h+ '321 op plan live <answer>' \n /, 'and the next step is to answer it' or diag $out;
+    ok $out.lines.elems <= SCREEN-LINES, "still one screen ({$out.lines.elems} lines)";
+
+    # --runs limits the list; --json is the same facts for a machine
+    ($rc, $out) = cli($home, $tp, 'status', '--runs', '1', :env(%bound));
+    is $out.lines.grep({ $_ ~~ /^ \s+ \d\d ':' \d\d/ }).elems, 1, '--runs 1 lists one run';
+    ok $out.contains('1 of 4'), 'and says how many there are' or diag $out;
+    ($rc, $out) = cli($home, $tp, '--json', 'status', :env(%bound));
+    my %d = parse-json($out);
+    is %d<schema>, 'status.v1', 'json schema';
+    is %d<runs><total>, 4, 'json counts the runs';
+    is %d<runs><recent>[0]<status>, 'completed', 'newest first';
+    is %d<trust><agents>[0], 'op', 'json names the alias';
+    ok %d<deploy><bound> && %d<deploy><execute> eq '', 'json carries the binding';
+    ok !$out.contains('next:'), 'json carries no next line';
+}
+
+# ---- the workspace and its IZ4 ---------------------------------------------------------
+{
+    my $home = temp-dir();
+    my $ws = temp-dir();
+    run 'git', '-C', $ws.Str, 'init', '-q';
+    my ($rc, $out) = cli($home, IO::Path, '--workspace', $ws.Str, 'status');
+    ok $out.contains("{$ws.resolve} (git), no IZ4") || $out.contains("{$ws} (git), no IZ4"), 'a repository without an IZ4 says so' or diag $out;
+    $ws.add('IZ4').spurt("IZ4\n\nIS FOR WHAT?\nA test.\n\nIS FOR WHO?\nThe suite.\n");
+    ($rc, $out) = cli($home, IO::Path, '--workspace', $ws.Str, 'status');
+    ok $out.contains('IZ4 '), 'with an IZ4 file the line says how it stands' or diag $out;
+    ok !$out.contains('enforced'), 'and never claims enforcement nothing wired' or diag $out;
+}
+
+done-testing;

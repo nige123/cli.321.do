@@ -47,8 +47,8 @@ class Answering does Adapter {
     method prompts { @!specs.map(*.prompt) }
     method run(Cancel $, Spec $spec, Control $ --> Outcome) {
         @!specs.push($spec);
-        if $spec.hook-env<X321_HOOK_LOG>:exists {
-            my $fh = $spec.hook-env<X321_HOOK_LOG>.IO.open(:a);
+        if $spec.hook-env<DO_321_HOOK_LOG>:exists {
+            my $fh = $spec.hook-env<DO_321_HOOK_LOG>.IO.open(:a);
             $fh.say(encode-json($_)) for @!fire;
             $fh.close;
         }
@@ -68,8 +68,8 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
 
 # ---- governed, with a harness that has every control ------------------------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
-    temp %*ENV<X321_HOOK_SELF> = '/opt/bin/321';
+    temp %*ENV<DO_321_IZ4> = stub-iz4();
+    temp %*ENV<DO_321_HOOK_SELF> = '/opt/bin/321';
     my $ws = iz4-workspace();
     my $said = temp-dir().add('said.txt');
     temp %*ENV<STUB_SUMMARY_OUT> = $said.Str;
@@ -93,9 +93,9 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     my $spec = $a.specs[0];
     is-deeply $spec.hook-controls<iz4>.sort.List, (CTRL-FILESYSTEM-GUARD, CTRL-POST-RUN, CTRL-SHELL-GUARD).sort.List, 'the guards and the end-of-run check are registered for the run';
     is $spec.hook-self, '/opt/bin/321', 'calling back this 321';
-    ok $spec.hook-env<X321_HEADLESS> eq '1' && $spec.hook-env<X321_HOOK_LOG> ne '', 'headless, with somewhere for the hooks to report';
+    ok $spec.hook-env<DO_321_HEADLESS> eq '1' && $spec.hook-env<DO_321_HOOK_LOG> ne '', 'headless, with somewhere for the hooks to report';
     ok !$ws.add('.claude').e && !$ws.add('.fake-harness.json').e, 'nothing was written into the caller\'s workspace';
-    ok !$spec.hook-env<X321_HOOK_LOG>.IO.e, 'and the hook log is gone once it has been read';
+    ok !$spec.hook-env<DO_321_HOOK_LOG>.IO.e, 'and the hook log is gone once it has been read';
 
     # the evidence
     my %g = governed(%r);
@@ -129,7 +129,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
 
 # ---- the report may be in what the model said, not in its short summary ---------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
+    temp %*ENV<DO_321_IZ4> = stub-iz4();
     my $ws = iz4-workspace();
     my $said = temp-dir().add('said.txt');
     temp %*ENV<STUB_SUMMARY_OUT> = $said.Str;
@@ -140,8 +140,8 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
 
 # ---- what the finished work can come back as ---------------------------------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
-    temp %*ENV<X321_HOOK_SELF> = '/opt/bin/321';
+    temp %*ENV<DO_321_IZ4> = stub-iz4();
+    temp %*ENV<DO_321_HOOK_SELF> = '/opt/bin/321';
     my $ws = iz4-workspace();
     my sub ran(*%env) {
         my %old = %env.keys.map({ $_ => %*ENV{$_} });
@@ -184,7 +184,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     {
         my $trust = temp-dir().add('trust.json');
         $trust.spurt(encode-json(%( schema => 'trust-config.v1', policy => %( standingApprovals => [ %( action => 'deploy.execute', target => '*', approvedBy => 'operator/test' ), ] ) )));
-        temp %*ENV<X321_TRUST> = $trust.Str;
+        temp %*ENV<DO_321_TRUST> = $trust.Str;
         %r = ran(STUB_VERIFY => 'needs_human');
         is %r<status>, STATUS-BLOCKED, 'a standing approval (which is for deploys) leaves an IZ4 needs_human blocked';
         ok governed(%r)<humanDecision>.contains('none has'), 'and the receipt still says no person has agreed';
@@ -199,8 +199,8 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
 
 # ---- a harness with fewer capabilities: degraded, and it says so ---------------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
-    temp %*ENV<X321_HOOK_SELF> = '/opt/bin/321';
+    temp %*ENV<DO_321_IZ4> = stub-iz4();
+    temp %*ENV<DO_321_HOOK_SELF> = '/opt/bin/321';
     my $ws = iz4-workspace();
     my $weak = Answering.new(:summary($report), :has-controls(%( CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ADVISES )));
     my %r = go($weak, $ws);
@@ -228,7 +228,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
 
 # ---- outside all of this ---------------------------------------------------------
 {
-    temp %*ENV<X321_IZ4> = stub-iz4();
+    temp %*ENV<DO_321_IZ4> = stub-iz4();
     my $ws = iz4-workspace();
 
     my %wp = git-pkg($ws, 'note: a procedure');
@@ -257,7 +257,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
 {
     my $ws = iz4-workspace();
     {
-        temp %*ENV<X321_IZ4> = temp-dir().add('missing').Str;
+        temp %*ENV<DO_321_IZ4> = temp-dir().add('missing').Str;
         temp %*ENV<PATH> = temp-dir().Str;
         my $a = Answering.new(:summary('Changed the file. Done.'), :has-controls(%full), :carries-hooks);
         my %r = go($a, $ws);
@@ -269,7 +269,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
         ok %g<gaps>.grep(*.contains('not driven')), 'and the gap named';
     }
     {
-        temp %*ENV<X321_IZ4> = stub-iz4();
+        temp %*ENV<DO_321_IZ4> = stub-iz4();
         temp %*ENV<STUB_OLD> = '1';
         my %r = go(Answering.new(:summary($report), :has-controls(%full), :carries-hooks), $ws);
         ok @(%r<uncertain>).grep(*.contains('no machine interface')), 'an iz4 too old to be driven is reported the same way' or diag %r<uncertain>.raku;
@@ -293,7 +293,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
         esac
         SH
     $f.chmod(0o755);
-    temp %*ENV<X321_IZ4> = $f.Str;
+    temp %*ENV<DO_321_IZ4> = $f.Str;
     my $s = Session.make(runner(reg(Answering.new(:summary('x')))), git-pkg($ws, 'change it'), $agent, Options.new);
     $s.adapter = Answering.new(:summary('x'), :has-controls(%full));
     $s.apply-controllers;

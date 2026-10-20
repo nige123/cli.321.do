@@ -16,7 +16,7 @@ use Do321::Enforcement;
 my $cc = ClaudeCode.new(:binary<no-such-claude-binary>);
 my $iz4 = IZ4.new;
 my @wants = $iz4.wants;
-temp %*ENV<X321_IZ4> = stub-iz4();
+temp %*ENV<DO_321_IZ4> = stub-iz4();
 
 sub settings(IO::Path $ws) { parse-json($ws.add(CLAUDE-SETTINGS).slurp) }
 sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@($_<hooks>) }).map(*<command>).sort }

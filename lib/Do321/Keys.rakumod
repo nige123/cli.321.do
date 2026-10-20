@@ -2,7 +2,7 @@ unit module Do321::Keys;
 
 #| The runtime's own signing key, so a receipt can be shown to come from
 #| this 321 and not from anyone who learned the receipt's shape.  One
-#| Ed25519 key per home (~/.321/key.json, or X321_HOME), made on request
+#| Ed25519 key per home (~/.321/key.json, or DO_321_HOME), made on request
 #| by '321 key new' and never copied anywhere by 321 itself.  Its public
 #| half is what a work issuer pins to check receipts.
 #|

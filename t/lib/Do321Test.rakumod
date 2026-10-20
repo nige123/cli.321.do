@@ -1,7 +1,7 @@
 unit module Do321Test;
 
 #| Helpers the test suite shares: temp dirs, fixture copies, and one seam
-#| through which every CLI test runs the runtime, so DO321_TEST_BIN can
+#| through which every CLI test runs the runtime, so DO_321_TEST_BIN can
 #| point the suite at a compiled 321 (a Raku++ binary) and CI tests the
 #| executable it ships, not the source it came from.
 
@@ -52,9 +52,9 @@ sub read-lines(IO::Path $f --> List) is export {
 }
 
 #| The command that runs the runtime: the compiled binary named by
-#| DO321_TEST_BIN, else the source through rakupp (or raku).
+#| DO_321_TEST_BIN, else the source through rakupp (or raku).
 sub runtime-command(--> List) is export {
-    return (%*ENV<DO321_TEST_BIN>,) if %*ENV<DO321_TEST_BIN>;
+    return (%*ENV<DO_321_TEST_BIN>,) if %*ENV<DO_321_TEST_BIN>;
     my $root = repo-root();
     ($*EXECUTABLE, '-I', $root.add('lib').Str, $root.add('bin/321').Str);
 }
@@ -65,7 +65,10 @@ sub x321(*@args, Str :$in = '', :%env, IO::Path :$cwd --> List) is export {
     # The suite runs inside a repository that keeps an IZ4, with a real iz4
     # on PATH.  Unless a test supplies one, there is no iz4, so no run
     # here is put to the developer's own.
-    my %e = %*ENV, X321_IZ4 => '/nonexistent/iz4', %env;
+    # Likewise the deploy binding: a developer's shell may export DP_BIN and
+    # DP_EXECUTE, and a test that meant the fake engine must not reach the
+    # real one.  Only what a test passes in %env binds anything.
+    my %e = %*ENV, DO_321_IZ4 => '/nonexistent/iz4', DP_BIN => '', DP_EXECUTE => '', %env;
     my $proc = run |runtime-command(), |@args, :in, :out, :err, :env(%e), |($cwd ?? (:cwd($cwd.Str)) !! ());
     $proc.in.print($in);
     # Raku++ 5.1 returns the Proc from closing stdin; a child that exited

@@ -3,8 +3,8 @@ unit module Do321::CLI;
 #| The front door: `321 <agent> <request>` for people and `321 run` for
 #| machines, plus the small inspection commands.
 #|
-#| Reserved first words: run, agents, packages, trust, doctor, help,
-#| version.  Anything else is an agent alias or a canonical id.  A request
+#| Reserved first words are RESERVED in Do321::Trust (run, agents, status,
+#| help and the rest).  Anything else is an agent alias or a canonical id.  A request
 #| is the remaining words joined by single spaces; it becomes the objective
 #| of a WorkPackage and is never handed to a shell.
 
@@ -24,9 +24,10 @@ use Do321::Hooks;
 use Do321::Controller;
 use Do321::Enforcement;
 use Do321::Help;
+use Do321::Look;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.4.1';
+constant VERSION is export = '0.4.2';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
@@ -42,30 +43,30 @@ class Env is export {
 }
 
 #| The installed adapter set: the procedure executor and the fake (hidden,
-#| selectable only by name) and Claude Code.  X321_CLAUDE_BINARY names the
+#| selectable only by name) and Claude Code.  DO_321_CLAUDE_BINARY names the
 #| harness executable for an isolated test environment without touching
 #| PATH.
 sub default-registry($stderr --> Registry) is export {
-    # DO321_FAKE_SCRIPT is a test seam: a JSON list of procedure steps the
+    # DO_321_FAKE_SCRIPT is a test seam: a JSON list of procedure steps the
     # hidden fake adapter runs instead of its default script (the JSON
     # itself, or @<file> holding it), so the suite can drive every
     # directive path through the real entry point.
-    my $seam = %*ENV<DO321_FAKE_SCRIPT> // '';
+    my $seam = %*ENV<DO_321_FAKE_SCRIPT> // '';
     $seam = (try $seam.substr(1).IO.slurp) // '' if $seam.starts-with('@');
     my $script = $seam ne '' ?? (try parse-json($seam)) !! Any;
     $script = [ @$script.map({ load('ProcedureStep', $_) }) ] if $script ~~ Positional;
     Registry.new
         .register-hidden(new-procedure(:tools(default-tools())))
         .register-hidden(new-fake($script, :controls(fake-controls-seam())))
-        .register(ClaudeCode.new(:binary(%*ENV<X321_CLAUDE_BINARY> // ''), :stderr($stderr), :transcript($stderr)));
+        .register(ClaudeCode.new(:binary(%*ENV<DO_321_CLAUDE_BINARY> // ''), :stderr($stderr), :transcript($stderr)));
 }
 
-#| DO321_FAKE_CONTROLS is a test seam: a JSON object of control =>
+#| DO_321_FAKE_CONTROLS is a test seam: a JSON object of control =>
 #| strength that makes the hidden fake adapter stand in for a harness with
 #| exactly those controls, so a weaker environment can be shown through
 #| the real entry point.
 sub fake-controls-seam(--> Hash) {
-    my $seam = %*ENV<DO321_FAKE_CONTROLS> // '';
+    my $seam = %*ENV<DO_321_FAKE_CONTROLS> // '';
     return %() if $seam eq '';
     my $c = try parse-json($seam);
     $c ~~ Associative ?? %$c !! %();
@@ -116,6 +117,7 @@ sub parse-global(@args --> List) {
         my $a = @args[$i];
         return ($g, [ |@args[$i + 1 .. *] ]) if $a eq '--';
         return ($g, ['help', |@args[$i + 1 .. *]]) if $a eq '-h' || $a eq '--help';   # help is never an unknown option
+        return ($g, ['version']) if $a eq '--version';                                  # nor is version, out of habit
         last unless $a.starts-with('-');
         my ($name, $value, $has-value) = $a.contains('=') ?? (|$a.split('=', 2), True) !! ($a, '', False);
         my sub need() {
@@ -150,7 +152,7 @@ sub trust-of(Env $env --> Config) {
 
 sub home-of(Env $env --> IO::Path) {
     return $env.home.IO if $env.home ne '';
-    return %*ENV<X321_HOME>.IO if %*ENV<X321_HOME>;
+    return %*ENV<DO_321_HOME>.IO if %*ENV<DO_321_HOME>;
     $*HOME.add('.321');
 }
 
@@ -158,9 +160,14 @@ sub runner-of(Env $env --> Runner) { Runner.new(:adapters($env.adapters)) }
 
 #| Run the CLI and return the exit code.
 sub cli-main(Env $env is copy --> Int) is export {
+    adopt-old-names();
     $env = Env.new(:stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :args($env.args), :trust-path($env.trust-path),
         :home($env.home), :adapters(default-registry($env.stderr)), :interactive($env.interactive), :signals($env.signals))
         without $env.adapters;
+    # Names a person cites are shown in bold on a terminal; a document
+    # for a machine is never dressed.
+    emphasise-harnesses($env.adapters.all.grep({ .controls.elems > 0 }).map(*.name).List);
+    dress(False) if is-in('--json', $env.args);
     my ($g, $rest) = try parse-global($env.args);
     if $! {
         $env.stderr.say("321: {$!.message}");
@@ -170,7 +177,9 @@ sub cli-main(Env $env is copy --> Int) is export {
     my @rest = @$rest;
     $env = Env.new(:stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :args($env.args), :trust-path($g.trust-path),
         :home($env.home), :adapters($env.adapters), :interactive($env.interactive), :signals($env.signals)) if $g.trust-path ne '';
-    unless @rest { $env.stdout.print(help-page('', help-ctx($env))); return EXIT-USAGE }
+    unless @rest { $env.stdout.print(help-index(help-ctx($env))); return EXIT-USAGE }
+    # '321 status --help' is '321 help status'
+    return cmd-help($env, [@rest[0]]) if is-in(@rest[0], RESERVED) && @rest.grep('--help' | '-h');
     given @rest[0] {
         when 'help' | '-h' | '--help' { return cmd-help($env, @rest[1 .. *]) }
         when 'version' | '--version' { $env.stdout.say("321 {VERSION}"); return 0 }
@@ -179,6 +188,7 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'packages' { return cmd-packages($env, @rest[1 .. *]) }
         when 'trust'    { return cmd-trust($env, @rest[1 .. *]) }
         when 'doctor'   { return cmd-doctor($env, @rest[1 .. *]) }
+        when 'status'   { return cmd-status($env, $g, @rest[1 .. *]) }
         when 'key'      { return cmd-key($env, $g, @rest[1 .. *]) }
         when 'receipt'  { return cmd-receipt($env, $g, @rest[1 .. *]) }
         when 'hooks'    { return cmd-hooks($env, $g, @rest[1 .. *]) }
@@ -201,7 +211,15 @@ sub help-ctx(Env $env --> Hash) {
        dp-bound => ((%*ENV<DP_BIN> // '') ne ''), dp-bin => (%*ENV<DP_BIN> // '').Str, dp-execute => (%*ENV<DP_EXECUTE> // '').Str );
 }
 
-#| `321 help [<topic>]`: one screen at a time, each ending with Next.
+#| A command called wrongly: one line saying what was wrong, then that
+#| command's own help, to standard error, and the usage exit.
+sub usage-error(Env $env, Str $topic, Str $line = '' --> Int) {
+    $env.stderr.say("321 $topic: $line") if $line ne '';
+    with topic($topic) { $env.stderr.print(help-topic($_, help-ctx($env))) }
+    else { $env.stderr.print(help-for([$topic], help-ctx($env))[0]) }
+    EXIT-USAGE;
+}
+
 # ------------------------------------------------------------------ key
 
 #| The runtime's signing key: show it, or make one.  With a key under the
@@ -231,11 +249,14 @@ sub cmd-key(Env $env, Global $g, @args --> Int) {
             }
             my %pub = public-part(%$k);
             if $g.json-out { $env.stdout.say(encode-json(%pub)); return 0 }
-            $env.stdout.say("key {%pub<keyId>} at {key-path($home)}");
+            $env.stdout.say(header('key', "{%pub<keyId>} at {key-path($home)}"));
+            $env.stdout.say('');
             $env.stdout.say("public key: {%pub<publicKey>}");
+            $env.stdout.say('');
+            $env.stdout.say('Receipts from this 321 are signed with it. A signature says a receipt is as it was issued; it never says the work is right.');
             0;
         }
-        default { $env.stderr.say("321 key: unknown subcommand \"$sub\" (show, new)"); EXIT-USAGE }
+        default { usage-error($env, 'key', "there is no 'key $sub'") }
     }
 }
 
@@ -245,10 +266,7 @@ sub cmd-key(Env $env, Global $g, @args --> Int) {
 #| against a public key (--key <base64>, else this home's own).
 sub cmd-receipt(Env $env, Global $g, @args --> Int) {
     my $sub = @args ?? @args[0] !! '';
-    unless $sub eq 'verify' {
-        $env.stderr.say("321 receipt: say what to do: 321 receipt verify <file> [--key <base64>]");
-        return EXIT-USAGE;
-    }
+    return usage-error($env, 'receipt', $sub eq '' ?? 'say what to do' !! "there is no 'receipt $sub'") unless $sub eq 'verify';
     my ($file, $key) = (Str, Str);
     my @rest = @args[1 .. *];
     my $i = 0;
@@ -260,7 +278,7 @@ sub cmd-receipt(Env $env, Global $g, @args --> Int) {
         }
         $i++;
     }
-    without $file { $env.stderr.say('321 receipt verify: which file?'); return EXIT-USAGE }
+    without $file { return usage-error($env, 'receipt', 'which file?') }
     my $r = try parse-json($file.IO.slurp);
     if $! || $r !~~ Associative { $env.stderr.say("321 receipt verify: {$file} is not a receipt: {$!.message // 'not a JSON object'}"); return EXIT-FAILED }
     without $key {
@@ -271,14 +289,145 @@ sub cmd-receipt(Env $env, Global $g, @args --> Int) {
     my $id = try verify-receipt(%$r, $key);
     if $! { $env.stderr.say("321 receipt verify: {$file}: {$!.message}"); return EXIT-FAILED }
     $env.stdout.say("receipt {$r<receiptId>} for package {$r<packageId>}: digest matches its content and the signature verifies under key $id.");
+    $env.stdout.say('That says the receipt is as it was issued and what it records happened; it does not say the work is right.');
     0;
 }
 
+#| `321 help [<command>]`: one screen at a time.
 sub cmd-help(Env $env, @args --> Int) {
-    my $topic = @args ?? @args[0].Str !! '';
-    my $page = help-page($topic, help-ctx($env));
-    without $page { $env.stderr.print(unknown-topic($topic)); return EXIT-USAGE }
-    $env.stdout.print($page);
+    my ($text, $known) = help-for(@args.grep({ !.starts-with('-') }), help-ctx($env));
+    unless $known { $env.stderr.print($text); return EXIT-USAGE }
+    $env.stdout.print($text);
+    0;
+}
+
+# --------------------------------------------------------------- status
+
+#| One run's line on the status screen, from its directory under
+#| ~/.321/runs: when it started, which agent, what was asked, how it
+#| ended, and the question it is waiting on if it ended blocked.  A
+#| directory with a package but no receipt is a run that has not ended.
+sub run-summary(IO::Path $dir, %alias-of --> Hash) {
+    my %wp = try parse-json($dir.add('work-package.json').slurp);
+    my %r  = $dir.add('receipt.json').f ?? (try parse-json($dir.add('receipt.json').slurp)) // %() !! %();
+    my $id = (%wp<agent><id> // %r<agent><id> // '').Str;
+    my $agent = %alias-of{$id} // $id;
+    %(
+        packageId => $dir.basename,
+        startedAt => (%r<startedAt> // %wp<issuedAt> // '').Str,
+        agent     => $agent,
+        objective => (%wp<objective> // '').Str,
+        status    => (%r ?? %r<status>.Str !! 'running'),
+        blockedOn => (%r<blockedOn> // '').Str,
+        summary   => (%r<summary> // '').Str,
+        receipt   => $dir.add('receipt.json').Str,
+    );
+}
+
+#| "HH:MM" for today, "MM-DD HH:MM" for an earlier day, local time.
+sub when-text(Str $iso --> Str) {
+    return '     ' if $iso eq '';
+    my $d = try DateTime.new($iso).local;
+    return '     ' without $d;
+    my $hm = sprintf('%02d:%02d', $d.hour, $d.minute);
+    $d.Date eq Date.today ?? $hm !! sprintf('%02d-%02d %s', $d.month, $d.day, $hm);
+}
+
+sub trim-to(Str $s, Int $n --> Str) { $s.chars <= $n ?? $s !! $s.substr(0, $n - 1) ~ '…' }
+
+#| `321 status`: what is going on with this 321, on one screen: the
+#| runtime, the workspace and its IZ4, the agents, the deploy binding,
+#| receipt signing, the last runs, and the next step the newest run that
+#| needs a person is waiting for.  This is the runtime's own state; an
+#| agent's `status` request (321 <agent> status) is the engine's view of
+#| services, a different thing.
+sub cmd-status(Env $env, Global $g, @args --> Int) {
+    my $want = 5;
+    if @args && @args[0] eq '--runs' { $want = (@args[1] // '5').Int max 1 }
+    elsif @args && @args[0] ne '--json' { return usage-error($env, 'status', "it takes --runs N and --json, not '{@args[0]}'") }
+    my %ctx = help-ctx($env);
+    my $home = home-of($env);
+    my ($workspace, $kind) = resolve-workspace($g.workspace);
+    my $cfg = try trust-of($env);
+    my %alias-of = $cfg.defined ?? $cfg.aliases.kv.map(-> $a, $id { $id.Str => $a }).Hash !! %();
+
+    # the workspace and whether its IZ4 is enforced in a harness that is here
+    my $iz4 = $workspace ne '' ?? find-iz4-file($workspace) !! IO::Path;
+    # In the controller's own words: the headline iz4 status gives for each
+    # harness that is here (aware, enforced, ...), never a reading of ours.
+    my @harnesses;
+    if $iz4.defined && $iz4.f {
+        my $controller = controller-named('iz4');
+        for harness-adapters($env).grep({ .detect.available }) -> $a {
+            my %s = try enforcement-status($a, $controller, $workspace.IO);
+            next unless %s;
+            @harnesses.push(%( harness => $a.name, headline => (%s<headline> // '').Str ));
+        }
+    }
+    my $here = $workspace eq '' ?? 'no workspace (not inside a git repository)'
+        !! "$workspace ($kind)" ~ (($iz4.defined && $iz4.f)
+            ?? (@harnesses ?? ', IZ4 ' ~ @harnesses.map({ "{.<headline>.lc} in {.<harness>}" }).join('; ') !! ', IZ4 present')
+            !! ', no IZ4');
+
+    # receipt signing
+    my $k = try load-key($home);
+    my $signing = $k.defined ?? "signed with key {public-part(%$k)<keyId>}" !! 'unsigned (no key; 321 key new makes one)';
+
+    # the last runs, newest first
+    my $runs = $home.add('runs');
+    my @dirs = $runs.d ?? $runs.dir.grep(*.d).sort(*.basename).reverse !! ();
+    my @runs = @dirs.head($want).map({ run-summary($_, %alias-of) });
+    my $total = @dirs.elems;
+
+    if $g.json-out || is-in('--json', @args) {
+        $env.stdout.say(encode-json-pretty(%(
+            schema => 'status.v1', version => VERSION, host => $*KERNEL.hostname.Str,
+            workspace => %( path => $workspace, kind => $kind, iz4 => ($iz4.defined && $iz4.f ?? $iz4.Str !! ''), harnesses => @harnesses ),
+            trust => %( path => ($cfg.defined ?? $cfg.path.Str !! ''), exists => %ctx<trust-exists>, agents => %ctx<agents> ),
+            deploy => %( bound => %ctx<dp-bound>, bin => %ctx<dp-bin>, execute => %ctx<dp-execute> ),
+            receipts => %( signed => $k.defined, keyId => ($k.defined ?? public-part(%$k)<keyId> !! '') ),
+            runs => %( total => $total, recent => @runs ),
+        )));
+        return 0;
+    }
+
+    my $w = $env.stdout;
+    $w.say(header('status', "{VERSION} on {$*KERNEL.hostname}"));
+    $w.say('');
+    my sub row(Str $k, Str $v) { $w.say(sprintf('%-13s %s', $k, $v)) }
+    row('here:', $here);
+    my @agents = @(%ctx<agents>);
+    row('agents:', @agents
+        ?? "{@agents.elems} configured ({trim-to(@agents.join(', '), 40)}); trust: {$cfg.path}"
+        !! (%ctx<trust-exists> ?? "none configured in {$cfg.path}" !! 'none; no trust file yet'));
+    row('deploy:', (%ctx<dp-bound> ?? "dp bound ({%ctx<dp-bin>})" !! 'dp not bound (DP_BIN unset)')
+        ~ '; execute ' ~ (%ctx<dp-execute> ne '' ?? "enabled for {%ctx<dp-execute>}" !! 'not enabled here (DP_EXECUTE unset)'));
+    row('receipts:', $signing);
+    $w.say('');
+    if @runs {
+        row('last runs:', $total > @runs ?? "{@runs.elems} of $total (321 status --runs N for more)" !! "{@runs.elems} of $total");
+        for @runs -> %r {
+            my $line = sprintf('  %-11s %-14s %-30s %s', when-text(%r<startedAt>), trim-to(%r<agent>, 14), trim-to(%r<objective>, 30), %r<status>.uc);
+            $line ~= '   ' ~ trim-to(%r<blockedOn>, 40) if %r<blockedOn> ne '';
+            $w.say($line);
+        }
+        $w.say('  a receipt says what ran and what changed, never that the work is right');
+    }
+    else { row('last runs:', 'none yet') }
+    $w.say('');
+
+    # the next step: the newest run waiting on a person wins
+    my $first = @agents ?? @agents[0] !! 'helper';
+    my $blocked = @runs.first({ .<status> eq 'blocked' && .<blockedOn> ne '' });
+    my $failed  = @runs && @runs[0]<status> eq 'failed' ?? @runs[0] !! Nil;   # an older failure that later runs moved past is not news
+    my $running = @runs.first({ .<status> eq 'running' });
+    $w.say(do
+        with $blocked { next-text("a run is waiting on an answer: {.<blockedOn>}", "321 {.<agent>} {.<objective>} <answer>") }
+        orwith $running { next-text('a run has not ended; its directory has the package but no receipt yet', "ls {$runs.add(.<packageId>)}") }
+        orwith $failed { next-text('the last run failed; its receipt names the cause. Fix that, then ask again', "321 {.<agent>} {.<objective>}") }
+        elsif !@agents { next-text('no agent is configured yet; set one up', '321 help trust') }
+        elsif !@runs { next-text('make a first run', "321 $first status") }
+        else { next-text('ask the next thing', "321 $first <request...>") });
     0;
 }
 
@@ -311,7 +460,7 @@ sub cmd-run(Env $env, Global $g, @args --> Int) {
             }
             Str;
         };
-        if $! { $env.stderr.say("321 run: {$!.message}"); $env.stderr.say(next-text('see the machine invocation', '321 help run')); return EXIT-USAGE }
+        if $! { return usage-error($env, 'run', $!.message) }
         $i++;
     }
     my $cfg = try trust-of($env);
@@ -328,17 +477,20 @@ sub cmd-agents(Env $env --> Int) {
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
     my @list = $cfg.configured;
     unless @list {
-        $env.stdout.say("No agents are configured in {$cfg.path}.");
-        $env.stdout.say('Add a pinned publisher package or a local package there, or use --package-dir <dir> for an unsigned local package.');
-        $env.stdout.say(next-text('set one up', '321 help agents'));
+        $env.stdout.print(calm("No agents are configured in {$cfg.path}",
+            'Add a pinned publisher package or a local package there, or run an unsigned local package by path with --package-dir DIR.',
+            :next(['help trust' => 'how a package is pinned or a local one named'])));
         return 0;
     }
+    $env.stdout.say(header('agents', "{@list.elems} configured in {$cfg.path}"));
+    $env.stdout.say('');
     for @list -> $r {
         my $alias = $r.alias ne '' ?? '  alias ' ~ $r.alias !! '';
         my $version = $r.pin.defined ?? '  ' ~ $r.pin<version> !! '';
         $env.stdout.say(sprintf('%-32s %-12s%s%s', $r.id.Str, $r.level, $version, $alias));
     }
     my $first = @list[0].alias ne '' ?? @list[0].alias !! @list[0].id.Str;
+    $env.stdout.say('');
     $env.stdout.say(next-text('ask one of them', "321 $first <request...>"));
     0;
 }
@@ -417,8 +569,7 @@ sub materialise-builtin(Str $name, IO::Path $home --> IO::Path) is export {
 }
 
 sub cmd-packages(Env $env, @args --> Int) {
-    my $usage = 'usage: 321 packages validate <dir> | digest <dir> [--write] | show <id> | builtin <name>';
-    if @args < 2 { $env.stderr.say($usage); $env.stderr.say(next-text('see what each does', '321 help packages')); return EXIT-USAGE }
+    return usage-error($env, 'packages', @args ?? "'packages {@args.join(' ')}' needs more" !! 'say what to do') if @args < 2;
     given @args[0] {
         when 'builtin' {
             my $dir = try materialise-builtin(@args[1], home-of($env));
@@ -433,7 +584,7 @@ sub cmd-packages(Env $env, @args --> Int) {
             my ($m, $d) = try validate-package(@args[1].IO);
             if $! { $env.stdout.say("INVALID: {$!.message}"); $env.stdout.say(next-text('fix what it names, then validate again', "321 packages validate {@args[1]}")); return EXIT-FAILED }
             $env.stdout.say("OK {$m<id>} {$m<version>} $d");
-            $env.stdout.say(next-text('pin it in the trust file so it can be asked by name', '321 help agents'));
+            $env.stdout.say(next-text('pin it in the trust file so it can be asked by name', '321 help trust'));
             return 0;
         }
         when 'digest' {
@@ -455,7 +606,9 @@ sub cmd-packages(Env $env, @args --> Int) {
             my $l = try load-resolved($cfg.resolve(@args[1]));
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-DENIED }
             my %m = $l.manifest;
-            $env.stdout.say("{%m<id>}  {%m<version>}  {$l.digest}");
+            $env.stdout.say(header('packages show', "{%m<id>} {%m<version>}"));
+            $env.stdout.say('');
+            $env.stdout.say("digest:     {$l.digest}");
             $env.stdout.say("trust:      {$l.label}");
             $env.stdout.say("publisher:  {%m<publisher><domain>}   owner: {%m<owner><legalName>}   licence: {(%m<licence><spdx> ~ ' ' ~ %m<licence><url>).trim}");
             $env.stdout.say("role:       {%m<identity><role>}");
@@ -466,13 +619,12 @@ sub cmd-packages(Env $env, @args --> Int) {
             $env.stdout.say("placement:  {@(%m<placement><allowed> // []).join(', ')}");
             my @procs = @(%m<procedures> // []);
             $env.stdout.say("procedures: {@procs.map({ $_<name> }).join(', ')}") if @procs;
+            $env.stdout.say('');
             $env.stdout.say(next-text('ask it', "321 {@args[1]} <request...>"));
             return 0;
         }
     }
-    $env.stderr.say($usage);
-    $env.stderr.say(next-text('see what each does', '321 help packages'));
-    EXIT-USAGE;
+    usage-error($env, 'packages', "there is no 'packages {@args[0]}'");
 }
 
 sub cmd-trust(Env $env, @args --> Int) {
@@ -481,7 +633,8 @@ sub cmd-trust(Env $env, @args --> Int) {
     my $sub = @args ?? @args[0] !! 'show';
     given $sub {
         when 'show' {
-            $env.stdout.say("trust file: {$cfg.path}");
+            $env.stdout.say(header('trust show', $cfg.path.Str));
+            $env.stdout.say('');
             for $cfg.publishers.keys.sort -> $d {
                 my %p = $cfg.publishers{$d};
                 $env.stdout.say("publisher $d: {@(%p<keys> // []).elems} key(s)");
@@ -494,24 +647,27 @@ sub cmd-trust(Env $env, @args --> Int) {
             }
             $env.stdout.say("local/$_ {$cfg.local{$_}<path>}") for $cfg.local.keys.sort;
             $env.stdout.say("alias $_ -> {$cfg.aliases{$_}}") for $cfg.aliases.keys.sort;
+            $env.stdout.say('');
             $env.stdout.say(next-text('check that every agent named here loads', '321 trust check'));
             return 0;
         }
         when 'check' {
-            my $problems = 0;
+            $env.stdout.say(header('trust check', $cfg.path.Str));
+            $env.stdout.say('');
+            my @failed;
             for $cfg.configured -> $r {
                 my $l = try load-resolved($r);
-                if $! { $env.stdout.say("FAIL {$r.id}: {$!.message}"); $problems++; next }
-                $env.stdout.say("ok   {$r.id} ({$r.level})");
+                if $! { $env.stdout.say("{glyph('no')} {$r.id}: {$!.message}"); @failed.push($r.id.Str); next }
+                $env.stdout.say("{glyph('yes')} {$r.id} ({$r.level})");
             }
-            $env.stdout.say($problems ?? next-text('fix the pins that failed; the digest or path is what usually moved', '321 help agents')
-                                      !! next-text('see them as a list', '321 agents'));
-            return $problems ?? EXIT-FAILED !! 0;
+            $env.stdout.say('');
+            $env.stdout.print(@failed
+                ?? say-next(@failed.map({ "fix the pin for $_ in {$cfg.path}; the digest or path is what usually moved" }), :then('321 trust check'))
+                !! next-text('see them as a list', '321 agents') ~ "\n");
+            return @failed ?? EXIT-FAILED !! 0;
         }
     }
-    $env.stderr.say('usage: 321 trust show | check');
-    $env.stderr.say(next-text('see what the trust file holds', '321 trust show'));
-    EXIT-USAGE;
+    usage-error($env, 'trust', "there is no 'trust $sub'");
 }
 
 sub cmd-doctor(Env $env, @args --> Int) {
@@ -538,6 +694,8 @@ sub cmd-doctor(Env $env, @args --> Int) {
         $env.stdout.say(encode-json-pretty(%d));
         return $! ?? EXIT-FAILED !! 0;
     }
+    $env.stdout.say(header('doctor', 'what this machine can run and enforce'));
+    $env.stdout.say('');
     $env.stdout.say('adapters and what each actually enforces:');
     for $env.adapters.all -> $a {
         my $det = $a.detect;
@@ -578,7 +736,8 @@ sub cmd-doctor(Env $env, @args --> Int) {
     if $cfg.path.IO.e { $env.stdout.say("trust: {$cfg.path}, {$cfg.configured.elems} configured package(s)") }
     else { $env.stdout.say("trust: no file at {$cfg.path} (only --package-dir packages can run)") }
     $env.stdout.say("policy: {to-wire('Policy', $cfg.policy)}");
-    $env.stdout.say($cfg.configured.elems ?? next-text('see who you can ask', '321 agents') !! next-text('configure an agent', '321 help agents'));
+    $env.stdout.say('');
+    $env.stdout.say($cfg.configured.elems ?? next-text('see who you can ask', '321 agents') !! next-text('configure an agent', '321 help trust'));
     0;
 }
 
@@ -591,11 +750,11 @@ sub harness-adapters(Env $env --> List) {
 
 #| The 321 command a harness should call back.  A project's settings are
 #| shared between machines, so the default is the name on PATH;
-#| X321_HOOK_SELF overrides it.
-sub hook-self(--> Str) { %*ENV<X321_HOOK_SELF> // '321' }
+#| DO_321_HOOK_SELF overrides it.
+sub hook-self(--> Str) { %*ENV<DO_321_HOOK_SELF> // '321' }
 
 sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
-    my ($workspace, $harness, $json, $advisory) = $g.workspace, $g.adapter, $g.json-out, False;
+    my ($workspace, $harness, $json, $advisory, $verbose) = $g.workspace, $g.adapter, $g.json-out, False, False;
     my $i = 0;
     while $i < @args {
         my $a = @args[$i];
@@ -611,20 +770,20 @@ sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
             when '--harness'   { $harness = need() }
             when '--json'      { $json = True }
             when '--advisory'  { $advisory = True }
+            when '--verbose'   { $verbose = True }
             default { X::Do321::Usage.new(message => "unknown option $name for $what").throw }
         }
         $i++;
     }
     $workspace = $*CWD.Str if $workspace eq '';
     X::Do321::Usage.new(message => "no such directory $workspace").throw unless $workspace.IO.d;
-    ($workspace, $harness, $json, $advisory);
+    ($workspace, $harness, $json, $advisory, $verbose);
 }
 
 sub cmd-harness(Env $env, Global $g, @args --> Int) {
-    my $usage = 'usage: 321 harness detect [--workspace <dir>] [--json]';
-    if !@args || @args[0] ne 'detect' { $env.stderr.say($usage); $env.stderr.say(next-text('see the harness commands', '321 help harness')); return EXIT-USAGE }
+    return usage-error($env, 'harness detect', @args ?? "there is no 'harness {@args[0]}'" !! 'say what to do') if !@args || @args[0] ne 'detect';
     my ($workspace, $, $json) = try parse-harness-options($env, $g, @args[1 .. *], 'harness detect');
-    if $! { $env.stderr.say("321 harness: {$!.message}"); return EXIT-USAGE }
+    if $! { return usage-error($env, 'harness detect', $!.message) }
     my @records;
     for harness-adapters($env) -> $a {
         my $det = $a.detect;
@@ -641,6 +800,8 @@ sub cmd-harness(Env $env, Global $g, @args --> Int) {
         $env.stdout.say(encode-json-pretty(%( schema => 'harness-detect.v1', workspace => $workspace.IO.absolute, harnesses => @records )));
         return 0;
     }
+    $env.stdout.say(header('harness detect', $workspace.IO.absolute.Str));
+    $env.stdout.say('');
     for @records -> %r {
         $env.stdout.say(sprintf('%-14s %s', %r<harness>, %r<detected> ?? "detected {%r<version>}" !! "not detected ({%r<reason>})"));
         $env.stdout.say("    project wiring: {%r<wiring>}" ~ (%r<configured> ?? '' !! ' (none yet)')) if %r<wiring> ne '';
@@ -658,11 +819,10 @@ sub cmd-harness(Env $env, Global $g, @args --> Int) {
 #| install | status | remove for one controller, in one harness or every
 #| harness detected here.
 sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
-    my $usage = "usage: 321 $name install|status|remove [--workspace <dir>] [--harness <name>] [--json]";
-    if !@args || !is-in(@args[0], <install status remove>) { $env.stderr.say($usage); $env.stderr.say(next-text('see the harness commands', '321 help harness')); return EXIT-USAGE }
+    return usage-error($env, $name, @args ?? "there is no '$name {@args[0]}'" !! 'say what to do') if !@args || !is-in(@args[0], <install status remove>);
     my $sub = @args[0];
-    my ($workspace, $harness, $json, $advisory) = try parse-harness-options($env, $g, @args[1 .. *], "$name $sub");
-    if $! { $env.stderr.say("321 $name: {$!.message}"); return EXIT-USAGE }
+    my ($workspace, $harness, $json, $advisory, $verbose) = try parse-harness-options($env, $g, @args[1 .. *], "$name $sub");
+    if $! { return usage-error($env, "$name $sub", $!.message) }
     my $controller = controller-named($name);
     without $controller { $env.stderr.say("321: no controller \"$name\""); return EXIT-USAGE }
     my @adapters = harness-adapters($env);
@@ -691,17 +851,32 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
         $env.stdout.say(encode-json-pretty(%( schema => 'enforcement-report.v1', workspace => $ws.absolute, controller => $name, harnesses => [ |@statuses ] )));
     }
     else {
-        my $first = True;
+        # One verdict per harness.  The detail, control by control, is
+        # --verbose; what the levels mean is 321 help enforcement.
+        my $w = $env.stdout;
+        $w.say(header("$name $sub", $ws.absolute.Str));
+        $w.say('');
+        my $wide = @statuses.map({ .<harness>.chars }).max // 10;
         for @statuses -> %s {
-            $env.stdout.say('') unless $first;
-            $first = False;
-            if $sub eq 'install' && %s<applies> {
-                $env.stdout.say("{$name.uc} integration {%s<action>}" ~ (%s<wiring> ne '' ?? " ({%s<wiring>})" !! '') ~ '.');
-                $env.stdout.say("Adopted the wiring an earlier {$name} wrote ({@(%s<adopted>).map({ control-label($_) }).join(', ')}): its commands are replaced by 321's.") if (%s<action> // '') eq 'adopted';
-            }
-            elsif $sub eq 'remove' { $env.stdout.say("{$name.uc} integration {%s<action>}.") }
-            $env.stdout.say($_) for status-lines(%s);
-            $env.stdout.say("! {%s<error>}") if (%s<error> // '') ne '';
+            my $did = $sub eq 'status' || !%s<applies> ?? ''
+                !! %s<action> ~ (%s<action> eq 'unchanged' | 'removed' | 'failed' ?? '' !! (%s<wiring> ne '' ?? " ({%s<wiring>})" !! '')) ~ '; ';
+            $w.say(sprintf('  %-*s  %s%s', $wide, %s<harness>, $did, verdict(%s)));
+            $w.say(sprintf('  %-*s  adopted the wiring an earlier %s wrote (%s): its commands are replaced by 321\'s', $wide, '', $name, @(%s<adopted>).map({ control-label($_) }).join(', ')))
+                if (%s<action> // '') eq 'adopted';
+            $w.say(sprintf('  %-*s  ! %s', $wide, '', %s<error>)) if (%s<error> // '') ne '';
+            if $verbose { $w.say(''); $w.say($_) for status-lines(%s) }
+        }
+        $w.say('');
+        my @live = @statuses.grep({ .<applies> });
+        my @weak = @live.grep({ !.<available> || .<headline> ne 'GUARDED' });
+        my @legacy = @live.grep({ @(.<legacy> // []).elems });
+        if !@live { $w.say(next-text('an IZ4 here would say what the software is for; iz4 init starts one', 'iz4 init')) }
+        elsif @live.grep({ !.<available> }) { $w.say(next-text("{$name} cannot be driven here; make it so, then install again", "321 $name install")) }
+        elsif @legacy { $w.say(next-text("adopt the wiring an earlier {$name} wrote, so 321 drives it", "321 $name install")) }
+        elsif @weak && $sub ne 'remove' { $w.say(next-text('wire it as strongly as the harness allows', "321 $name install")) }
+        elsif $sub eq 'remove' { $w.say(next-text('wire it again when wanted', "321 $name install")) }
+        else {
+            $w.say("All wired: {$name.uc} is guarded in {@live.map(*<harness>).join(', ')}. That is what is wired, not what happened: a run's receipt records the checks that ran.");
         }
     }
     @statuses.grep({ (.<action> // '') eq 'failed' }) ?? EXIT-FAILED !! 0;
@@ -709,10 +884,10 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
 
 #| The glue a harness calls at one of its own events.  It reads the
 #| native event on stdin, translates it, asks the controller, and answers
-#| in the harness's terms.  Each call is appended to X321_HOOK_LOG when
+#| in the harness's terms.  Each call is appended to DO_321_HOOK_LOG when
 #| that is set, which is how a run proves its hooks really fired.
 sub cmd-hook(Env $env, @args --> Int) {
-    if @args != 3 { $env.stderr.say('usage: 321 hook <harness> <controller> <control>   (called by a harness, with its event on stdin)'); $env.stderr.say(next-text('a person wires a harness with', '321 iz4 install')); return EXIT-USAGE }
+    return usage-error($env, 'hook', 'it takes a harness, a controller and a control, and is called by a harness') if @args != 3;
     my ($harness, $name, $control) = @args;
     my $adapter = $env.adapters.get($harness);
     my $controller = controller-named($name);
@@ -725,7 +900,7 @@ sub cmd-hook(Env $env, @args --> Int) {
     my $parsed = try parse-json(@lines.join("\n"));
     my %native = $parsed ~~ Associative ?? %$parsed !! %();
     my $workspace = ((%native<cwd> // '') ~~ Str && (%native<cwd> // '') ne '') ?? %native<cwd> !! $*CWD.Str;
-    my $headless = (%*ENV<X321_HEADLESS> // '') eq '1';
+    my $headless = (%*ENV<DO_321_HEADLESS> // '') eq '1';
 
     my %found = $controller.discover($workspace);
     return 0 unless %found;                       # nothing governs here: stay out of the way
@@ -788,7 +963,7 @@ sub cmd-hook(Env $env, @args --> Int) {
 }
 
 sub hook-log(Str $controller, Str $harness, Str $control, Verdict $v) {
-    my $path = %*ENV<X321_HOOK_LOG> // '';
+    my $path = %*ENV<DO_321_HOOK_LOG> // '';
     return if $path eq '';
     my %line = controller => $controller, harness => $harness, control => $control, point => $v.point,
         result => $v.result, reason => $v.reason, invariants => [ |$v.invariants.map(*.Str) ];
@@ -802,8 +977,7 @@ sub hook-log(Str $controller, Str $harness, Str $control, Verdict $v) {
 # ----------------------------------------------------------------- hooks
 
 sub cmd-hooks(Env $env, Global $g, @args --> Int) {
-    my $usage = 'usage: 321 hooks install|status|remove --workspace <dir> --command <cmd> [--strict] [--json]';
-    if !@args { $env.stderr.say($usage); $env.stderr.say(next-text('the newer wiring is 321 iz4 install', '321 help harness')); return EXIT-USAGE }
+    return usage-error($env, 'hooks', 'say what to do') unless @args;
     my $sub = @args[0];
     my ($workspace, $command, $strict, $json) = $g.workspace, '', False, $g.json-out;
     my $i = 1;
@@ -826,12 +1000,12 @@ sub cmd-hooks(Env $env, Global $g, @args --> Int) {
             }
             Str;
         };
-        if $! { $env.stderr.say("321 hooks: {$!.message}"); return EXIT-USAGE }
+        if $! { return usage-error($env, 'hooks', $!.message) }
         $i++;
     }
     $workspace = $*CWD.Str if $workspace eq '';
-    if $command eq '' { $env.stderr.say('321 hooks: --command names the hook command, such as "iz4 hook"'); return EXIT-USAGE }
-    unless $workspace.IO.d { $env.stderr.say("321 hooks: no such directory {$workspace}"); return EXIT-USAGE }
+    if $command eq '' { return usage-error($env, 'hooks', '--command names the hook command, such as "iz4 hook"') }
+    unless $workspace.IO.d { return usage-error($env, 'hooks', "no such directory {$workspace}") }
     my @records = do given $sub {
         when 'install' {
             # A hook 321 writes calls 321, which asks the controller.  This
@@ -846,10 +1020,12 @@ sub cmd-hooks(Env $env, Global $g, @args --> Int) {
         }
         when 'status'  { status-all($workspace.IO, $command) }
         when 'remove'  { remove-all($workspace.IO, $command) }
-        default { $env.stderr.say($usage); return EXIT-USAGE }
+        default { return usage-error($env, 'hooks', "there is no 'hooks $sub'") }
     };
     if $json { $env.stdout.say(encode-json-pretty(%( schema => 'hooks.v1', workspace => $workspace.IO.absolute, command => $command, harnesses => [ |@records ] ))) }
     else {
+        $env.stdout.say(header("hooks $sub", $workspace.IO.absolute.Str));
+        $env.stdout.say('');
         for @records -> %r {
             my $head = %r<harness> ~ (%r<available> ?? '' !! ' (not on PATH here)') ~ (%r<action>:exists ?? ": {%r<action>}" !! '');
             $env.stdout.say($head);
@@ -1123,6 +1299,7 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
         default { $w.say(sprintf('Cost: $%.2f, %d turns, %d attempt(s) (%s)', %r<cost><usd>, %r<cost><turns>, @(%r<attempts>).elems, %r<cost><basis>)) }
     }
     $w.say("Receipt: {$run-dir.add('receipt.json')}");
+    $w.say('');
     $w.say(next-after-run(%r, :$invocation, :$prefix, :$workspace, :dp-bound((%*ENV<DP_BIN> // '') ne ''), :dp-execute((%*ENV<DP_EXECUTE> // '').Str)))
         if $invocation ne '';
 }
@@ -1141,11 +1318,6 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
         $request = @lines.join("\n").trim;
         $g.non-interactive = True;
     }
-    if $request eq '' {
-        $env.stderr.say("321: what should $name do? Give the request after the agent name.");
-        $env.stderr.say(next-text('say it in plain words', "321 $name status"));
-        return EXIT-USAGE;
-    }
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
     my $agent;
@@ -1163,8 +1335,15 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     }
     with $err {
         $env.stderr.say("321: $err");
-        $env.stderr.say($cfg.configured.elems ?? next-text('see who is configured here', '321 agents') !! next-text('configure an agent first', '321 help agents'));
+        $env.stderr.say($cfg.configured.elems ?? next-text('see who is configured here', '321 agents') !! next-text('configure an agent first', '321 help trust'));
         return EXIT-DENIED;
+    }
+    # Only a name that resolves is asked what it should do; an unknown
+    # name was answered above, so no '321 status status' is ever suggested.
+    if $request eq '' {
+        $env.stderr.say("321: what should $name do? Give the request after the agent name.");
+        $env.stderr.say(next-text('say it in plain words', "321 $name status"));
+        return EXIT-USAGE;
     }
 
     my ($workspace, $kind) = resolve-workspace($g.workspace);

@@ -113,14 +113,14 @@ jobs:
           grep -q '^OK local/helper' <<<"$out"
           echo "== run"
           home=$(mktemp -d)
-          out=$(X321_HOME="$home" "$bin" --package-dir testdata/packages/local/helper --done 'a note exists' --non-interactive helper note: smoke test); echo "$out"
+          out=$(DO_321_HOME="$home" "$bin" --package-dir testdata/packages/local/helper --done 'a note exists' --non-interactive helper note: smoke test); echo "$out"
           grep -q COMPLETED <<<"$out"
           echo "== receipt"; ls -R "$home"
           test -f "$home"/runs/*/receipt.json
 
       - name: full test suite against the file
         if: runner.os != 'Windows'
-        run: DO321_TEST_BIN="$PWD/dist/${{ matrix.exe }}" prove --ext .rakutest -e "$RAKUPP -Ilib" t/
+        run: DO_321_TEST_BIN="$PWD/dist/${{ matrix.exe }}" prove --ext .rakutest -e "$RAKUPP -Ilib" t/
 
       - name: checksum
         run: |

@@ -219,3 +219,34 @@ sub status-lines(%s --> List) is export {
     if %s<warnings> { @l.push(''); @l.push('Warning:'); @l.push("  $_") for @(%s<warnings>) }
     @l.List;
 }
+
+#| One row for a person: the harness, its level, and what that level is
+#| made of, in a dozen words.  The detail is status-lines; this is the
+#| verdict.  It claims nothing a control does not do: a context is
+#| delivered, never enforced; old wiring holds one edit and checks no
+#| action.
+sub verdict(%s --> Str) is export {
+    return 'no IZ4 here: nothing to enforce' unless %s<applies>;
+    my %st = %s<controls>.map({ .<control> => .<state> });
+    my %hs = %s<controls>.map({ .<control> => .<harness> });
+    my @c;
+    @c.push: (%st{CTRL-AUTHORITATIVE-CONTEXT} // '') eq 'installed' | 'legacy' ?? 'context delivered' !! 'no context';
+    my $fs = (%st{CTRL-FILESYSTEM-GUARD} // '') eq 'installed' && %hs{CTRL-FILESYSTEM-GUARD} eq STRENGTH-ENFORCES;
+    my $sh = (%st{CTRL-SHELL-GUARD} // '') eq 'installed' && %hs{CTRL-SHELL-GUARD} eq STRENGTH-ENFORCES;
+    @c.push: $fs && $sh ?? 'edits and shell held'
+          !! $fs ?? 'edits held, shell not'
+          !! $sh ?? 'shell held, edits not'
+          !! (%st{CTRL-FILESYSTEM-GUARD} // '') eq 'legacy' ?? 'one edit held, no action checked'
+          !! 'no action checked';
+    @c.push: do given %st{CTRL-POST-RUN} // '' {
+        when 'installed' { 'the turn end checked' }
+        when 'legacy'    { 'a report demanded at turn end' }
+        default          { 'the turn end unchecked' }
+    };
+    my $lead = !%s<available> ?? "none, IZ4 not driven"
+        !! %s<headline>.lc ~ (@(%s<legacy> // []) ?? ' by old wiring' !! '');
+    my $n = @(%s<warnings> // []).elems;
+    my $tail = (%s<detected> ?? '' !! '; harness not detected here')
+             ~ ($n ?? " ($n warning{$n == 1 ?? '' !! 's'}: --verbose)" !! '');
+    "$lead: {@c.join(', ')}$tail";
+}

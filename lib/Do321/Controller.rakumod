@@ -106,10 +106,10 @@ role Controller is export {
 
 # --------------------------------------------------------------------- IZ4
 
-#| The iz4 executable: X321_IZ4 when that is set (and nothing else, so a
+#| The iz4 executable: DO_321_IZ4 when that is set (and nothing else, so a
 #| caller can pin or withhold it), else `iz4` on PATH; '' when absent.
 sub iz4-binary(--> Str) is export {
-    with %*ENV<X321_IZ4> { return ($_.IO.x ?? $_ !! '') if $_ ne '' }
+    with %*ENV<DO_321_IZ4> { return ($_.IO.x ?? $_ !! '') if $_ ne '' }
     my $found = on-path('iz4');
     $found.defined ?? $found.Str !! '';
 }
@@ -117,9 +117,9 @@ sub iz4-binary(--> Str) is export {
 #| How long a controller is given to answer, in seconds, by the kind of
 #| question.  A question about one action or the context is quick; a
 #| check of the change or the finished work may run the project's tests.
-#| X321_CONTROLLER_TIMEOUT overrides every one of them.
+#| DO_321_CONTROLLER_TIMEOUT overrides every one of them.
 sub controller-timeout(Str $point --> Int) is export {
-    with %*ENV<X321_CONTROLLER_TIMEOUT> { return .Int if $_ ~~ /^ \d+ $/ && .Int > 0 }
+    with %*ENV<DO_321_CONTROLLER_TIMEOUT> { return .Int if $_ ~~ /^ \d+ $/ && .Int > 0 }
     $point eq POINT-CHANGE || $point eq POINT-VERIFY ?? 900 !! 30;
 }
 
@@ -173,7 +173,7 @@ sub result-exit(Str $result --> Int) is export {
 #| iz4's business; an iz4 too old to offer a command makes that point
 #| unavailable, which is reported, never passed.
 class IZ4 does Controller is export {
-    has Str $.bin = '';              # '' means X321_IZ4, else iz4 on PATH
+    has Str $.bin = '';              # '' means DO_321_IZ4, else iz4 on PATH
 
     method name(--> Str) { 'iz4' }
     method binary(--> Str) { $!bin ne '' ?? $!bin !! iz4-binary() }

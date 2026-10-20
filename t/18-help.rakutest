@@ -1,8 +1,7 @@
-# Help a person can hold in their head, and a Next line on every path:
-# one screen per topic, each short, each with an example, each ending in
-# what to do next; and every outcome of a run, every inspection command
-# and every usage error says what should happen next, with a command
-# that can be typed as it stands.
+# Help is read by a person in the middle of something else.  Each screen
+# has to fit in their head: these tests hold the sizes down.  And the look:
+# on a terminal the words are dressed and given air; into a pipe they are
+# exactly the words, so a tool reads what it always read.
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
 use Do321Test;
@@ -13,6 +12,7 @@ use Do321::Digest;
 use Do321::Trust;
 use Do321::Wire;
 use Do321::Help;
+use Do321::Look;
 
 sub trust-file(%cfg --> IO::Path) {
     my $p = temp-dir().add('trust.json');
@@ -38,167 +38,201 @@ sub operator-trust(--> IO::Path) {
 #| Run the CLI with a fresh home and no agents unless a trust file is given.
 sub cli(IO::Path $trust, *@args, :%env, Str :$in = '', IO::Path :$cwd --> List) {
     my $home = temp-dir();
-    my %e = X321_HOME => $home.Str, DP_BIN => '', DP_EXECUTE => '', |%env;
+    my %e = DO_321_HOME => $home.Str, DP_BIN => '', DP_EXECUTE => '', LANG => 'C.UTF-8', |%env;
     my ($rc, $out, $err) = x321(|($trust.defined ?? ('--trust', $trust.Str) !! ('--trust', $home.add('no-trust.json').Str)), |@args, :env(%e), :$in, |($cwd ?? (:$cwd) !! ()));
     ($rc, $out, $err, $home);
 }
 
-sub has-next(Str $text --> Bool) {
-    # "Next: <advice>" followed by an indented "e.g.  <command>" that is not empty
-    so $text ~~ / 'Next: ' \S .* \n \s+ 'e.g.  ' \S /;
-}
+#| "next:  <advice>" and, beneath it, a command that is not empty.
+sub has-next(Str $text --> Bool) { so $text ~~ / 'next:  ' \S .* \n \h+ \S / }
 
-# ---- the first screen -------------------------------------------------------------
-{
+my %none;
+
+# ---- the first screen is short -------------------------------------------------------------
+subtest 'the first screen is short' => {
     my ($rc, $out) = cli(IO::Path, 'help');
-    is $rc, 0, 'help exits 0';
-    ok $out.contains('321 <agent> <request...>'), 'the request form is on the first screen';
-    ok $out.lines.elems <= SCREEN-LINES, "the first screen fits in {SCREEN-LINES} lines ({$out.lines.elems})";
-    ok has-next($out), 'and ends with Next and an example' or diag $out;
-    ok $out.contains('321 help agents') && $out.contains('no agent is configured'), 'with no agents the next step is to configure one' or diag $out;
-    for topic-names() -> $t { ok $out.contains("321 help $t"), "the first screen offers 'help $t'" }
-    ok !$out.contains('1da') && $out.contains('321 helper'), 'examples name the unbranded helper, never an official agent';
-
+    is $rc, 0, '321 help is not an error';
+    ok $out.lines.elems <= 20, "it fits a small window ({$out.lines.elems} lines)";
     my ($rc2, $out2) = cli(IO::Path);
-    is $rc2, EXIT-USAGE, 'no arguments is a usage exit';
-    is $out2, $out, 'and shows the same first screen';
-
-    ($rc2, $out2) = cli(IO::Path, '--help');
-    ok $rc2 == 0 && $out2 eq $out, '--help is the same screen';
+    is $rc2, EXIT-USAGE, '321 alone is a usage exit';
+    is $out2, $out, 'and says the same';
+    is cli(IO::Path, '--help')[1], $out, 'and so does --help';
+    is cli(IO::Path, '-h')[1], $out, 'and -h';
+    like cli(IO::Path, '--version')[1], / ^ '321 ' \d+ '.' \d+ /, '--version answers too, out of habit';
+    like $out, / '321 help COMMAND' /, 'it says how to ask about one command';
+    like $out, / '321 help more' /, 'and where the rest is';
+    nok $out.contains('--json'), 'nothing for tools on the first screen';
+    like $out, / ^ \n [ '❮▣❯' | '<#>' ] ' 321.do - Mission control for agents.' /, 'it opens with the text logo under a line of air';
+    my @groups = $out.split(/\n\n/).map({ .lines.grep(*.starts-with('  321 ')).elems }).grep(* > 0);
+    ok @groups.all <= 5, "no group asks a person to hold more than five things ({@groups})";
+    ok $out.contains('321 helper <request...>') && !$out.contains('1da'), 'examples name the unbranded helper, never an official agent';
+    ok cli(helper-trust(), 'help')[1].contains('321 helper <request...>'), 'with an agent configured the example is its alias';
+    like cli(operator-trust(), 'help')[1], / '321 op <request...>' /, 'whatever that alias is';
 }
 
-# ---- examples are the person's own agents --------------------------------------------
-{
-    my ($rc, $out) = cli(helper-trust(), 'help');
-    ok $out.contains('e.g.  321 helper status') && $out.contains('321 agents'), 'with an agent configured the example uses its alias and the next step is the list' or diag $out;
-    ($rc, $out) = cli(helper-trust(), 'help', 'ask');
-    ok $out.contains('321 helper note:'), 'topic examples use the alias too' or diag $out;
+# ---- every command has its own short help ---------------------------------------------------
+subtest 'every command has its own short help' => {
+    for topics() -> $t {
+        my $text = help-topic($t, %none);
+        ok $text.lines.elems <= 16, "321 help {$t.name} is short ({$text.lines.elems} lines)";
+        ok $t.example.chars, "321 help {$t.name} gives an example";
+        ok $text.lines.all.chars <= 80, "321 help {$t.name} has no line over 80 columns ({$text.lines.map(*.chars).max})";
+        ok $text.starts-with("\n{ICON} 321 {$t.name}: "), "321 help {$t.name} opens with its header";
+    }
+    my ($rc, $out) = cli(IO::Path, 'help', 'status');
+    is $rc, 0, '321 help status works';
+    like $out, / ^ \n ['❮▣❯' | '<#>'] ' 321 status:' /, 'and is about status, under the icon, after a line of air';
+    is cli(IO::Path, 'status', '--help')[1], $out, '321 status --help says the same';
+    is cli(IO::Path, 'help', 'iz4', 'install', '--advisory')[1], cli(IO::Path, 'help', 'iz4', 'install')[1], 'a flag is explained with its command';
+    is cli(IO::Path, 'help', 'harness')[1], cli(IO::Path, 'help', 'harness', 'detect')[1], 'a word that begins one command is that command';
+    like cli(IO::Path, 'help', 'iz4')[1], / 'more than one form' .* 'iz4 install' .* 'iz4 status' .* 'iz4 remove' /, 'a word that begins several names them';
+    ok cli(IO::Path, 'help', 'more')[1].lines.elems <= 42, 'the rest is one screen too';
+    is cli(IO::Path, 'help', 'all')[1], cli(IO::Path, 'help', 'more')[1], 'help all, the older spelling, is help more';
+    is cli(IO::Path, 'help', 'machine')[0], 0, 'what tools need is kept apart';
+    like cli(IO::Path, 'help', 'machine')[1], / '321 run' .* '321 hook' .* '--json' /, 'and that is where --json is explained';
+    like cli(helper-trust(), 'help', 'ask')[1], / '321 helper note: remember the milk' /, 'examples are the person\'s own agent';
+    like cli(IO::Path, 'help', 'deploy')[1], / 'a plan is not an approval' /, 'deploy says what a plan is';
+    like cli(IO::Path, 'help', 'receipt')[1], / 'never says the work' \s+ 'is' \s+ 'right' /, 'receipt says what a receipt does not prove';
 }
 
-# ---- every topic: one short screen, one example, a Next line ----------------------------
-for topic-names() -> $t {
-    my ($rc, $out, $err) = cli(IO::Path, 'help', $t);
-    is $rc, 0, "help $t exits 0" or diag $err;
-    ok has-next($out), "help $t ends with Next and an example" or diag $out;
-    next if $t eq 'all';
-    ok $out.lines.elems <= SCREEN-LINES, "help $t fits in {SCREEN-LINES} lines ({$out.lines.elems})";
-    ok $out.contains('e.g.'), "help $t carries an example";
-    ok $out.lines.elems >= 8, "help $t is a screen, not a stub ({$out.lines.elems} lines)";
-    ok $out.lines.map(*.chars).max <= 100, "help $t fits an ordinary terminal";
-}
-for (ask => 'never handed to a shell', receipt => 'COMPLETED', agents => 'trust-config.v1', deploy => 'deploy.invoke',
-     run => '321 run --package', harness => '321 harness detect', packages => 'packages validate', options => '--workspace <dir>') -> $want {
-    my ($rc, $out) = cli(IO::Path, 'help', $want.key);
-    ok $out.contains($want.value), "help {$want.key} says what it is for" or diag $out;
-}
-{
-    my ($rc, $out) = cli(IO::Path, 'help', 'all');
-    ok $out.contains('Exit codes:') && $out.contains('--package-dir <dir>') && $out.contains('321 run --package'), 'help all is the whole reference';
-    ok $out.contains('321 help') , 'and points back to one topic at a time';
+# ---- every command 321 has can be asked about -----------------------------------------------
+subtest 'every command 321 has can be asked about' => {
+    for RESERVED.grep(* ne 'help') -> $c {
+        ok help-for([$c], %none)[1], "321 help $c";
+    }
 }
 
-# ---- an unknown topic lists the topics, it does not dump the reference --------------------
-{
-    my ($rc, $out, $err) = cli(IO::Path, 'help', 'banana');
-    is $rc, EXIT-USAGE, 'an unknown topic is a usage error';
-    ok $err.contains('no topic "banana"') && $err.contains('321 help ask') && has-next($err), 'it lists the topics and the way back' or diag $err;
-    ok !$err.contains('Exit codes:'), 'without the reference wall';
-}
-
-# ---- deploy help tells the truth about this machine's bindings ---------------------------
-{
-    my ($rc, $out) = cli(IO::Path, 'help', 'deploy');
-    ok $out.contains('dp is not bound here') && $out.contains('execute is unset'), 'unbound and disabled are said so' or diag $out;
-    ($rc, $out) = cli(IO::Path, 'help', 'deploy', :env({ DP_BIN => '/opt/engine/bin/dp', DP_EXECUTE => 'dev' }));
-    ok $out.contains('dp is bound here (/opt/engine/bin/dp)') && $out.contains('execute is enabled for dev'), 'a binding is shown as it is' or diag $out;
-}
-
-# ---- usage errors say where the help is ---------------------------------------------------
-{
-    my ($rc, $out, $err) = cli(IO::Path, '--bogus', 'helper', 'x');
-    ok $rc == EXIT-USAGE && $err.contains('unknown option') && $err.contains('321 help options') && has-next($err), 'an unknown option points at the options screen' or diag $err;
-    ok !$err.contains('Exit codes:'), 'and does not print the reference wall';
-    ($rc, $out, $err) = cli(IO::Path, 'run', '--bogus');
-    ok $rc == EXIT-USAGE && $err.contains('321 help run'), 'run points at its own screen' or diag $err;
+# ---- a slip gets one line back, not a wall -----------------------------------------------------
+subtest 'a slip gets one line back, not a wall' => {
+    my ($rc, $out, $err) = cli(IO::Path, 'help', 'nonsense');
+    is $rc, EXIT-USAGE, 'help for a command that is not there is a usage error';
+    ok $err.lines.elems <= 3, 'in a few lines';
+    like $err, / "'321 help' lists the commands" /, 'and says where to look';
+    like cli(IO::Path, 'help', 'statu')[2], / 'Did you mean: 321 help status' /, 'a slip of the fingers is met with the command meant';
+    ($rc, $out, $err) = cli(IO::Path, 'status', '--bogus');
+    is $rc, EXIT-USAGE, 'a command called wrongly fails';
+    like $err, / ^ '321 status: ' \N+ \n \n ['❮▣❯' | '<#>'] ' 321 status:' /, 'with one line saying what, then its own help';
+    ok $err.lines.elems <= 18, 'and nothing more';
+    nok $err.contains('321 agents'), 'not every command there is';
     ($rc, $out, $err) = cli(IO::Path, 'packages');
-    ok $rc == EXIT-USAGE && $err.contains('321 help packages'), 'packages points at its screen' or diag $err;
+    ok $rc == EXIT-USAGE && $err.contains('321 packages validate DIR'), 'packages shows how it is called' or diag $err;
     ($rc, $out, $err) = cli(IO::Path, 'trust', 'banana');
-    ok $rc == EXIT-USAGE && $err.contains('321 trust show'), 'trust suggests show' or diag $err;
+    ok $rc == EXIT-USAGE && $err.contains("no 'trust banana'") && $err.contains('321 trust show'), 'trust names the forms it has' or diag $err;
     ($rc, $out, $err) = cli(IO::Path, 'harness');
-    ok $rc == EXIT-USAGE && $err.contains('321 help harness'), 'harness points at its screen' or diag $err;
+    ok $rc == EXIT-USAGE && $err.contains('321 harness detect'), 'harness too' or diag $err;
+    ($rc, $out, $err) = cli(IO::Path, 'run', '--bogus');
+    ok $rc == EXIT-USAGE && $err.contains('unknown option --bogus') && $err.contains('321 run --package'), 'run too' or diag $err;
+    ($rc, $out, $err) = cli(IO::Path, '--bogus', 'helper', 'x');
+    ok $rc == EXIT-USAGE && $err.contains('unknown option') && has-next($err) && $err.contains('321 help options'), 'an unknown global option points at the options' or diag $err;
     ($rc, $out, $err) = cli(helper-trust(), 'helper');
-    ok $rc == EXIT-USAGE && $err.contains('what should helper do') && $err.contains('e.g.  321 helper status'), 'an empty request shows one' or diag $err;
+    ok $rc == EXIT-USAGE && $err.contains('what should helper do') && $err.contains('321 helper status'), 'an empty request shows one' or diag $err;
     ($rc, $out, $err) = cli(IO::Path, 'nobody', 'do', 'it');
-    ok $rc == EXIT-DENIED && $err.contains('321 help agents'), 'an unknown agent with no trust file points at setup' or diag $err;
+    ok $rc == EXIT-DENIED && $err.contains('321 help trust'), 'an unknown agent with no trust file points at setup' or diag $err;
     ($rc, $out, $err) = cli(helper-trust(), 'nobody', 'do', 'it');
-    ok $rc == EXIT-DENIED && $err.contains('e.g.  321 agents'), 'an unknown agent with agents configured points at the list' or diag $err;
+    ok $rc == EXIT-DENIED && $err.contains('321 agents'), 'an unknown agent with agents configured points at the list' or diag $err;
 }
 
-# ---- inspection commands end with a next step ------------------------------------------------
-{
+# ---- actions are words --------------------------------------------------------------------------
+subtest 'actions are words' => {
+    for topics() -> $t {
+        for $t.usage -> $u {
+            nok $u ~~ / '--' [ install | status | remove | show | check | validate | digest | verify | new | detect ] >> /,
+                "321 help {$t.name} offers no flag that is really an action: $u";
+        }
+    }
+}
+
+# ---- every command answers with a header and ends with what comes next ---------------------------
+subtest 'inspection commands: a header, air, and what comes next' => {
     my ($rc, $out) = cli(IO::Path, 'agents');
-    ok $rc == 0 && $out.contains('No agents') && $out.contains('321 help agents'), 'agents, none configured' or diag $out;
+    ok $rc == 0 && $out.contains('No agents are configured') && $out.contains('321 help trust'), 'agents, none configured' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'agents');
-    ok $rc == 0 && $out.contains('e.g.  321 helper <request...>'), 'agents suggests asking the first one' or diag $out;
+    like $out, / ^ ['❮▣❯' | '<#>'] ' 321 agents: 1 configured in ' /, 'agents opens with its header' or diag $out;
+    ok $out.contains("\n\nnext:  ask one of them\n       321 helper <request...>"), 'and ends with the next step after air' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'trust', 'show');
-    ok $rc == 0 && $out.contains('e.g.  321 trust check'), 'trust show suggests check' or diag $out;
+    ok $rc == 0 && $out.starts-with("{ICON} 321 trust show: ") && $out.contains('321 trust check'), 'trust show' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'trust', 'check');
-    ok $rc == 0 && $out.contains('e.g.  321 agents'), 'trust check suggests the list' or diag $out;
+    ok $rc == 0 && $out.contains('✓ example.test/helper') && $out.contains('321 agents'), 'trust check ticks what loads' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'doctor');
-    ok $rc == 0 && has-next($out) && $out.contains('321 agents'), 'doctor ends with a next step' or diag $out;
+    ok $rc == 0 && $out.starts-with("{ICON} 321 doctor: ") && has-next($out) && $out.contains('321 agents'), 'doctor' or diag $out;
     ($rc, $out) = cli(IO::Path, 'packages', 'digest', fixture('local/helper').Str);
     ok $rc == 0 && $out.contains('--write'), 'digest suggests writing it' or diag $out;
     ($rc, $out) = cli(IO::Path, 'packages', 'validate', fixture('local/helper').Str);
     ok $rc == 0 && $out.contains('OK local/helper') && has-next($out), 'validate ends with a next step' or diag $out;
+    ($rc, $out) = cli(IO::Path, 'key');
+    ok $rc == 0 && $out.contains('unsigned') && $out.contains('321 key new'), 'key without a key says so' or diag $out;
+    ($rc, $out) = cli(IO::Path, 'harness', 'detect');
+    ok $rc == 0 && $out.starts-with("{ICON} 321 harness detect: "), 'harness detect' or diag $out;
 }
 
-# ---- after a run: the Next line fits the outcome and never overclaims -------------------------
-{
-    # completed, no files, a procedure: ask the next thing the same way.  Run from an
-    # empty directory so no enclosing repository becomes the workspace.
+# ---- the icon is never a verdict ------------------------------------------------------------------
+subtest 'the icon marks a header, never a result' => {
     my ($rc, $out) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()));
-    ok $rc == 0 && $out.contains('COMPLETED') && has-next($out), 'a completed run ends with Next' or diag $out;
-    ok $out.contains("e.g.  321 --package-dir {fixture('local/helper')} helper <request...>"), 'the example is the invocation the person used, by path' or diag $out;
-    ok $out.lines.tail.contains('e.g.'), 'Next is the last thing printed';
+    ok $rc == 0 && $out.contains('COMPLETED'), 'a run completes' or diag $out;
+    nok $out.lines.grep(*.contains(ICON)), 'and no line of its transcript carries the icon';
+    ok $out.contains("Receipt: ") && $out ~~ / 'Receipt: ' \N+ \n \n 'next:' /, 'air before the next step';
+    ok $out.lines.tail ~~ / ^ \h+ '321 --package-dir ' /, 'the last thing printed is the command to type';
 }
+
+# ---- after a run: the next step fits the outcome and never overclaims ----------------------------
 {
     my $tp = operator-trust();
     my $log = temp-dir().add('engine.log');
     my %bound = DP_BIN => fake-engine().Str, FAKE_ENGINE_LOG => $log.Str;
-
-    # status completed: suggest a plan, naming no service the tool did not see
     my ($rc, $out) = cli($tp, 'op', 'status', :env(%bound));
-    ok $rc == 0 && $out.contains('e.g.  321 op plan <service> <target>'), 'after status: plan something' or diag $out;
-
-    # a plan where this machine cannot execute: say so, and show what enabling it would take
+    ok $rc == 0 && $out.contains('321 op plan <service> <target>'), 'after status: plan something' or diag $out;
     ($rc, $out) = cli($tp, '--non-interactive', 'op', 'plan', 'alpha.web', 'live', 'revision', '0f94b03', :env(%bound));
-    ok $rc == 0 && $out.contains('live is not in DP_EXECUTE on this machine') && $out.contains('e.g.  DP_EXECUTE=live 321 op go alpha.web live'), 'a plan without execution enabled never reads as deployable here' or diag $out;
-
-    # the same plan where execution is enabled for the target: typing the go is the approval
+    ok $rc == 0 && $out.contains('live is not in DP_EXECUTE on this machine') && $out.contains('DP_EXECUTE=live 321 op go alpha.web live'), 'a plan without execution enabled never reads as deployable here' or diag $out;
     ($rc, $out) = cli($tp, '--non-interactive', 'op', 'plan', 'alpha.web', 'live', 'revision', '0f94b03', :env(%( |%bound, DP_EXECUTE => 'live' )));
-    ok $rc == 0 && $out.contains('typing it is your approval') && $out.contains('e.g.  321 op go alpha.web live'), 'with execution enabled the next step is the go' or diag $out;
-
-    # blocked on a question: answer it in a new request
+    ok $rc == 0 && $out.contains('typing it is your approval') && $out.contains('321 op go alpha.web live'), 'with execution enabled the next step is the go' or diag $out;
     ($rc, $out) = cli($tp, '--non-interactive', 'op', 'plan', 'live', :env(%bound));
-    ok $rc == EXIT-BLOCKED && $out.contains('Next: answer it in a new request: Which service') && $out.contains('e.g.  321 op plan live <answer>'), 'blocked on a question' or diag $out;
-
-    # prepared, not executed: nothing was deployed, and what is not enabled
+    ok $rc == EXIT-BLOCKED && $out.contains('next:  answer it in a new request: Which service') && $out.contains('321 op plan live <answer>'), 'blocked on a question' or diag $out;
     ($rc, $out) = cli($tp, '--non-interactive', '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', 'revision', '0f94b03', :env(%bound));
     ok $rc == EXIT-BLOCKED && $out.contains('nothing was deployed') && $out.contains('DP_EXECUTE') && has-next($out), 'prepared-not-executed says nothing was deployed' or diag $out;
-
-    # failed for want of the engine: bind it, then ask again
     ($rc, $out) = cli($tp, '--non-interactive', 'op', 'status', :env(%( DP_BIN => '' )));
-    ok $rc == EXIT-FAILED && $out.contains('e.g.  DP_BIN=/path/to/dp 321 op status'), 'an unbound engine: bind it and ask again' or diag $out;
-
-    # unsupported: the agent's own question, answered in a new request
+    ok $rc == EXIT-FAILED && $out.contains('DP_BIN=/path/to/dp 321 op status'), 'an unbound engine: bind it and ask again' or diag $out;
     ($rc, $out) = cli($tp, '--non-interactive', 'op', 'dance', :env(%bound));
-    ok $rc == EXIT-BLOCKED && has-next($out), 'an unsupported request still ends with Next' or diag $out;
+    ok $rc == EXIT-BLOCKED && has-next($out), 'an unsupported request still ends with what comes next' or diag $out;
+    ($rc, $out) = cli(IO::Path, '--json', '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk');
+    ok $rc == 0 && !$out.contains('next:'), 'JSON output carries no next line';
 }
 
-# ---- --json output is for machines: no Next line in it --------------------------------------
-{
-    my ($rc, $out) = cli(IO::Path, '--json', '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk');
-    ok $rc == 0 && !$out.contains('Next:'), 'JSON output carries no Next line';
+# ---- pretty: dress for a terminal, nothing for a pipe ----------------------------------------------
+subtest 'pretty dresses output for a terminal only' => {
+    my $plain = "{ICON} 321 status: 0.4.1 on box\n\nhere:         /w (git)\n  321 agents       who\nnext:  do it\n       321 helper status\n  ✓ 1. ok\n  ✗ 2. no\n# a comment\nCOMPLETED: done 01M5C39J4M56M3MJV2RV085841 in claude_code\n";
+    is pretty($plain, :!on), $plain, 'off, the text is untouched';
+    my $on = pretty($plain, :on);
+    like $on, /"\e[" .* '❮▣❯' "\e[0m" "\e[1m" ' 321 status:' "\e[0m"/, 'on, the header is a blue icon and a bold name';
+    like $on, /"\e[1m" 'here:' "\e[0m"/, 'a row label is bold';
+    like $on, /"\e[1m" '  321 agents' "\e[0m" '       who'/, 'a command heading a column is bold and the words are left alone';
+    like $on, /"\e[1m" 'next:' "\e[0m"/, 'next is bold';
+    like $on, /"\e[1m" '       321 helper status' "\e[0m"/, 'and so is the command beneath it';
+    like $on, /"\e[32m" '✓' "\e[0m"/, 'a tick is green';
+    like $on, /"\e[31m" '✗' "\e[0m"/, 'a cross is red';
+    like $on, /"\e[2m" '# a comment' "\e[0m"/, 'a comment is dimmed';
+    like $on, /"\e[1m" 'COMPLETED' "\e[0m"/, 'the last word of a run is bold';
+    like $on, /"\e[1m" '01M5C39J4M56M3MJV2RV085841' "\e[0m"/, 'a package id is bold';
+    like $on, /"\e[1m" 'claude_code' "\e[0m"/, 'a harness name is bold';
+    is $on.subst(/ "\e[" <[0..9;]>+ 'm' /, '', :g), $plain, 'strip the colour and every word is as it was';
+    is pretty("\{\"a\": 1\}\n", :on), "\{\"a\": 1\}\n", 'a document for a machine is left alone';
+
+    my ($rc, $out, $err) = cli(IO::Path, 'help');
+    unlike $out, /"\e["/, 'into a pipe, 321 writes no colour at all';
+    unlike $out ~ $err, / ^ "\n\n" /, 'and no extra air';
+    my ($rc2, $dressed) = cli(IO::Path, 'help', :env(%( DO_321_COLOR => '1' )));
+    like $dressed, /"\e[1m"/, 'DO_321_COLOR=1 keeps the dress into a pipe';
+    like $dressed, / ^ "\n" /, 'it opens with air';
+    like $dressed, / "\n\n" $ /, 'and closes with it';
+    is $dressed.subst(/ "\e[" <[0..9;]>+ 'm' /, '', :g), $out, 'and the words beneath are the same';
+    my ($rc3, $plain-again) = cli(IO::Path, 'help', :env(%( DO_321_COLOR => '1', NO_COLOR => '1' )));
+    like $plain-again, /"\e[1m"/, 'DO_321_COLOR=1 is the last word, over NO_COLOR';
+    my ($rc4, $off) = cli(IO::Path, 'help', :env(%( DO_321_COLOR => '0' )));
+    is $off, $out, 'DO_321_COLOR=0 is plain';
+    my ($rc5, $json) = cli(IO::Path, '--json', 'status', :env(%( DO_321_COLOR => '1' )));
+    unlike $json, /"\e["/, 'a document for a machine is never dressed, even when asked';
+    my ($rc6, $ascii) = cli(IO::Path, 'help', :env(%( LANG => 'C', LC_ALL => 'C', WT_SESSION => '' )));
+    like $ascii, / ^ \n '<#> 321.do - ' /, 'where the locale is not UTF-8 the plain twin stands in' or diag $ascii.lines.head(2);
+    like cli(IO::Path, 'help', :env(%( LANG => 'C', LC_ALL => 'C', WT_SESSION => 'abc' )))[1], / ^ \n '❮▣❯ 321.do - ' /, 'Windows Terminal is UTF-8 without saying so';
 }
 
 done-testing;

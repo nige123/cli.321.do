@@ -48,7 +48,7 @@ ok validate-run-receipt(%bad).list.grep(*.path eq "signature.algorithm"), 'anoth
 # ---- through the CLI ------------------------------------------------------------
 {
     my $h = temp-dir;
-    my %env = X321_HOME => $h.Str;
+    my %env = DO_321_HOME => $h.Str;
     my ($rc, $out, $err) = x321('key', :%env);
     is $rc, 0, '321 key with no key exits 0';
     like $out, /'No signing key' .* '321 key new'/, 'and says receipts are unsigned, with the next step';
@@ -95,7 +95,7 @@ ok validate-run-receipt(%bad).list.grep(*.path eq "signature.algorithm"), 'anoth
         new-key($h) if $keyed;
         my $receipt = temp-dir().add('receipt.json');
         my ($rc, $out, $err) = x321('run', '--package-dir', $helper.Str, '--package', '-', '--adapter', 'fake', '--receipt', $receipt.Str,
-            :in(to-wire('WorkPackage', pkg()) ~ "\n"), :env(X321_HOME => $h.Str, DO321_FAKE_SCRIPT => '@' ~ $script.Str));
+            :in(to-wire('WorkPackage', pkg()) ~ "\n"), :env(DO_321_HOME => $h.Str, DO_321_FAKE_SCRIPT => '@' ~ $script.Str));
         is $rc, 0, "a run {$keyed ?? 'with' !! 'without'} a key under the home completes" or diag $err;
         my %w = parse-json($receipt.slurp);
         my %last = parse-json($out.lines.grep(*.trim).tail);

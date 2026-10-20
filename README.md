@@ -10,12 +10,31 @@ The runtime and the public protocols here are Apache-2.0. Agent packages are
 separate products with their own licences; none of them live in this
 repository. The runtime hard-codes no agent name.
 
+Ask an agent in plain words and read the receipt. One screen says where
+you stand:
+
+```text
+❮▣❯ 321 status: 0.4.2 on throo
+
+here:         /home/s3/cli.321.do (git), IZ4 aware in claude_code
+agents:       2 configured (1da, b1ll); trust: ~/.321/trust.json
+deploy:       dp bound (/home/s3/deploy.321.do/bin/dp); execute enabled for dev,live
+receipts:     signed with key 3f2a9c1e5b7d0f46
+
+last runs:    3 of 915 (321 status --runs N for more)
+  08:29       1da            go iz4.web live                COMPLETED
+  08:27       1da            go gongoozled.web live         COMPLETED
+  08:15       1da            plan 123.api live              BLOCKED   Which revision?
+  a receipt says what ran and what changed, never that the work is right
+
+next:  a run is waiting on an answer: Which revision?
+       321 1da plan 123.api live <answer>
 ```
-321 <agent> <request words...>            a configured agent, by alias
-321 <publisher-domain>/<agent> <request>   the same, by canonical id
-321 run --package <file|->                 machine invocation over NDJSON
-321 help [<topic>]                       one screen of help at a time; every screen ends with what to do next
-```
+
+`321 help` is the first screen, `321 help COMMAND` one command with an
+example, `321 help more` the rest, `321 help machine` what a tool calls
+(`321 run` over NDJSON). On a terminal the words are dressed and given air;
+into a pipe they are exactly the words. More at [321.do](https://321.do).
 
 Standalone use needs no account, database or network service. When a work
 system delegates a package, that system remains the owner of the work: the
@@ -33,7 +52,7 @@ the machine that runs it.
 rakupp -I lib bin/321 version                              # run from source
 prove --ext .rakutest -e 'rakupp -Ilib' t/                 # the suite
 rakupp -I lib --aot --standalone bin/321 -o dist/321       # one file
-DO321_TEST_BIN=$PWD/dist/321 prove --ext .rakutest -e 'rakupp -Ilib' t/   # the suite against it
+DO_321_TEST_BIN=$PWD/dist/321 prove --ext .rakutest -e 'rakupp -Ilib' t/   # the suite against it
 ```
 
 `.github/workflows/binaries.yml` builds `321-linux-x86_64`,
@@ -61,7 +80,7 @@ seat packages, not to the runtime.
 ## Trust and aliases: `~/.321/trust.json`
 
 Everything the runtime will run is configured by an administrator in
-`~/.321/trust.json` (`X321_TRUST` overrides the path). See
+`~/.321/trust.json` (`DO_321_TRUST` overrides the path). See
 `schemas/trust-config.v1.json`.
 
 ```json
@@ -249,7 +268,7 @@ issued, condition by condition. Its `receiptDigest` is over its own
 canonical content.
 
 A receipt can also be signed. `321 key new` makes this 321 an Ed25519 key
-under `~/.321/key.json` (or `X321_HOME`); from then on every receipt it
+under `~/.321/key.json` (or `DO_321_HOME`); from then on every receipt it
 writes carries `signature` over its `receiptDigest`, and `321 key` shows
 the public half for an issuer to pin. `321 receipt verify <file> [--key
 <base64>]` checks a receipt's digest against its content and its signature
@@ -409,7 +428,7 @@ continuation handle.
     `applied` only when the attempt that carries it has started — never on
     receipt. The session id is read off the stream's `system/init` event, so
     an attempt interrupted before its result object can still be resumed.
-  - `X321_CLAUDE_BINARY` names the harness executable for an isolated test
+  - `DO_321_CLAUDE_BINARY` names the harness executable for an isolated test
     environment without touching PATH; `testdata/fakeclaude/claude` is a
     controllable stand-in (`t/08-claudecode.rakutest`).
 - `procedure`: the built-in executor for package procedures. Enforces
@@ -666,7 +685,7 @@ and `iz4` is missing, too old to be driven, or the IZ4 is invalid, nothing
 was ever being enforced, so the run is not blocked: the receipt lists the
 IZ4 with no level claimed and says why. When iz4 was driving the run and
 then cannot check the finished work, the run ends **blocked**, saying
-enforcement could not be performed: work is never passed off as checked. `X321_IZ4` names the `iz4` to use and, when set, is the only one used.
+enforcement could not be performed: work is never passed off as checked. `DO_321_IZ4` names the `iz4` to use and, when set, is the only one used.
 
 ### Adding a harness
 

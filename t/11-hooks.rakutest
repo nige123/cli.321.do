@@ -108,13 +108,13 @@ ok ($doc<iz4><drivable>:exists) && ($doc<iz4><reason>:exists), 'whether iz4 can 
 {
     # an iz4 that is installed but has no machine interface is not "applied"
     my $old = stub-iz4();
-    my ($rc, $out, $err) = x321('doctor', '--json', :env(%( X321_IZ4 => $old, STUB_OLD => '1' )));
+    my ($rc, $out, $err) = x321('doctor', '--json', :env(%( DO_321_IZ4 => $old, STUB_OLD => '1' )));
     my $d = parse-json($out);
     ok $d<iz4><binary> ne '' && !$d<iz4><drivable> && !$d<iz4><applied>, 'an iz4 that cannot be driven is installed and not applied';
     like $d<iz4><reason>, /'no machine interface'/, 'and doctor says why';
-    ($rc, $out, $err) = x321('doctor', :env(%( X321_IZ4 => $old, STUB_OLD => '1' )));
+    ($rc, $out, $err) = x321('doctor', :env(%( DO_321_IZ4 => $old, STUB_OLD => '1' )));
     like $out, /'is installed but cannot be driven'/, 'in text too';
-    ($rc, $out, $err) = x321('doctor', '--json', :env(%( X321_IZ4 => stub-iz4() )));
+    ($rc, $out, $err) = x321('doctor', '--json', :env(%( DO_321_IZ4 => stub-iz4() )));
     ok parse-json($out)<iz4><drivable>, 'a drivable iz4 is reported as such';
 }
 

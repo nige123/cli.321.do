@@ -28,11 +28,11 @@ sub directive-line(Str $pkg-id, Int $seq, Str $kind, Str $text --> Str) {
 }
 
 #| A script for the fake adapter, handed over as a package: the fake reads
-#| DO321_FAKE_SCRIPT when set (a test seam in the CLI).
+#| DO_321_FAKE_SCRIPT when set (a test seam in the CLI).
 sub script-env(@steps --> Hash) {
     my $f = temp-dir().add('script.json');
     $f.spurt(encode-json([ |@steps ]));
-    %( DO321_FAKE_SCRIPT => '@' ~ $f.Str );
+    %( DO_321_FAKE_SCRIPT => '@' ~ $f.Str );
 }
 
 #| stdout split into decoded frames and their schemas.
@@ -134,7 +134,7 @@ for (STATUS-COMPLETED, 0, STATUS-NO-CHANGE, 0, STATUS-BLOCKED, 2, STATUS-STOPPED
     my %wp = pkg('go'); %wp<agent><id> = 'example.test/nobody';
     my $trust = temp-dir().add('trust.json');
     $trust.spurt('{"schema":"trust-config.v1"}');
-    my ($rc, $out) = x321('run', '--package', '-', :in(to-wire('WorkPackage', %wp) ~ "\n"), :env({ X321_TRUST => $trust.Str }));
+    my ($rc, $out) = x321('run', '--package', '-', :in(to-wire('WorkPackage', %wp) ~ "\n"), :env({ DO_321_TRUST => $trust.Str }));
     my ($objs) = frames($out);
     ok $rc == EXIT-DENIED && @$objs.tail<status> eq STATUS-DENIED && @$objs.tail<packageId> eq %wp<packageId>, 'denied, naming the package';
 }
