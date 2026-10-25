@@ -27,7 +27,7 @@ use Do321::Help;
 use Do321::Look;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.4.3';
+constant VERSION is export = '0.4.4';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
