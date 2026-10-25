@@ -180,7 +180,7 @@ subtest 'the icon marks a header, never a result' => {
     ok $out ~~ / ^^ 'cost:' \h+ 'none (no model was used)' / && $out ~~ / ^^ 'receipt:' \h+ \S+ 'receipt.json' \n \n 'next:' /, 'cost and receipt as rows, air before the next step' or diag $out;
     ok $out.lines.tail ~~ / ^ \h+ '321 --package-dir ' /, 'the last thing printed is the command to type';
     # a denial: the mark, the word, and the details once, wrapped under it
-    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_COLOR => '0', LANG => 'C'));
+    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_COLOR => '0', LANG => 'C', LC_ALL => 'C', LC_CTYPE => 'C', WT_SESSION => ''));
     ok $err.lines[0].starts-with("{ICON-PLAIN} 321 helper: ") && $out ~~ / ^^ '+ COMPLETED: ' /, 'plain twins where the locale is not UTF-8' or diag "$err\n$out";
 }
 
