@@ -397,6 +397,20 @@ sub deny(%wp, Registry $reg, Str $want) {
         "needs a person's approval first: deploy", 'the failing test is in pkg/x', '1. prefer the helper', 'do not widen', 'Absence of a grant is denial' -> $want {
         ok $p.contains($want), "prompt carries '$want'";
     }
+    nok $p.contains('end your summary with the report'), 'with no policy there is no report to ask for';
+}
+
+# a project policy's report is asked for at the END of the prompt as well as
+# in the preamble: a run changed files and wrote a summary with no report
+# (2026-10-25), held back by the project's own check
+{
+    my %wp = pkg-for($agent, 'fix the thing', 'tests pass');
+    my $p = render-prompt(%wp, $agent, [CAP-REPO-READ], [], :policy("Report each invariant you touched as 'Invariant NAME: ...'."));
+    ok $p.contains('## What governs this work'), 'the policy is in the preamble';
+    my $ask = $p.index('end your summary with the report');
+    ok $ask.defined, 'and the report is asked for again';
+    ok $ask > $p.index('If nothing needs changing'), 'after the last closing instruction, where a model reads what to do before it stops';
+    ok $p.contains("held back by the project's own check"), 'saying what a summary without it costs';
 }
 
 # ---- continuation and receipt digests --------------------------------------------

@@ -121,6 +121,11 @@ sub render-prompt(%wp, Loaded $agent, @grants, @instructions, Str :$policy = '' 
         !! "\nWhen you're done, stop.\n";
     $b ~= "\nIf the instruction is ambiguous or you cannot proceed, do not guess: report status \"blocked\" and put the single question you need answered in blocked_on. Before asking, check whether what is already known answers it.\n";
     $b ~= "If nothing needs changing, report status \"no_change\" and say why in summary.\n";
+    # Said again at the end, where a model reads its closing instructions:
+    # the preamble under "What governs this work" asked for the report once
+    # already, and a run on 2026-10-25 changed files, wrote a summary with
+    # no report, and was held back by the project's check for exactly that.
+    $b ~= "Before you stop, if you changed anything: end your summary with the report the section \"What governs this work\" asks for, in the form it gives, one line per item it names. A summary without it is held back by the project's own check, and the work is not accepted.\n" if $policy ne '';
     $b;
 }
 
