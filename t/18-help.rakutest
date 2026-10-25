@@ -147,8 +147,10 @@ subtest 'inspection commands: a header, air, and what comes next' => {
     my ($rc, $out) = cli(IO::Path, 'agents');
     ok $rc == 0 && $out.contains('No agents are configured') && $out.contains('321 help trust'), 'agents, none configured' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'agents');
-    like $out, / ^ ['❮▣❯' | '<#>'] ' 321 agents: 1 configured in ' /, 'agents opens with its header' or diag $out;
-    ok $out.contains("\n\nnext:  ask one of them\n       321 helper <request...>"), 'and ends with the next step after air' or diag $out;
+    ok $out.lines[0] ~~ / ^ ['❮▣❯' | '<#>'] ' 321 agents' $ / && $out.lines[1] ~~ / ^ \h\h\h\h '1 agent configured ' /,
+        'agents opens with its title, the count and the file quietly under it' or diag $out;
+    ok $out.contains("\n\nnext:  read what one of them is for\n       321 agents helper\nthen:  ask one of them\n       321 helper <request...>"),
+        'and ends by offering the profile, then the ask' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'trust', 'show');
     ok $rc == 0 && $out.starts-with("{ICON} 321 trust show: ") && $out.contains('321 trust check'), 'trust show' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'trust', 'check');
@@ -163,6 +165,39 @@ subtest 'inspection commands: a header, air, and what comes next' => {
     ok $rc == 0 && $out.contains('unsigned') && $out.contains('321 key new'), 'key without a key says so' or diag $out;
     ($rc, $out) = cli(IO::Path, 'harness', 'detect');
     ok $rc == 0 && $out.starts-with("{ICON} 321 harness detect: "), 'harness detect' or diag $out;
+}
+
+# ---- one agent, for a person choosing between them -----------------------------------------------
+subtest 'an agent profile reads as a person weighing one agent, not a field dump' => {
+    my ($rc, $out, $err) = cli(helper-trust(), 'agents', 'helper');
+    is $rc, 0, 'a configured agent has a profile' or diag $err;
+    ok $out.lines[0] ~~ / ^ ['❮▣❯' | '<#>'] ' 321 agents: Helper' $ /, 'the title is who it is' or diag $out;
+    ok $out.lines[1] ~~ / ^ \h\h\h\h 'example.test/helper 1.2.0 ' \N+ 'development' $ /,
+        'the identity, version and trust level sit quietly under it' or diag $out;
+    # the publisher's own words, each under a label a person can scan
+    ok $out ~~ / ^^ 'for:' \h+ 'a small general helper used in tests' /, 'what it is for' or diag $out;
+    ok $out ~~ / ^^ 'manner:' \h+ 'plain and literal' $$ / && $out ~~ / ^^ 'tone:' \h+ 'brief' $$ /,
+        'how it works and how it speaks, each the package\'s own field' or diag $out;
+    ok $out ~~ / ^^ 'decides:' \h+ 'asks rather than guesses' /, 'how it decides' or diag $out;
+    # the skills it carries, in the words of the skill files themselves
+    ok $out ~~ / ^^ 'skills:' \h+ '1 skill, as the package describes them' /, 'how many skills' or diag $out;
+    ok $out.contains('checklist') && $out.contains('Answer every completion condition one at a time'),
+        'each skill by name and what it says it does' or diag $out;
+    # capabilities as things a person can picture, not dotted identifiers
+    ok $out.contains("{glyph('yes')} read the files in your workspace"), 'what it asks for, in plain words' or diag $out;
+    ok $out.contains("{glyph('unknown')} change files in your workspace, if you grant it"), 'what it takes only on a grant' or diag $out;
+    ok $out.contains("{glyph('no')} fetch things over the network"), 'what it refuses outright' or diag $out;
+    nok $out.contains('repo.read'), 'no capability is shown as its identifier' or diag $out;
+    ok $out.contains("a run gets that, your grants and this machine's policy, intersected"),
+        'and the profile never passes itself off as the authority a run gets' or diag $out;
+    ok $out ~~ / ^^ 'trust:' \h+ /, 'the trust label, as the loader words it' or diag $out;
+    ok $out.ends-with("next:  ask it; nothing is committed, so you read the change and commit it\n       321 helper <request...>\n"),
+        'and the last thing is the command to type' or diag $out;
+    # a name nobody configured says so and points at the list
+    ($rc, $out, $err) = cli(helper-trust(), 'agents', 'nobody');
+    ok $rc == EXIT-DENIED && $err.contains('321 agents'), 'an unknown name points at the list' or diag $err;
+    ($rc, $out, $err) = cli(helper-trust(), 'agents', 'helper', 'extra');
+    ok $rc == EXIT-USAGE && $err.contains("one agent's name or none"), 'two names is a usage error' or diag $err;
 }
 
 # ---- the icon is never a verdict ------------------------------------------------------------------

@@ -177,6 +177,14 @@ ships here: signing is the publisher's own step with its own key handling.
 Loading never executes anything in a package and never follows a reference
 outside the package root.
 
+`321 agents` lists the packages configured here; `321 agents <name>` reads
+one of them out for a person choosing between them: what it is for, what
+each skill it carries says it does, and what it asks to be allowed and
+refuses outright. Every word of that is the package's own, so it says why
+you would ask this agent rather than another and never that the agent is
+any good. `321 packages show <name>` is the same package as fields -
+digest, trust, capability identifiers, placement.
+
 A package declares capability requirements (`repo.read`, `repo.write`,
 `shell.run`, `net.fetch`, `files.read`, `files.write`, `model.text`,
 `deploy.read`, `deploy.plan`, `deploy.invoke`) and enforcement features it

@@ -20,6 +20,23 @@ unit module Do321::Help;
 
 use Do321::Look;
 
+#| What a capability lets an agent do, in the words a person weighing one
+#| agent against another can read.  A capability with no plain words is
+#| shown by its own name rather than guessed at.
+constant %CAP-PLAIN = (
+    'repo.read'     => 'read the files in your workspace',
+    'repo.write'    => 'change files in your workspace',
+    'shell.run'     => 'run shell commands there',
+    'net.fetch'     => 'fetch things over the network',
+    'files.read'    => 'read files outside the workspace',
+    'files.write'   => 'write files outside the workspace',
+    'model.text'    => 'ask a model for text',
+    'deploy.read'   => 'read what is deployed',
+    'deploy.plan'   => 'plan a deployment without carrying it out',
+    'deploy.invoke' => 'carry out a deployment',
+);
+sub capability-plain(Str $cap --> Str) is export { %CAP-PLAIN{$cap} // $cap }
+
 #| A topic: the words that name it, how it is shown in a list, the group
 #| it is listed under, one line saying what it is for, how to call it, a
 #| few lines more, and one example.  '<agent>' in any of them becomes the
@@ -50,10 +67,10 @@ sub topics(--> List) is export {
       ['321 <agent> <request...>', '321 <publisher>/<agent> <request...>', '321 <agent> -                      (the request from standard input)'],
       'The request is plain words. It becomes the objective of a work package and is never handed to a shell. While it runs at a terminal, type to steer, /pause, /resume, /stop; Ctrl-C stops. The options that go before the agent name are under 321 help options.',
       '321 <agent> note: remember the milk', :shown('<agent> <request...>')),
-    t('agents', EVERY-DAY, 'who you can ask on this machine',
-      ['321 agents'],
-      'Each configured package with its trust level, version and alias, read from ~/.321/trust.json. 321 help trust says how one is added.',
-      '321 agents'),
+    t('agents', EVERY-DAY, 'who you can ask here, and what one of them is for',
+      ['321 agents', '321 agents <agent>'],
+      'With no name: each configured package with its trust level, version and alias, read from ~/.321/trust.json. With a name: what that agent is for, what each skill it carries says it does, and what the package asks to be allowed and refuses - the package\'s own words, so you can tell why you would ask this one rather than another. 321 help trust says how one is added.',
+      '321 agents <agent>'),
     t('status', EVERY-DAY, 'your last runs, and what to do next',
       ['321 status', '321 status --runs N'],
       'One screen: where you are and whether an IZ4 governs it, the agents, the deploy binding, whether receipts are signed, the last runs, and the next step the newest run that needs you is waiting for. A receipt says what ran and what changed, never that the work is right.',

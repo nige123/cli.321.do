@@ -224,12 +224,42 @@ class Loaded is export {
         read-inside($!root, $file);
     }
 
+    #| What the skills the package ships say they are for, in order.
+    method skill-notes(--> List) {
+        @(%!manifest<skills> // []).map({ skill-note($!root, $_) }).List;
+    }
+
     #| Adapter-specific tuning, if the package ships one; Str otherwise.
     method overlay(Str $adapter --> Str) {
         my %o = %!manifest<harness><overlays> // {};
         return Str unless %o{$adapter}:exists;
         read-inside($!root, %o{$adapter});
     }
+}
+
+#| One skill, as a person reads it: its name and what it is for, taken
+#| from the front matter the file carries, or from the file's own
+#| directory and first line of prose where it carries none.  The words
+#| are the package's own; the file is read as text and never run
+#| (loading-executes-nothing.cli.321.do).
+sub skill-note(Str $root, Str $rel --> Hash) is export {
+    my $text = read-inside($root, $rel);
+    my %front;
+    if $text ~~ / ^ '---' \h* \n $<block>=[.*?] \n '---' \h* [\n | $] / {
+        for (~$<block>).lines -> $l {
+            next unless $l ~~ / ^ $<key>=[<[a..zA..Z]> <[\w \-]>*] \h* ':' \h* $<value>=[.*] $ /;
+            %front{(~$<key>).lc} = (~$<value>).trim;
+        }
+    }
+    my $name = (%front<name> // '').trim;
+    $name = $rel.IO.parent.basename if $name eq '' || $name eq '.';
+    $name = $rel.IO.basename if $name eq '' || $name eq '.';
+    my $what = (%front<description> // '').trim;
+    if $what eq '' {
+        my $body = $text.subst(/ ^ '---' \h* \n .*? \n '---' \h* \n /, '');
+        $what = ($body.lines.first({ .trim ne '' && !.trim.starts-with('#') }) // '').trim;
+    }
+    %( name => $name, what => $what );
 }
 
 #| Parse and validate agent.json without loading anything else.

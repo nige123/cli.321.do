@@ -214,6 +214,9 @@ sub row-lines(Str $label, Str $value --> List) is export {
     (sprintf('%-13s %s', $label, @v[0]), |@v[1..*].map({ (' ' x 14) ~ $_ })).List;
 }
 
+#| A count that reads like English: one turn, not 1 turns.
+sub many-of(Int $n, Str $word --> Str) is export { "$n $word" ~ ($n == 1 ?? '' !! 's') }
+
 #| The quiet line under a title: what a person needs only sometimes -
 #| which build this is, which machine - said where it can be found rather
 #| than in the title, where it would be read every time and wanted

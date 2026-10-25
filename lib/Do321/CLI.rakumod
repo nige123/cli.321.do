@@ -189,7 +189,7 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'help' | '-h' | '--help' { return cmd-help($env, @rest[1 .. *]) }
         when 'version' | '--version' { $env.stdout.say("321 {VERSION}"); return 0 }
         when 'run'      { return cmd-run($env, $g, @rest[1 .. *]) }
-        when 'agents'   { return cmd-agents($env) }
+        when 'agents'   { return cmd-agents($env, $g, @rest[1 .. *]) }
         when 'packages' { return cmd-packages($env, @rest[1 .. *]) }
         when 'trust'    { return cmd-trust($env, @rest[1 .. *]) }
         when 'doctor'   { return cmd-doctor($env, @rest[1 .. *]) }
@@ -490,7 +490,85 @@ sub cmd-run(Env $env, Global $g, @args --> Int) {
 
 # ------------------------------------------------------------- inspection
 
-sub cmd-agents(Env $env --> Int) {
+#| The agent a name stands for: the local package by path when one was
+#| named, else the one trust configuration resolves.  Returns (package,
+#| error) so a caller can say what it was looking for.
+sub load-agent-named($cfg, Global $g, Str $name --> List) is export {
+    if $g.package-dir ne '' {
+        my $a = try load-path($g.package-dir.IO);
+        return (Nil, $!.message) if $!;
+        return (Nil, "the package at {$g.package-dir} is {$a.id}, not $name")
+            if $a.id ne $name && $a.manifest<name> ne $name;
+        return ($a, Str);
+    }
+    my $a = try load-resolved($cfg.resolve($name));
+    return (Nil, $!.message) if $!;
+    ($a, Str);
+}
+
+#| One agent, for a person deciding which one to ask: what it is for, what
+#| each skill it carries says it does, and what the package asks to be
+#| allowed and refuses outright.  Every description is the package's own
+#| words, shown as the claim it is - a profile is not evidence of
+#| anything, and what a run may actually do is this intersected with the
+#| caller's grants and local policy (authority-is-intersection.cli.321.do).
+sub cmd-agent-profile(Env $env, Global $g, Str $name --> Int) {
+    my $cfg = try trust-of($env);
+    if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
+    my ($agent, $err) = load-agent-named($cfg, $g, $name);
+    with $err {
+        $env.stderr.say("321: $err");
+        $env.stderr.say($cfg.configured.elems
+            ?? next-text('see who is configured here', '321 agents')
+            !! next-text('configure an agent first', '321 help trust'));
+        return EXIT-DENIED;
+    }
+    my %m = $agent.manifest;
+    my $w = $env.stdout;
+    my sub row(Str $k, Str $v) { $w.say($_) for row-lines($k, $v) }
+    # a skill and what it is for, in a column of its own so a long name
+    # never pushes the words it explains out of line
+    my sub note(Str $n, Str $t) {
+        my @l = wrap-at($t, 54);
+        $w.say(sprintf('  %-14s %s', $n, @l[0] // ''));
+        $w.say((' ' x 17) ~ $_) for @l[1 .. *];
+    }
+    $w.say(header('agents', %m<displayName>));
+    $w.say(subtitle("{%m<id>} {%m<version>}", $agent.level));
+    $w.say('');
+    # each line the package's own field, under its own label: joining two
+    # of them into a sentence would be writing words the publisher did not
+    row('for:', %m<identity><role>);
+    for ('manner:', 'personality'), ('tone:', 'tone'), ('decides:', 'decisionStyle') -> ($label, $field) {
+        my $v = (%m<identity>{$field} // '').trim;
+        row($label, $v) if $v ne '';
+    }
+    my @skills = (try $agent.skill-notes) // ();
+    if @skills {
+        $w.say('');
+        row('skills:', "{many-of(@skills.elems, 'skill')}, as the package describes them");
+        note(.<name>, .<what>) for @skills;
+    }
+    my @req = @(%m<capabilities><required> // []);
+    my @opt = @(%m<capabilities><optional> // []);
+    my @no  = @(%m<capabilities><denied> // []);
+    $w.say('');
+    row('may:', 'what it asks to be allowed, and what it refuses even if offered');
+    $w.say("  {glyph('yes')} {capability-plain($_)}") for @req;
+    $w.say("  {glyph('unknown')} {capability-plain($_)}, if you grant it") for @opt;
+    $w.say("  {glyph('no')} {capability-plain($_)}") for @no;
+    $w.say("  a run gets that, your grants and this machine's policy, intersected");
+    $w.say('');
+    row('trust:', $agent.label);
+    row('note:', $_) for $agent.warnings;
+    $w.say('');
+    $w.say(next-text('ask it; nothing is committed, so you read the change and commit it', "321 $name <request...>"));
+    0;
+}
+
+sub cmd-agents(Env $env, Global $g, @args --> Int) {
+    return cmd-agent-profile($env, $g, @args[0]) if @args == 1 && !@args[0].starts-with('-');
+    return usage-error($env, 'agents', "it takes one agent's name or none, not '{@args.join(' ')}'") if @args;
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
     my @list = $cfg.configured;
@@ -500,7 +578,8 @@ sub cmd-agents(Env $env --> Int) {
             :next(['help trust' => 'how a package is pinned or a local one named'])));
         return 0;
     }
-    $env.stdout.say(header('agents', "{@list.elems} configured in {$cfg.path}"));
+    $env.stdout.say(header('agents'));
+    $env.stdout.say(subtitle("{many-of(@list.elems, 'agent')} configured", $cfg.path.Str));
     $env.stdout.say('');
     for @list -> $r {
         my $alias = $r.alias ne '' ?? '  alias ' ~ $r.alias !! '';
@@ -509,7 +588,9 @@ sub cmd-agents(Env $env --> Int) {
     }
     my $first = @list[0].alias ne '' ?? @list[0].alias !! @list[0].id.Str;
     $env.stdout.say('');
-    $env.stdout.say(next-text('ask one of them', "321 $first <request...>"));
+    $env.stdout.say(next-text('read what one of them is for', "321 agents $first"));
+    $env.stdout.say("then:  ask one of them");
+    $env.stdout.say("       321 $first <request...>");
     0;
 }
 
@@ -1325,14 +1406,12 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
             !! 'it is a plan, not an approval, and nothing was deployed';
         detail("written to {$run-dir.add('proposal.json')}; $note");
     }
-    # one turn, not '1 turns': a count a person reads should read like English
-    my sub many(Int $n, Str $word) { "$n $word" ~ ($n == 1 ?? '' !! 's') }
     my $attempts = @(%r<attempts>).elems;
-    my $spent = sprintf('$%.2f, ', %r<cost><usd>) ~ many(%r<cost><turns>.Int, 'turn') ~ ', ' ~ many($attempts, 'attempt');
+    my $spent = sprintf('$%.2f, ', %r<cost><usd>) ~ many-of(%r<cost><turns>.Int, 'turn') ~ ', ' ~ many-of($attempts, 'attempt');
     given %r<cost><basis> {
         when COST-NONE { row('cost:', 'none (no model was used)') }
         when COST-HARNESS { row('cost:', "$spent, as the harness reported") }
-        when COST-UNREPORTED { row('cost:', "unknown (a harness ran and reported none), {many($attempts, 'attempt')}") }
+        when COST-UNREPORTED { row('cost:', "unknown (a harness ran and reported none), {many-of($attempts, 'attempt')}") }
         when '' { row('cost:', "$spent; no basis was recorded, so this is unknown, not free") }
         default { row('cost:', "$spent ({%r<cost><basis>})") }
     }
@@ -1358,19 +1437,7 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     }
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
-    my $agent;
-    my $err;
-    if $g.package-dir ne '' {
-        $agent = try load-path($g.package-dir.IO);
-        $err = $!.message if $!;
-        if !$err.defined && $agent.id ne $name && $agent.manifest<name> ne $name {
-            $err = "the package at {$g.package-dir} is {$agent.id}, not $name";
-        }
-    }
-    else {
-        $agent = try load-resolved($cfg.resolve($name));
-        $err = $!.message if $!;
-    }
+    my ($agent, $err) = load-agent-named($cfg, $g, $name);
     with $err {
         $env.stderr.say("321: $err");
         $env.stderr.say($cfg.configured.elems ?? next-text('see who is configured here', '321 agents') !! next-text('configure an agent first', '321 help trust'));
