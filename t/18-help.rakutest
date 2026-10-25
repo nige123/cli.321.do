@@ -167,11 +167,21 @@ subtest 'inspection commands: a header, air, and what comes next' => {
 
 # ---- the icon is never a verdict ------------------------------------------------------------------
 subtest 'the icon marks a header, never a result' => {
-    my ($rc, $out) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()));
+    my ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()));
     ok $rc == 0 && $out.contains('COMPLETED'), 'a run completes' or diag $out;
-    nok $out.lines.grep(*.contains(ICON)), 'and no line of its transcript carries the icon';
-    ok $out.contains("Receipt: ") && $out ~~ / 'Receipt: ' \N+ \n \n 'next:' /, 'air before the next step';
+    # the run opens with one header, on standard error, so a pipe on standard
+    # output gets the run alone; then the rows a person reads before anything happens
+    ok $err.lines[0] eq "{ICON} 321 helper: note: milk", 'the header names the agent and the request' or diag $err;
+    is $err.lines.grep(*.contains(ICON)).elems, 1, 'the icon appears once, on the header';
+    ok $err ~~ / ^^ 'agent:' \h+ 'Local Helper (local/helper' / && $err ~~ / ^^ 'trust:' \h+ 'local package by path, unsigned' / && $err ~~ / ^^ 'grants:' \h+ 'none' /, 'agent, trust and grants rows' or diag $err;
+    ok $err.ends-with("\n\n"), 'air after the header';
+    nok $out.lines.grep(*.contains(ICON)), 'no line of the run itself carries the icon';
+    ok $out ~~ / ^^ '✓ COMPLETED: ' /, 'the last word carries its mark' or diag $out;
+    ok $out ~~ / ^^ 'cost:' \h+ 'none (no model was used)' / && $out ~~ / ^^ 'receipt:' \h+ \S+ 'receipt.json' \n \n 'next:' /, 'cost and receipt as rows, air before the next step' or diag $out;
     ok $out.lines.tail ~~ / ^ \h+ '321 --package-dir ' /, 'the last thing printed is the command to type';
+    # a denial: the mark, the word, and the details once, wrapped under it
+    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_COLOR => '0', LANG => 'C'));
+    ok $err.lines[0].starts-with("{ICON-PLAIN} 321 helper: ") && $out ~~ / ^^ '+ COMPLETED: ' /, 'plain twins where the locale is not UTF-8' or diag "$err\n$out";
 }
 
 # ---- after a run: the next step fits the outcome and never overclaims ----------------------------

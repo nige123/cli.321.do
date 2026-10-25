@@ -1100,6 +1100,9 @@ class Session is export {
         my %r := %!receipt;
         $!dir.summarise(%r);
         %r<cost> = %!spent;
+        # a run that ended before any attempt used no model, and says so:
+        # a zero without a basis would be unknown, not free
+        %r<cost><basis> = COST-NONE if (%r<cost><basis> // '') eq '' && !@(%r<attempts> // []);
         %r<endedAt> = &!now();
         %r<conditions> //= [];
         $!mu.protect({ %r<events><emitted> = $!event-seq });

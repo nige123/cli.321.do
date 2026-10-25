@@ -6,6 +6,7 @@ use Test;
 use Do321Test;
 use Do321::JSON;
 use Do321::Shape;
+use Do321::CLI;
 use Do321::Protocol;
 use Do321::Digest;
 use Do321::Trust;
@@ -35,6 +36,22 @@ sub cli(IO::Path $home, IO::Path $trust, *@args, :%env --> List) {
 
 sub has-next(Str $text --> Bool) { so $text ~~ / 'next:  ' \S .* \n \h+ \S / }
 constant SCREEN-LINES = 24;
+
+# ---- how long ago, in a person's words -----------------------------------------------
+{
+    my $now = DateTime.new('2026-10-25T12:00:00Z');
+    my sub ago(Str $iso) { when-text($iso, :$now) }
+    is ago('2026-10-25T11:59:30Z'), 'just now', 'under a minute';
+    is ago('2026-10-25T11:59:00Z'), '1 min ago', 'one minute';
+    is ago('2026-10-25T11:55:00Z'), '5 mins ago', 'minutes';
+    is ago('2026-10-25T11:00:00Z'), '1 hour ago', 'one hour';
+    is ago('2026-10-25T09:00:00Z'), '3 hours ago', 'hours';
+    is ago('2026-10-24T08:00:00Z'), 'yesterday', 'a day back';
+    is ago('2026-10-21T08:00:00Z'), '4 days ago', 'days';
+    is ago('2026-10-10T08:00:00Z'), '10 Oct', 'older: the date';
+    is ago('2025-12-24T08:00:00Z'), '24 Dec 2025', 'another year: the date with its year';
+    is ago(''), '', 'no time, no words';
+}
 
 # ---- a fresh 321: nothing configured, no runs ---------------------------------------
 {
@@ -87,7 +104,7 @@ constant SCREEN-LINES = 24;
     ($rc, $out) = cli($home, $tp, 'status', :env(%bound));
     ok $out.lines.grep(*.contains('COMPLETED')).elems == 1 && $out.lines.grep(*.contains('FAILED')).elems == 1, 'both runs are listed' or diag $out;
     ok !$out.contains('the last run failed') && $out ~~ / \n \h+ '321 op <request...>' \n /, 'an older failure that later runs moved past is not news' or diag $out;
-    ok $out.lines.first(*.contains('COMPLETED')) ~~ /^ \s+ \d\d ':' \d\d \s/, 'a run from today shows its time' or diag $out;
+    ok $out.lines.first(*.contains('COMPLETED')) ~~ /^ \s+ 'just now' \s/, 'a run just made says so in a person\'s words' or diag $out;
 
     # a run waiting on an answer wins over everything newer
     ($rc, $out) = cli($home, $tp, '--non-interactive', 'op', 'plan', 'live', :env(%bound));
@@ -100,7 +117,7 @@ constant SCREEN-LINES = 24;
 
     # --runs limits the list; --json is the same facts for a machine
     ($rc, $out) = cli($home, $tp, 'status', '--runs', '1', :env(%bound));
-    is $out.lines.grep({ $_ ~~ /^ \s+ \d\d ':' \d\d/ }).elems, 1, '--runs 1 lists one run';
+    is $out.lines.grep({ $_ ~~ /^ \s+ ['just now' | \d+ \s \w+ \s 'ago'] \s/ }).elems, 1, '--runs 1 lists one run';
     ok $out.contains('1 of 4'), 'and says how many there are' or diag $out;
     ($rc, $out) = cli($home, $tp, '--json', 'status', :env(%bound));
     my %d = parse-json($out);

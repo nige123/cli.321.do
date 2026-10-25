@@ -172,9 +172,9 @@ sub operator-env(Bool $bound, *%extra --> List) {
     my ($env, $log) = operator-env(True);
     my ($rc, $out, $err) = cli($tp, 'op', 'status', :env(%$env));
     is $rc, 0, 'status by alias' or diag "$out\n$err";
-    ok $out.contains('COMPLETED') && $out.contains('Cost: none (no model was used)') && $out.contains('alpha.web running'), 'the transcript' or diag $out;
+    ok $out.contains('COMPLETED') && $out.contains('cost:         none (no model was used)') && $out.contains('alpha.web running'), 'the transcript' or diag $out;
     ($rc, $out, $err) = cli($tp, 'example.test/operator', 'status', 'alpha.web', 'live', :env(%$env));
-    ok $rc == 0 && $out.contains('Tool: dp status status alpha.web live --json (ok)'), 'status by canonical id' or diag $out;
+    ok $rc == 0 && $out.contains('tool:         dp status status alpha.web live --json (ok)'), 'status by canonical id' or diag $out;
     is read-lines($log).join('|'), 'status --json|status alpha.web live --json', 'engine invocations';
 }
 
@@ -182,7 +182,7 @@ sub operator-env(Bool $bound, *%extra --> List) {
     my $tp = operator-trust();
     my ($env, $log) = operator-env(True);
     my ($rc, $out, $err, $home) = cli($tp, '--non-interactive', 'op', 'plan', 'alpha.web', 'live', 'revision', '0f94b03', :env(%$env));
-    ok $rc == 0 && $out.contains('Proposal: ') && $out.contains('it is a plan, not an approval, and nothing was deployed'), 'plan writes a proposal' or diag "$out\n$err";
+    ok $rc == 0 && $out.contains('proposal:     ') && $out.contains('it is a plan, not an approval, and nothing was deployed'), 'plan writes a proposal' or diag "$out\n$err";
     my @runs = $home.add('runs').dir.sort;
     my $pfile = @runs.tail.add('proposal.json');
     ok $pfile.f, 'proposal.json is written beside the receipt';
@@ -198,7 +198,7 @@ sub operator-env(Bool $bound, *%extra --> List) {
     my ($env, $log) = operator-env(True);
     my ($rc, $out) = cli($tp, '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', 'revision', '0f94b03', :env(%$env));
     is $rc, EXIT-BLOCKED, 'go is prepared, not executed, even with a grant';
-    for 'BLOCKED', 'execution is unavailable here (DP_EXECUTE is unset)', 'nothing was deployed', 'Tool: dp execute  (not performed)', 'Proposal: ' -> $want {
+    for 'BLOCKED', 'execution is unavailable here (DP_EXECUTE is unset)', 'nothing was deployed', 'tool:         dp execute (not performed)', 'proposal:     ' -> $want {
         ok $out.contains($want), "the transcript carries '$want'" or diag $out;
     }
     ok !$out.lc.contains('deployed successfully'), 'it never reads as deployed';

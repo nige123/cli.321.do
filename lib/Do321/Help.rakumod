@@ -60,7 +60,7 @@ sub topics(--> List) is export {
       '321 status'),
     t('receipt', EVERY-DAY, 'what a receipt proves, and how to check one',
       ['321 receipt verify FILE', '321 receipt verify FILE --key B64'],
-      'Every run ends with one word: COMPLETED, BLOCKED (it needs your answer), FAILED, DENIED or STOPPED; then the files changed, the tools called, the cost with its basis, and the receipt\'s path. verify checks a receipt\'s digest against its content and its signature against a key: this 321\'s own, or --key. A receipt says what ran and what changed; it never says the work is right.',
+      'Every run ends with one marked word: COMPLETED, BLOCKED (it needs your answer), FAILED, DENIED or STOPPED, the reasons beneath; then the files changed, the tools called, the cost with its basis, and the receipt\'s path. verify checks a receipt\'s digest against its content and its signature against a key: this 321\'s own, or --key. A receipt says what ran and what changed; it never says the work is right.',
       '321 receipt verify receipt.json', :shown('receipt verify FILE')),
 
     t('iz4 install', HOLD, 'wire the project\'s IZ4 into the harness here',

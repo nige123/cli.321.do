@@ -27,7 +27,7 @@ use Do321::Help;
 use Do321::Look;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.4.2';
+constant VERSION is export = '0.4.3';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
@@ -324,13 +324,25 @@ sub run-summary(IO::Path $dir, %alias-of --> Hash) {
     );
 }
 
-#| "HH:MM" for today, "MM-DD HH:MM" for an earlier day, local time.
-sub when-text(Str $iso --> Str) {
-    return '     ' if $iso eq '';
-    my $d = try DateTime.new($iso).local;
-    return '     ' without $d;
-    my $hm = sprintf('%02d:%02d', $d.hour, $d.minute);
-    $d.Date eq Date.today ?? $hm !! sprintf('%02d-%02d %s', $d.month, $d.day, $hm);
+#| How long ago, as a person says it: "just now", "5 mins ago", "3 hours
+#| ago", "yesterday", "4 days ago"; beyond a week the date, with the year
+#| once it differs.  A run is placed by how far back it is, not by a clock.
+sub when-text(Str $iso, DateTime :$now = DateTime.now --> Str) is export {
+    return '' if $iso eq '';
+    my $d = try DateTime.new($iso);
+    return '' without $d;
+    my $s = ($now - $d).Int;
+    return 'just now'           if $s < 60;
+    my $m = $s div 60;
+    return "$m min{$m == 1 ?? '' !! 's'} ago" if $m < 60;
+    my $h = $s div 3600;
+    return "$h hour{$h == 1 ?? '' !! 's'} ago" if $h < 24;
+    my $days = $now.local.Date - $d.local.Date;
+    return 'yesterday'          if $days <= 1;
+    return "$days days ago"     if $days < 7;
+    my $l = $d.local;
+    my $md = sprintf('%d %s', $l.day, <Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec>[$l.month - 1]);
+    $l.year == $now.local.year ?? $md !! "$md {$l.year}";
 }
 
 sub trim-to(Str $s, Int $n --> Str) { $s.chars <= $n ?? $s !! $s.substr(0, $n - 1) ~ '…' }
@@ -407,7 +419,7 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
     if @runs {
         row('last runs:', $total > @runs ?? "{@runs.elems} of $total (321 status --runs N for more)" !! "{@runs.elems} of $total");
         for @runs -> %r {
-            my $line = sprintf('  %-11s %-14s %-30s %s', when-text(%r<startedAt>), trim-to(%r<agent>, 14), trim-to(%r<objective>, 30), %r<status>.uc);
+            my $line = sprintf('  %-13s %-14s %-30s %s', when-text(%r<startedAt>), trim-to(%r<agent>, 14), trim-to(%r<objective>, 30), %r<status>.uc);
             $line ~= '   ' ~ trim-to(%r<blockedOn>, 40) if %r<blockedOn> ne '';
             $w.say($line);
         }
@@ -1234,71 +1246,87 @@ sub read-steering(Cancel $ctx, LineSource $in, Mailbox $ch, Str $package-id) {
     }
 }
 
-sub render-event($w, %e) {
+#| The run as it happens: one dotted line per thing the runtime did, so
+#| a person can follow along without reading a log.  The verdict and its
+#| details come once, in the receipt block, not here.
+sub render-event($w, %e --> Bool) {
     my %p = %e<payload> // {};
+    my $d = glyph('dot');
+    my $wrote = True;
     given %e<kind> {
         when EVENT-PROGRESS {
             if %p<text> ~~ Str && %p<text> ne '' { $w.say(%p<text>) }
-            elsif %p<instruction> ~~ Str { $w.say('  » instruction applied: ' ~ %p<instruction>) }
+            elsif %p<instruction> ~~ Str { $w.say("  {glyph('note')} instruction applied: " ~ %p<instruction>) }
+            else { $wrote = False }
         }
         when EVENT-TOOL-CALL {
-            if %p<op>:exists { $w.say("  · tool {%p<tool>} {%p<op>} {encode-json(%p<params> // {})}") }
-            else { $w.say("  · {%p<tool>} {%p<target>}") }
+            if %p<op>:exists { $w.say("  $d tool {%p<tool>} {%p<op>} {encode-json(%p<params> // {})}") }
+            else { $w.say("  $d {%p<tool>} {%p<target>}") }
         }
-        when EVENT-TOOL-RESULT { $w.say("  · tool {%p<tool>} {%p<op>}: ok={%p<ok>.Str.lc} exit={%p<exitCode>}") if %p<op>:exists }
-        when EVENT-ADAPTER-SELECTED { $w.say("  · adapter {%p<adapter>}") }
-        when EVENT-PROCEDURE-SELECTED { $w.say("  · procedure {%p<procedure>} (no model)") }
-        when EVENT-ATTEMPT-STARTED { $w.say("  · attempt {%p<attempt>}") if (%p<attempt> // 0) > 1 }
-        when EVENT-DIRECTIVE-APPLIED { $w.say("  · applied {%p<directiveId>}") }
-        when EVENT-DIRECTIVE-REJECTED { $w.say("  · could not apply {%p<directiveId>}: {%p<reason>}") }
-        when EVENT-PAUSED { $w.say('  · paused') }
-        when EVENT-RESUMED { $w.say('  · resumed') }
-        when EVENT-STOPPING { $w.say('  · stopping') }
-        when EVENT-DENIED {
-            $w.say("  · denied: {%p<reason>}");
-            $w.say("    - $_") for @(%p<details> // []);
-        }
+        when EVENT-TOOL-RESULT { if %p<op>:exists { $w.say("  $d tool {%p<tool>} {%p<op>}: ok={%p<ok>.Str.lc} exit={%p<exitCode>}") } else { $wrote = False } }
+        when EVENT-ADAPTER-SELECTED { $w.say("  $d running in {%p<adapter>}") }
+        when EVENT-PROCEDURE-SELECTED { $w.say("  $d procedure {%p<procedure>} (no model)") }
+        when EVENT-ATTEMPT-STARTED { if (%p<attempt> // 0) > 1 { $w.say("  $d attempt {%p<attempt>}") } else { $wrote = False } }
+        when EVENT-DIRECTIVE-APPLIED { $w.say("  $d applied {%p<directiveId>}") }
+        when EVENT-DIRECTIVE-REJECTED { $w.say("  $d could not apply {%p<directiveId>}: {%p<reason>}") }
+        when EVENT-PAUSED { $w.say("  $d paused") }
+        when EVENT-RESUMED { $w.say("  $d resumed") }
+        when EVENT-STOPPING { $w.say("  $d stopping") }
+        # a denial is the run's last word: it is said once, in the receipt block
+        when EVENT-DENIED { $wrote = False }
+        default { $wrote = False }
     }
+    $wrote;
 }
 
-sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefix = '', Str :$workspace = '') {
-    $w.say('');
-    $w.say("{%r<status>.uc}: {%r<summary>}");
-    if %r<status> eq STATUS-FAILED || %r<status> eq STATUS-DENIED {
-        $w.say("  ! $_") for @(%r<evidence><errors> // []);
-        with %r<denied> {
-            $w.say("  ! {.<reason>}");
-            $w.say("    $_") for @(.<details> // []);
-        }
+#| What the run came to, in chunks a person can take in: the last word
+#| with its mark and one line of summary; what it needs or what stopped
+#| it, indented beneath; the conditions; then the rows a person comes back
+#| for (changed, tool, proposal, cost, receipt); then the next step.  The
+#| words are the receipt's own; nothing here says the work is right.
+sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefix = '', Str :$workspace = '', Bool :$lead = True) {
+    my sub row(Str $k, Str $v) { $w.say($_) for row-lines($k, $v) }
+    my $status = %r<status>;
+    my $summary = %r<summary> // '';
+    $summary .= subst(/ ^ 'denied: ' /, '') if $status eq STATUS-DENIED;
+    $w.say('') if $lead;
+    $w.say("{status-glyph($status)} {$status.uc}: $summary");
+    my sub detail(Str $line) { my @w = wrap-at($line, 72); $w.say("  {@w[0]}"); $w.say("    $_") for @w[1..*] }
+    if $status eq STATUS-FAILED || $status eq STATUS-DENIED {
+        detail($_) for @(%r<evidence><errors> // []);
+        with %r<denied> { detail($_) for @(.<details> // []) }
     }
-    $w.say("Needs an answer: {%r<blockedOn>}") if %r<blockedOn> ne '';
+    row('blocked on:', %r<blockedOn>) if %r<blockedOn> ne '';
     for @(%r<conditions> // []).kv -> $i, %c {
-        $w.say("  {%c<met> ?? '✓' !! '✗'} {$i + 1}. {%c<proof>}");
+        $w.say("  {%c<met> ?? glyph('yes') !! glyph('no')} {$i + 1}. {%c<proof>}");
     }
+    $w.say('');
     my @files = @(%r<evidence><filesChanged> // []);
-    $w.say("Changed: {@files.join(', ')}") if @files;
+    row('changed:', @files.join(', ')) if @files;
     for @(%r<evidence><toolCalls> // []) -> %c {
         my $state = %c<unavailable> ne '' ?? 'not performed' !! (%c<ok> ?? 'ok' !! "exit {%c<exitCode>}");
-        $w.say("Tool: {%c<tool>} {%c<op>} {@(%c<argv> // []).join(' ')} ($state)");
+        row('tool:', (%c<tool>, %c<op>, |@(%c<argv> // []), "($state)").grep(* ne '').join(' '));
     }
     with %r<evidence><proposal> -> %p {
-        $w.say("Proposal: {%p<proposalId>} {%p<status>} ({%p<operation>}) {%p<proposalDigest>}");
+        row('proposal:', "{%p<proposalId>} {%p<status>} ({%p<operation>}) {%p<proposalDigest>}");
         if %p<status> eq 'planned' {
             my $sha = (%p<revision> // {})<sha>; $sha = '' unless $sha ~~ Str;
-            $w.say("  {%p<service>} -> {%p<target>} at $sha; not run: {@(%p<unperformed> // []).join(', ')}");
+            detail("{%p<service>} -> {%p<target>} at $sha; not run: {@(%p<unperformed> // []).join(', ')}");
         }
         my $note = %r<evidence><externalAction>.defined
             ?? "the plan that was approved and executed (see the receipt's externalAction)"
             !! 'it is a plan, not an approval, and nothing was deployed';
-        $w.say("  written to {$run-dir.add('proposal.json')}; $note");
+        detail("written to {$run-dir.add('proposal.json')}; $note");
     }
+    my $attempts = @(%r<attempts>).elems;
     given %r<cost><basis> {
-        when COST-NONE { $w.say('Cost: none (no model was used)') }
-        when COST-HARNESS { $w.say(sprintf('Cost: $%.2f, %d turns, %d attempt(s), as the harness reported', %r<cost><usd>, %r<cost><turns>, @(%r<attempts>).elems)) }
-        when COST-UNREPORTED { $w.say("Cost: unknown (a harness ran and reported none), {@(%r<attempts>).elems} attempt(s)") }
-        default { $w.say(sprintf('Cost: $%.2f, %d turns, %d attempt(s) (%s)', %r<cost><usd>, %r<cost><turns>, @(%r<attempts>).elems, %r<cost><basis>)) }
+        when COST-NONE { row('cost:', 'none (no model was used)') }
+        when COST-HARNESS { row('cost:', sprintf('$%.2f, %d turns, %d attempt%s, as the harness reported', %r<cost><usd>, %r<cost><turns>, $attempts, $attempts == 1 ?? '' !! 's')) }
+        when COST-UNREPORTED { row('cost:', "unknown (a harness ran and reported none), $attempts attempt{$attempts == 1 ?? '' !! 's'}") }
+        when '' { row('cost:', sprintf('$%.2f, %d turns, %d attempt%s; no basis was recorded, so this is unknown, not free', %r<cost><usd>, %r<cost><turns>, $attempts, $attempts == 1 ?? '' !! 's')) }
+        default { row('cost:', sprintf('$%.2f, %d turns, %d attempt%s (%s)', %r<cost><usd>, %r<cost><turns>, $attempts, $attempts == 1 ?? '' !! 's', %r<cost><basis>)) }
     }
-    $w.say("Receipt: {$run-dir.add('receipt.json')}");
+    row('receipt:', $run-dir.add('receipt.json').Str);
     $w.say('');
     $w.say(next-after-run(%r, :$invocation, :$prefix, :$workspace, :dp-bound((%*ENV<DP_BIN> // '') ne ''), :dp-execute((%*ENV<DP_EXECUTE> // '').Str)))
         if $invocation ne '';
@@ -1365,15 +1393,27 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     my $raw-package = to-wire('WorkPackage', %wp);
     try $run-dir.add('work-package.json').spurt($raw-package ~ "\n");
 
-    $env.stderr.say("321: {$agent.manifest<displayName>} ({$agent.label})");
-    $env.stderr.say("321: note: $_") for $agent.warnings;
-    $env.stderr.say("321: workspace $workspace (you commit; the agent only edits)") if $kind eq 'git';
-    $env.stderr.say("321: grants {@(%wp<capabilities><granted>).join(', ')}");
+    # The header a person reads before anything happens: who was asked,
+    # what, on whose trust, where, with what authority, and how to steer.
+    # It goes to standard error so a pipe on standard output gets the run
+    # alone; on a terminal it is dressed like every other 321 screen.
+    my @grants = @(%wp<capabilities><granted>);
+    my @header = header($name, $request.subst(/\s+/, ' ', :g).trim), '';
+    my sub row(Str $k, Str $v) { @header.append(row-lines($k, $v)) }
+    row('agent:', "{$agent.manifest<displayName>} ({$agent.id}" ~ ((%wp<agent><version> // '') ne '' ?? " {%wp<agent><version>}" !! '') ~ ')');
+    row('trust:', $agent.label);
+    row('note:', $_) for $agent.warnings;
+    row('workspace:', "$workspace (git); you commit, the agent only edits") if $kind eq 'git';
+    row('grants:', @grants ?? @grants.join(', ') !! 'none');
+    my $steering = $env.interactive && !$g.non-interactive;
+    row('steer:', 'type to steer; /pause, /resume, /stop; Ctrl-C stops') if $steering;
+    my $text = @header.join("\n") ~ "\n\n";
+    $env.stderr.print(pretty-on-err() ?? "\n" ~ pretty($text, :on) !! $text);
+    air-begun();
 
     my $ctx = Cancel.new;
     my $directives = Mailbox.new(:capacity(64));
-    if $env.interactive && !$g.non-interactive {
-        $env.stderr.say('321: type to steer, /pause, /resume, /stop; Ctrl-C stops');
+    if $steering {
         my $in = $env.stdin;
         my $pid = %wp<packageId>;
         start { read-steering($ctx, $in, $directives, $pid) }
@@ -1383,9 +1423,10 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
         signal(SIGTERM, SIGINT).tap(-> $s { $directives.try-send(local-directive($pid, 1 +< 30, DIRECTIVE-STOP, '', "signal {$s.Str}", 'signal')) });
     }
     my $out = $env.stdout;
+    my $shown = 0;
     my $sink = $g.json-out
         ?? SinkFunc.new(:f(-> %e { $out.say(to-wire('RunEvent', %e)) }))
-        !! SinkFunc.new(:f(-> %e { render-event($out, %e) }));
+        !! SinkFunc.new(:f(-> %e { $shown += render-event($out, %e) ?? 1 !! 0 }));
     my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$sink, :history-dir($run-dir.Str),
         :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8'))));
     $ctx.cancel;
@@ -1396,7 +1437,8 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     else {
         my $prefix = '321 ' ~ ($g.package-dir ne '' ?? "--package-dir {$g.package-dir} " !! '') ~ $name;
         my $invocation = $prefix ~ ' ' ~ ($request.contains("\n") ?? '-' !! $request);
-        render-receipt($out, %receipt, $run-dir, :$invocation, :$prefix, :$workspace);
+        # the block opens with air only when a run's lines came before it
+        render-receipt($out, %receipt, $run-dir, :$invocation, :$prefix, :$workspace, :lead($shown > 0));
     }
     exit-for(%receipt<status>);
 }

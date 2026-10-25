@@ -89,7 +89,7 @@ ok validate-run-receipt(%bad).list.grep(*.path eq "signature.algorithm"), 'anoth
             completion => { conditions => ['done'] }, capabilities => { granted => [] });
     }
     my $script = temp-dir().add('script.json');
-    $script.spurt(encode-json([ %( kind => 'assert', condition => 1, met => True, proof => 'ok' ) ]));
+    $script.spurt(encode-json([ %( kind => 'assert', condition => 1, met => True, proof => 'ok' ), ]));
     for False, True -> $keyed {
         my $h = temp-dir;
         new-key($h) if $keyed;

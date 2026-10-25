@@ -30,8 +30,20 @@ sub icon(--> Str) is export { utf8-terminal() ?? ICON !! ICON-PLAIN }
 
 #| The marks a result carries, each a different shape so it reads without
 #| colour, each with a plain twin.
-constant %GLYPH = yes => ('✓', '+'), no => ('✗', 'x'), unknown => ('?', '?');
+constant %GLYPH = yes => ('✓', '+'), no => ('✗', 'x'), unknown => ('?', '?'), dot => ('·', '-'), note => ('»', '>');
 sub glyph(Str $which --> Str) is export { %GLYPH{$which}[utf8-terminal() ?? 0 !! 1] }
+
+#| The mark a run's last word carries: a tick for done, a cross for what
+#| did not happen, a question for what waits on a person, a dot for a
+#| run the person stopped.
+sub status-glyph(Str $status --> Str) is export {
+    given $status {
+        when 'completed' | 'no_change' { glyph('yes') }
+        when 'failed' | 'denied'       { glyph('no') }
+        when 'blocked'                 { glyph('unknown') }
+        default                        { glyph('dot') }
+    }
+}
 
 # ------------------------------------------------------------ on or off
 
@@ -52,6 +64,14 @@ sub pretty-on(--> Bool) is export {
     return %*ENV<DO_321_COLOR> eq '1' if (%*ENV<DO_321_COLOR> // '') eq any('0', '1');
     return False if (%*ENV<NO_COLOR> // '') ne '' || (%*ENV<TERM> // '') eq 'dumb';
     so $*OUT.t;
+}
+
+#| The same, for what goes to standard error: a run's header is said
+#| there, so a pipe on standard output gets the run alone.
+sub pretty-on-err(--> Bool) is export {
+    return %*ENV<DO_321_COLOR> eq '1' if (%*ENV<DO_321_COLOR> // '') eq any('0', '1');
+    return False if (%*ENV<NO_COLOR> // '') ne '' || (%*ENV<TERM> // '') eq 'dumb';
+    so $*ERR.t;
 }
 
 #| A document for a machine (--json) is never dressed, terminal or not.
@@ -84,6 +104,13 @@ my sub emphasise(Str $s --> Str) {
       .subst(/ <!after <[\w / . \-]>> (@HARNESSES) <!before <[\w \-]>> /, { "{BOLD}{$0}{OFF}" }, :g)
 }
 
+#| After a mark: a run's last word in bold, the rest as it is.
+my sub verdict(Str $s --> Str) {
+    $s ~~ / ^ (\h) ('COMPLETED' | 'NO_CHANGE' | 'BLOCKED' | 'FAILED' | 'DENIED' | 'STOPPED') (':' .*)? $ /
+        ?? "{$0}{BOLD}{$1}{OFF}{emphasise(~($2 // ''))}"
+        !! emphasise($s)
+}
+
 #| Text as a person sees it on a terminal.  Nothing is added or removed
 #| but colour; strip the escapes and every word is as it was.  With :!on
 #| the text comes back untouched.
@@ -103,16 +130,17 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
         elsif $l ~~ / ^ ('next:' | 'then:') (.*) $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~$1)}" }
         # comments, dimmed
         elsif $l ~~ / ^ \h* '#' / { $l = "{DIM}{$l}{OFF}" }
-        # the marks
-        elsif $l ~~ / ^ (\h*) ('✓' | '+') (\h .*) $ / { $l = "{$0}{GREEN}{$1}{OFF}{emphasise(~$2)}" }
-        elsif $l ~~ / ^ (\h*) ('✗' | 'x') (\h .*) $ / { $l = "{$0}{RED}{$1}{OFF}{emphasise(~$2)}" }
-        elsif $l ~~ / ^ (\h*) '?' (\h .*) $ / { $l = "{$0}{AMBER}?{OFF}{emphasise(~$1)}" }
+        # the marks; a run's last word after one is bold
+        elsif $l ~~ / ^ (\h*) ('✓' | '+') (\h .*) $ / { $l = "{$0}{GREEN}{$1}{OFF}{verdict(~$2)}" }
+        elsif $l ~~ / ^ (\h*) ('✗' | 'x') (\h .*) $ / { $l = "{$0}{RED}{$1}{OFF}{verdict(~$2)}" }
+        elsif $l ~~ / ^ (\h*) '?' (\h .*) $ / { $l = "{$0}{AMBER}?{OFF}{verdict(~$1)}" }
+        elsif $l ~~ / ^ (\h*) ('·' | '-') (\h 'STOPPED' .*) $ / { $l = "{$0}{$1}{verdict(~$2)}" }
         # a run's last word, and the lines that open a section
         elsif $l ~~ / ^ ('COMPLETED' | 'NO_CHANGE' | 'BLOCKED' | 'FAILED' | 'DENIED' | 'STOPPED' | 'OK' | 'INVALID' | 'All ' \w+) (':' .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }
         # a command a person can type, on its own line or heading a column
         elsif $l ~~ / ^ (\h+ [ \S+ '=' \S* \h+ ]* '321' [\h <-[\h]>+]+?) (\h ** 2..* .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }
         # a labelled row: the label in bold
-        elsif $l ~~ / ^ (<[a..z A..Z]> <[a..z A..Z \-]> ** 0..12 ':') (\h+ .*) $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~$1)}" }
+        elsif $l ~~ / ^ (<[a..z A..Z]> <[a..z A..Z \-]> ** 0..12 [\h <[a..z A..Z]>+]? ':') (\h+ .*) $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~$1)}" }
         else { $l = emphasise($l) }
         $l ~ $nl;
     }).join;
@@ -137,6 +165,9 @@ class Air is IO::Handle {
         $!inner.print(pretty($s, :on));
         True;
     }
+    #| Something else has already opened the screen (a header on standard
+    #| error): the first write here adds no air of its own.
+    method begun() { $!started = True }
     method settle() { $!inner.print("\n") if $!started && !$!tail.ends-with("\n\n"); $!inner.flush }
     method flush() { $!inner.flush }
     method t() { $!inner.t }
@@ -158,11 +189,21 @@ sub install-air() is export {
     $*OUT = $air;
 }
 sub settle-air() is export { .settle with $air }
+sub air-begun() is export { .begun with $air }
 
 # --------------------------------------------------------------- shapes
 
 #| One header shape everywhere: the icon, '321', the command, a summary.
 sub header(Str $name, Str $summary --> Str) is export { "{icon()} 321 $name: $summary" }
+
+#| A labelled row as the status screen draws it: the label in a column
+#| of thirteen, the value beside it, wrapped so a long one continues
+#| under itself and never runs off a narrow terminal.
+sub row-lines(Str $label, Str $value --> List) is export {
+    my @v = wrap-at($value, 64);
+    @v = ('',) unless @v;
+    (sprintf('%-13s %s', $label, @v[0]), |@v[1..*].map({ (' ' x 14) ~ $_ })).List;
+}
 
 sub wrap-at(Str $text, Int $width --> List) is export {
     my @lines; my $line = '';

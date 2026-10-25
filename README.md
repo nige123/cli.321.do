@@ -14,7 +14,7 @@ Ask an agent in plain words and read the receipt. One screen says where
 you stand:
 
 ```text
-❮▣❯ 321 status: 0.4.2 on throo
+❮▣❯ 321 status: 0.4.3 on throo
 
 here:         /home/s3/cli.321.do (git), IZ4 aware in claude_code
 agents:       2 configured (1da, b1ll); trust: ~/.321/trust.json
@@ -22,9 +22,9 @@ deploy:       dp bound (/home/s3/deploy.321.do/bin/dp); execute enabled for dev,
 receipts:     signed with key 3f2a9c1e5b7d0f46
 
 last runs:    3 of 915 (321 status --runs N for more)
-  08:29       1da            go iz4.web live                COMPLETED
-  08:27       1da            go gongoozled.web live         COMPLETED
-  08:15       1da            plan 123.api live              BLOCKED   Which revision?
+  5 mins ago    1da            go iz4.web live                COMPLETED
+  2 hours ago   1da            go gongoozled.web live         COMPLETED
+  yesterday     1da            plan 123.api live              BLOCKED   Which revision?
   a receipt says what ran and what changed, never that the work is right
 
 next:  a run is waiting on an answer: Which revision?
