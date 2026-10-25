@@ -58,7 +58,11 @@ constant SCREEN-LINES = 24;
     my $home = temp-dir();
     my ($rc, $out, $err) = cli($home, IO::Path, 'status');
     is $rc, 0, 'status exits 0' or diag $err;
-    like $out, / ^ ['❮▣❯' | '<#>'] ' 321 status: ' \d+ '.' \d+ .* ' on ' /, 'it opens with its header, naming the runtime and the host' or diag $out;
+    ok $out.lines[0] ~~ / ^ ['❮▣❯' | '<#>'] ' 321 status' $ /, 'the title is the command alone' or diag $out;
+    # which build and which machine are wanted rarely and read every time, so
+    # they sit under the title rather than in it
+    ok $out.lines[1] ~~ / ^ \h\h\h\h \d+ '.' \d+ \N+ $ / && $out.lines[1].contains($*KERNEL.hostname),
+        'the build and the host are the quiet line under it' or diag $out;
     ok $out.contains('here:') && $out.contains('no workspace'), 'from an empty directory there is no workspace' or diag $out;
     like $out, / ^^ 'agents:' \s+ 'none' /, 'no agents' or diag $out;
     ok $out.contains('dp not bound') && $out.contains('execute not enabled'), 'the deploy binding is said as it is' or diag $out;

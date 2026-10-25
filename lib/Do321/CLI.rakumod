@@ -409,7 +409,8 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
     }
 
     my $w = $env.stdout;
-    $w.say(header('status', "{VERSION} on {$*KERNEL.hostname}"));
+    $w.say(header('status'));
+    $w.say(subtitle(VERSION, $*KERNEL.hostname.Str));
     $w.say('');
     my sub row(Str $k, Str $v) { $w.say(sprintf('%-13s %s', $k, $v)) }
     row('here:', $here);

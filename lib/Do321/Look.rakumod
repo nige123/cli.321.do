@@ -126,8 +126,9 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
         elsif $l ~~ / ^ ([ '❮▣❯' | '<#>' ]) (' 321' [' ' <-[:\s]>+]* ':') (.*) $ / { $l = "{$b}{$0}{OFF}{BOLD}{$1}{OFF}{emphasise(~$2)}" }
         # a block's title: the icon, then bold words
         elsif $l ~~ / ^ ([ '❮▣❯' | '<#>' ]) ' ' (.*) $ / { $l = "{$b}{$0}{OFF} {BOLD}{$1}{OFF}" }
-        # a byline under a title: furniture, so it recedes
-        elsif $l ~~ / ^ ('    by ' \S .* \h ['·' | '-'] \h .*) $ / { $l = "{DIM}{$0}{OFF}" }
+        # the quiet line under a title, a byline among them: furniture, so
+        # it recedes
+        elsif $l ~~ / ^ ('    ' \S .* \h ['·' | '-'] \h .*) $ / { $l = "{DIM}{$0}{OFF}" }
         # what comes next
         elsif $l ~~ / ^ ('next:' | 'then:') (.*) $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~$1)}" }
         # comments, dimmed
@@ -196,7 +197,13 @@ sub air-begun() is export { .begun with $air }
 # --------------------------------------------------------------- shapes
 
 #| One header shape everywhere: the icon, '321', the command, a summary.
-sub header(Str $name, Str $summary --> Str) is export { "{icon()} 321 $name: $summary" }
+#| One header shape everywhere: the icon, '321', the command, a summary.
+#| A command with nothing worth summarising passes none, and the header is
+#| the command alone: a summary that only repeats a row below it costs a
+#| person a line to read and tells them nothing.
+sub header(Str $name, Str $summary = '' --> Str) is export {
+    $summary eq '' ?? "{icon()} 321 $name" !! "{icon()} 321 $name: $summary";
+}
 
 #| A labelled row as the status screen draws it: the label in a column
 #| of thirteen, the value beside it, wrapped so a long one continues
@@ -207,10 +214,15 @@ sub row-lines(Str $label, Str $value --> List) is export {
     (sprintf('%-13s %s', $label, @v[0]), |@v[1..*].map({ (' ' x 14) ~ $_ })).List;
 }
 
-#| The byline under a title: who answered, and the identity they answered
-#| as.  It sits under the title the way a page's byline sits under its
-#| headline, indented and quiet, so the title stays the loudest thing.
-sub byline(Str $who, Str $id --> Str) is export { "    by $who {glyph('dot')} $id" }
+#| The quiet line under a title: what a person needs only sometimes -
+#| which build this is, which machine - said where it can be found rather
+#| than in the title, where it would be read every time and wanted
+#| rarely.  Two parts, so the dress can tell it from a wrapped line.
+sub subtitle(Str $left, Str $right --> Str) is export { "    $left {glyph('dot')} $right" }
+
+#| A byline is that line naming who answered, and the identity they
+#| answered as: a page says who wrote it, a run says who did it.
+sub byline(Str $who, Str $id --> Str) is export { subtitle("by $who", $id) }
 
 sub wrap-at(Str $text, Int $width --> List) is export {
     my @lines; my $line = '';
