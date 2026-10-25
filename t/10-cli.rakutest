@@ -148,6 +148,11 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     ok $rc == EXIT-DENIED && $out.contains('network_deny'), 'a shell without a network grant is denied naming network_deny' or diag "$out\n$err";
     ($rc, $out, $err) = cli($tp, '--grant', 'shell.run', '--network', 'open', '--adapter', 'claude_code', 'helper', 'build something', :%env);
     is $rc, 0, 'an explicit open network grant runs (on the fake harness)' or diag "$out\n$err";
+    # the harness's words reach a person once: the run is shown from its events,
+    # and the adapter's readable transcript of the same stream is not teed too
+    is ($out ~ $err).comb('working on it').elems, 1, 'what the agent said is said once' or diag "$out\n$err";
+    ok $err.contains('by Helper'), 'the title carries a byline naming who answered' or diag $err;
+    ok $out.contains('1 turn, 1 attempt, as the harness reported'), 'one turn, not 1 turns' or diag $out;
     ($rc, $out, $err) = cli($tp, '--network', 'wide', 'helper', 'build something', :%env);
     ok $rc == EXIT-USAGE && $err.contains('--network must be'), 'a bad network value';
 }

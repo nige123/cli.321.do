@@ -126,6 +126,8 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
         elsif $l ~~ / ^ ([ '❮▣❯' | '<#>' ]) (' 321' [' ' <-[:\s]>+]* ':') (.*) $ / { $l = "{$b}{$0}{OFF}{BOLD}{$1}{OFF}{emphasise(~$2)}" }
         # a block's title: the icon, then bold words
         elsif $l ~~ / ^ ([ '❮▣❯' | '<#>' ]) ' ' (.*) $ / { $l = "{$b}{$0}{OFF} {BOLD}{$1}{OFF}" }
+        # a byline under a title: furniture, so it recedes
+        elsif $l ~~ / ^ ('    by ' \S .* \h ['·' | '-'] \h .*) $ / { $l = "{DIM}{$0}{OFF}" }
         # what comes next
         elsif $l ~~ / ^ ('next:' | 'then:') (.*) $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~$1)}" }
         # comments, dimmed
@@ -204,6 +206,11 @@ sub row-lines(Str $label, Str $value --> List) is export {
     @v = ('',) unless @v;
     (sprintf('%-13s %s', $label, @v[0]), |@v[1..*].map({ (' ' x 14) ~ $_ })).List;
 }
+
+#| The byline under a title: who answered, and the identity they answered
+#| as.  It sits under the title the way a page's byline sits under its
+#| headline, indented and quiet, so the title stays the loudest thing.
+sub byline(Str $who, Str $id --> Str) is export { "    by $who {glyph('dot')} $id" }
 
 sub wrap-at(Str $text, Int $width --> List) is export {
     my @lines; my $line = '';

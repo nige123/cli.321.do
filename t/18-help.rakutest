@@ -173,7 +173,7 @@ subtest 'the icon marks a header, never a result' => {
     # output gets the run alone; then the rows a person reads before anything happens
     ok $err.lines[0] eq "{ICON} 321 helper: note: milk", 'the header names the agent and the request' or diag $err;
     is $err.lines.grep(*.contains(ICON)).elems, 1, 'the icon appears once, on the header';
-    ok $err ~~ / ^^ 'agent:' \h+ 'Local Helper (local/helper' / && $err ~~ / ^^ 'trust:' \h+ 'local package by path, unsigned' / && $err ~~ / ^^ 'grants:' \h+ 'none' /, 'agent, trust and grants rows' or diag $err;
+    ok $err ~~ / ^^ '    by Local Helper ' \N+ 'local/helper' / && $err ~~ / ^^ 'trust:' \h+ 'local package by path, unsigned' / && $err ~~ / ^^ 'grants:' \h+ 'none' /, 'a byline under the title, then the trust and grants rows' or diag $err;
     ok $err.ends-with("\n\n"), 'air after the header';
     nok $out.lines.grep(*.contains(ICON)), 'no line of the run itself carries the icon';
     ok $out ~~ / ^^ '✓ COMPLETED: ' /, 'the last word carries its mark' or diag $out;

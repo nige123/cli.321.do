@@ -862,7 +862,11 @@ class StreamConsumer is export {
             when 'system' {
                 $!session = $ev<session_id> if str-of($ev<subtype>) eq 'init' && str-of($ev<session_id>) ne '';
             }
-            when 'rate_limit_event' { self!say("  · rate limited, waiting") }
+            when 'rate_limit_event' {
+                self!say("  · rate limited, waiting");
+                # the runtime's own note about the run, not the agent's words
+                $!ctl.emit.(EVENT-PROGRESS, %( notice => 'rate limited, waiting' )) with $!ctl;
+            }
             when 'assistant' {
                 my $msg = $ev<message>;
                 for @(($msg ~~ Associative ?? $msg<content> !! []) // []) -> $c {

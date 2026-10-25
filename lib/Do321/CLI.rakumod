@@ -58,7 +58,12 @@ sub default-registry($stderr --> Registry) is export {
     Registry.new
         .register-hidden(new-procedure(:tools(default-tools())))
         .register-hidden(new-fake($script, :controls(fake-controls-seam())))
-        .register(ClaudeCode.new(:binary(%*ENV<DO_321_CLAUDE_BINARY> // ''), :stderr($stderr), :transcript($stderr)));
+        # No transcript handle: a run is shown from its own events, which the
+        # CLI renders in the house style, so teeing the adapter's readable copy
+        # of the same stream to standard error would say every line twice on a
+        # terminal.  :stderr carries the harness's error output, which nothing
+        # else shows.
+        .register(ClaudeCode.new(:binary(%*ENV<DO_321_CLAUDE_BINARY> // ''), :stderr($stderr)));
 }
 
 #| DO_321_FAKE_CONTROLS is a test seam: a JSON object of control =>
@@ -1256,6 +1261,7 @@ sub render-event($w, %e --> Bool) {
     given %e<kind> {
         when EVENT-PROGRESS {
             if %p<text> ~~ Str && %p<text> ne '' { $w.say(%p<text>) }
+            elsif %p<notice> ~~ Str && %p<notice> ne '' { $w.say("  $d {%p<notice>}") }
             elsif %p<instruction> ~~ Str { $w.say("  {glyph('note')} instruction applied: " ~ %p<instruction>) }
             else { $wrote = False }
         }
@@ -1318,13 +1324,16 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
             !! 'it is a plan, not an approval, and nothing was deployed';
         detail("written to {$run-dir.add('proposal.json')}; $note");
     }
+    # one turn, not '1 turns': a count a person reads should read like English
+    my sub many(Int $n, Str $word) { "$n $word" ~ ($n == 1 ?? '' !! 's') }
     my $attempts = @(%r<attempts>).elems;
+    my $spent = sprintf('$%.2f, ', %r<cost><usd>) ~ many(%r<cost><turns>.Int, 'turn') ~ ', ' ~ many($attempts, 'attempt');
     given %r<cost><basis> {
         when COST-NONE { row('cost:', 'none (no model was used)') }
-        when COST-HARNESS { row('cost:', sprintf('$%.2f, %d turns, %d attempt%s, as the harness reported', %r<cost><usd>, %r<cost><turns>, $attempts, $attempts == 1 ?? '' !! 's')) }
-        when COST-UNREPORTED { row('cost:', "unknown (a harness ran and reported none), $attempts attempt{$attempts == 1 ?? '' !! 's'}") }
-        when '' { row('cost:', sprintf('$%.2f, %d turns, %d attempt%s; no basis was recorded, so this is unknown, not free', %r<cost><usd>, %r<cost><turns>, $attempts, $attempts == 1 ?? '' !! 's')) }
-        default { row('cost:', sprintf('$%.2f, %d turns, %d attempt%s (%s)', %r<cost><usd>, %r<cost><turns>, $attempts, $attempts == 1 ?? '' !! 's', %r<cost><basis>)) }
+        when COST-HARNESS { row('cost:', "$spent, as the harness reported") }
+        when COST-UNREPORTED { row('cost:', "unknown (a harness ran and reported none), {many($attempts, 'attempt')}") }
+        when '' { row('cost:', "$spent; no basis was recorded, so this is unknown, not free") }
+        default { row('cost:', "$spent ({%r<cost><basis>})") }
     }
     row('receipt:', $run-dir.add('receipt.json').Str);
     $w.say('');
@@ -1398,9 +1407,15 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     # It goes to standard error so a pipe on standard output gets the run
     # alone; on a terminal it is dressed like every other 321 screen.
     my @grants = @(%wp<capabilities><granted>);
-    my @header = header($name, $request.subst(/\s+/, ' ', :g).trim), '';
+    # The title, then a byline: a page says who wrote it, a run says who is
+    # answering.  The identity is the publisher's domain and the agent's name;
+    # the version stands beside it and is never part of it
+    # (identity-outlives-the-model.cli.321.do).
+    my $version = (%wp<agent><version> // '').Str;
+    my @header = header($name, $request.subst(/\s+/, ' ', :g).trim),
+                 byline($agent.manifest<displayName>, $agent.id ~ ($version ne '' ?? " $version" !! '')),
+                 '';
     my sub row(Str $k, Str $v) { @header.append(row-lines($k, $v)) }
-    row('agent:', "{$agent.manifest<displayName>} ({$agent.id}" ~ ((%wp<agent><version> // '') ne '' ?? " {%wp<agent><version>}" !! '') ~ ')');
     row('trust:', $agent.label);
     row('note:', $_) for $agent.warnings;
     row('workspace:', "$workspace (git); you commit, the agent only edits") if $kind eq 'git';

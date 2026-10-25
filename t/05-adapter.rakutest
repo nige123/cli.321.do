@@ -107,7 +107,9 @@ is $session, 'init-session', 'the init event\'s session id is read so an interru
 my $t = $tfile.slurp;
 ok $t.contains('Read main.go') && $t.contains('Looking') && $t.contains('rate limited'), 'the transcript is readable' or diag $t;
 ok !$t.contains('StructuredOutput'), 'plumbing does not appear';
-is @kinds.join(','), 'progress,tool_call', 'events are emitted';
+# the rate limit is emitted too: a person reads a run from its events, so
+# anything the transcript alone knew would otherwise go unsaid
+is @kinds.join(','), 'progress,tool_call,progress', 'events are emitted, the rate limit among them';
 ok !consume-stream(['{"type":"assistant"}'], Any, Control.new)[0].defined, 'no result means no envelope';
 
 # ---- the procedure executor refuses ungranted writes and escapes ---------------
