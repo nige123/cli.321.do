@@ -1,0 +1,128 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# The registry is the single source for dispatch, help and completion, and
+# these tests are what stops the three drifting apart.  They also hold
+# completion to its three promises: fast, side-effect free, and never a
+# route to authority.
+use v6.d;
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::Commands;
+use Do321::Complete;
+use Do321::JSON;
+
+my $cli = $?FILE.IO.parent.parent.add('lib/Do321/CLI.rakumod').slurp;
+
+# ------------------------------------------------------------- no drift
+subtest 'the registry and the dispatch table agree' => {
+    # every word dispatch answers, as the source gives it
+    my @dispatched = $cli.match(/ 'when ' "'" $<w>=[<[a..z]> <[a..z0..9-]>*] "'" [ \h* '|' \h* "'" <-[']>+ "'" ]* \h* '{' \h* [ 'return' | '$env' ] /, :g)
+                         .map({ ~.<w> }).unique.sort;
+    ok @dispatched.elems >= 10, "dispatch answers {@dispatched.elems} words";
+    for @dispatched -> $w {
+        ok command($w).defined, "dispatch answers '$w', and the registry knows it";
+    }
+    # The registry runs ahead of dispatch while a command is designed and
+    # not yet wired.  Naming them here means this test fails the day one
+    # is wired, which is the day the exception should go.
+    my @waiting = command-names().grep({ !(@dispatched.first({ $_ eq $^d })) }).sort;
+    is @waiting.join(' '), 'completion log try',
+        'and the registry is ahead of it by exactly the commands still to be wired';
+}
+
+subtest 'every flag the registry offers is one the parser accepts' => {
+    # --brief and --plain are in flight in another tree at the time of
+    # writing: named here for the same reason as the commands above, so
+    # this test tightens itself the day they land.
+    my @waiting = <--brief --plain>;
+    for global-flags() -> $f {
+        if $f.name eq any(@waiting) {
+            nok $cli.contains("when '{$f.name}'"), "{$f.name} is offered and not yet parsed: still to land";
+        }
+        else {
+            ok $cli.contains("when '{$f.name}'"), "the parser takes {$f.name}";
+        }
+    }
+}
+
+# --------------------------------------------------------- what is offered
+my $trust = temp-dir().add('trust.json');
+$trust.spurt(encode-json(%(
+    schema => 'trust-config.v1',
+    publishers => %( 'example.test' => %( packages => %( helper => %( path => fixture('example.test/helper').Str, version => '1.2.0', digest => 'sha256:x', trust => 'development' ) ) ) ),
+    aliases => %( helper => 'example.test/helper' ),
+)));
+sub c(*@w) { candidates(@w, :trust($trust)).List }
+
+subtest 'what a shell offers, where the cursor is' => {
+    is c('a').join(' '), 'agents', 'a command by its prefix';
+    ok c('').elems > 10, 'everything, where nothing has been typed';
+    ok c('').grep({ $_ eq 'helper' }), 'including the agents a person named';
+    ok c('').grep({ $_ eq 'example.test/helper' }), 'and their canonical ids';
+    nok c('').grep({ $_ eq 'run' | 'hook' }), 'but not the seams, which a person does not type';
+
+    is c('agents', '').join(' '), 'check', "a command's own words";
+    is c('receipt', '').join(' '), 'show verify', 'in alphabetical order';
+    is c('receipt', 'verify', '').join(' '), '--paths--', 'and a file is left to the shell';
+
+    ok c('--').grep({ $_ eq '--grant' }), 'a flag by its dashes';
+    is c('--grant', '').join(' '), CAPABILITIES.join(' '), 'a closed list of values after the flag that takes them';
+    is c('--network', '').join(' '), 'none provider_only open', 'and after this one';
+    ok c('status', '--').grep({ $_ eq '--runs' }), "a command's own flag as well as the global ones";
+    ok c('status', '--').grep({ $_ eq '--json' }), 'and the global ones as well as its own';
+
+    is c('b1ll', 'fix', 'the', '').elems, 0, 'nothing is offered inside a request: those words are the person\'s own';
+    is c('nonsense', '').elems, 0, 'and nothing after a word that is neither a command nor an agent';
+}
+
+subtest 'a typo is answered with the nearest command' => {
+    is nearest('agnets'), 'agents', 'two letters swapped';
+    is nearest('stat'), 'status', 'a prefix';
+    is nearest('doctr'), 'doctor', 'a letter missing';
+    is nearest('xyzzy'), '', 'and nothing, where nothing is near';
+}
+
+# ------------------------------------------------------------- the promises
+subtest 'completion writes nothing, anywhere' => {
+    my $home = temp-dir();
+    my sub tree() { $home.dir(:all).map({ .relative($home) ~ ' ' ~ (.f ?? .s !! 'd') }).sort.join("\n") }
+    my $before = tree();
+    candidates([''], :trust($home.add('.321/trust.json')));
+    candidates(['agents', ''], :trust($trust));
+    candidates(['helper', ''], :trust($trust));
+    candidates(['--grant', ''], :trust($trust));
+    is tree(), $before, 'a home a shell completed against is untouched';
+    nok $home.add('.321').e, 'nothing was created, not even the home';
+}
+
+subtest 'completion is never a route to authority' => {
+    my $src = $?FILE.IO.parent.parent.add('lib/Do321/Complete.rakumod').slurp;
+    nok $src.contains('run-in'), 'it runs no process';
+    nok $src ~~ / 'Do321::Run' | 'Do321::Adapter' | 'Do321::Tool' /, 'it cannot reach the run, the adapters or the tools';
+    nok $src ~~ / 'load-resolved' | 'load-path' | 'materialise' /, 'it loads no package and writes no built-in one';
+    nok $src ~~ / 'prompt' \s* '(' | '.get' \h* ';' /, 'and it asks a person nothing';
+    # it reads the trust file and a manifest, and that is the whole of it
+    ok $src.contains('agent.json'), 'it reads a manifest as text';
+    ok $src.contains('parse-json'), 'and parses it, which is all reading is';
+}
+
+subtest 'completion is fast enough to hold a key down' => {
+    my $t0 = now;
+    candidates([''], :trust($trust)) for ^100;
+    my $each = (now - $t0) / 100;
+    ok $each < 0.02, "a completion takes {($each * 1000).round(0.1)}ms";
+}
+
+# --------------------------------------------------------------- the scripts
+subtest 'each shell gets a script that holds no list of its own' => {
+    for SHELLS.list -> $shell {
+        my $s = script($shell);
+        ok $s.chars > 50, "$shell: there is a script";
+        ok $s.contains('321 completion words'), "$shell: it asks 321 for the candidates";
+        ok $s.contains('--paths--'), "$shell: and lets the shell complete paths itself";
+        nok $s ~~ / 'agents' \s+ 'status' | 'repo.read' /, "$shell: it carries no list that could go stale";
+    }
+    is script('tcsh'), '', 'and a shell we do not know gets nothing, rather than something wrong';
+}
+
+done-testing;

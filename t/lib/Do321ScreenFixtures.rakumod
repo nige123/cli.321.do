@@ -63,16 +63,20 @@ sub fixtures(--> List) is export {
         title => 'help completion',
         subtitle => ['bash, zsh and fish', 'one registry, the same as dispatch'],
         blocks => [
-            Note.new(text => 'What the shell showed for "321 a<TAB>" and "321 agents <TAB>":'),
+            Note.new(text => 'What the shell offers, as the engine itself answers it:'),
+            # what the engine actually answers, not what would look good:
+            # these are the candidates from lib/Do321/Complete.rakumod
             Table.new(heads => ['typed', 'offered'], rows => (
-                ['321 a⇥',          'agents'],
-                ['321 agents ⇥',    '1da  b1ll  check  pin'],
-                ['321 1da g⇥',      'go'],
-                ['321 --⇥',         '--grant  --verbose  --json  --brief  --plain  --adapter'],
+                ['321 a⇥',           'agents'],
+                ['321 agents ⇥',     'check'],
+                ['321 1da ⇥',        'go  plan  status'],
+                ['321 --grant ⇥',    'repo.read  repo.write  shell.run  net.fetch  …'],
+                ['321 receipt ⇥',    'show  verify'],
+                ['321 agnets',       'did you mean agents?'],
             )),
-            Note.new(text => 'Completion reads the registry and the trust file. It runs no agent, loads no package and asks for no authority.'),
+            Note.new(text => 'Completion reads the registry and the trust file, and takes 0.5ms. It runs no agent, loads no package, writes nothing and asks for no authority.'),
         ],
-        next => [ Step.new(advice => 'install it for this shell', command => '321 completion install bash') ],
+        next => [ Step.new(advice => 'install it for this shell', command => '321 completion bash >> ~/.bashrc') ],
     )),
 
     # -------------------------------------------------------------- working
