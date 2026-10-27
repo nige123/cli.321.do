@@ -22,26 +22,17 @@ subtest 'the registry and the dispatch table agree' => {
     for @dispatched -> $w {
         ok command($w).defined, "dispatch answers '$w', and the registry knows it";
     }
-    # The registry runs ahead of dispatch while a command is designed and
-    # not yet wired.  Naming them here means this test fails the day one
-    # is wired, which is the day the exception should go.
+    # Nothing is listed that 321 does not answer: a command in the
+    # registry but not in dispatch would be offered by every shell and
+    # then fail, so this fails first.
     my @waiting = command-names().grep({ !(@dispatched.first({ $_ eq $^d })) }).sort;
-    is @waiting.join(' '), 'completion log try',
-        'and the registry is ahead of it by exactly the commands still to be wired';
+    is @waiting.join(' '), '',
+        'and the registry lists nothing dispatch cannot answer';
 }
 
 subtest 'every flag the registry offers is one the parser accepts' => {
-    # --brief and --plain are in flight in another tree at the time of
-    # writing: named here for the same reason as the commands above, so
-    # this test tightens itself the day they land.
-    my @waiting = <--brief --plain>;
     for global-flags() -> $f {
-        if $f.name eq any(@waiting) {
-            nok $cli.contains("when '{$f.name}'"), "{$f.name} is offered and not yet parsed: still to land";
-        }
-        else {
-            ok $cli.contains("when '{$f.name}'"), "the parser takes {$f.name}";
-        }
+        ok $cli.contains("when '{$f.name}'"), "the parser takes {$f.name}";
     }
 }
 

@@ -17,9 +17,9 @@ you stand:
 ❮▣❯ 321 status
     0.4.4 · throo
 
-here:         /home/s3/cli.321.do (git), IZ4 guarded in claude_code
+here:         ~/code/cli.321.do (git), IZ4 guarded in claude_code
 agents:       2 configured (1da, b1ll); trust: ~/.321/trust.json
-deploy:       dp bound (/home/s3/deploy.321.do/bin/dp); execute enabled for dev,live
+deploy:       dp bound (~/code/deploy.321.do/bin/dp); execute enabled for dev,live
 receipts:     signed with key 3f2a9c1e5b7d0f46
 
 last runs:    3 of 915, 2 completed (321 status --runs N for more)
@@ -31,6 +31,17 @@ last runs:    3 of 915, 2 completed (321 status --runs N for more)
 next:  a run is waiting on an answer: Which revision?
        321 1da plan 123.api live <answer>
 ```
+
+`321 log` reads the receipts back over a window: a count for each outcome
+that happened and none for an outcome that did not, what was actually spent
+and how many runs reported nothing, then a row per run. Every run lands in
+exactly one cost bucket, so a total never accounts for fewer runs than ran.
+
+Your shell can offer the commands: `321 completion bash` (or `zsh`, `fish`)
+writes the line to source. The script holds no list of its own; it asks
+`321 completion words`, which reads the same registry dispatch and help
+read, so what is offered cannot drift from what runs, and completing
+starts nothing and asks for no authority.
 
 `321 help` is the first screen, `321 help COMMAND` one command with an
 example, `321 help more` the rest, `321 help machine` what a tool calls
@@ -500,7 +511,7 @@ IZ4       knows the applicable invariants, whether an action or a change is
 
 ```
 $ 321 harness detect --verbose
-❮▣❯ 321 harness detect: /home/s3/cli.321.do
+❮▣❯ 321 harness detect: ~/code/cli.321.do
 
   claude_code  detected 2.1.310 (Claude Code) .claude/settings.json (none yet)
                  enforces:  pre_action, pre_tool, filesystem_guard, shell_guard, human_approval, post_run

@@ -173,7 +173,7 @@ class Table does Block is export {
 
 #| What happened: the state's mark and word, then one sentence 321 wrote
 #| from the receipt.  No agent's words reach this block.
-class Verdict does Block is export {
+class Upshot does Block is export {
     has Str $.state is required;
     has Str $.sentence = '';
 }
@@ -206,7 +206,7 @@ class Screen is export {
 # ------------------------------------------------------------ the renderer
 
 #| Words folded to a width, each line no wider, no word broken.
-sub fold(Str $text, Int $width --> List) is export {
+sub wrap(Str $text, Int $width --> List) is export {
     return ('',) if $text eq '';
     my @out;
     my $line = '';
@@ -223,7 +223,7 @@ constant LABEL = 14;    # where a row's value begins
 
 my sub row-lines(Row $r, Int $width, Bool :$colour --> List) {
     my $label = sprintf('%-*s', LABEL, $r.label);
-    my @v = fold($r.value, $width - LABEL);
+    my @v = wrap($r.value, $width - LABEL);
     my @out = ink($label, 'dim', :$colour) ~ (@v[0] // '');
     @out.push((' ' x LABEL) ~ $_) for @v[1 .. *];
     @out.List;
@@ -294,13 +294,13 @@ my sub table-lines(Table $t, Int $width, Bool :$colour, Bool :$utf8 --> List) {
     @out.List;
 }
 
-my sub verdict-lines(Verdict $v, Int $width, Bool :$colour, Bool :$utf8 --> List) {
+my sub upshot-lines(Upshot $v, Int $width, Bool :$colour, Bool :$utf8 --> List) {
     my $mark = ink(state-mark($v.state, :$utf8), state-colour($v.state), :$colour);
     my $word = ink($v.state, 'bold', :$colour);
     my $head = "$mark $word";
     return ($head,) if $v.sentence eq '';
     my $lead = state-mark($v.state, :$utf8).chars + 1 + $v.state.chars + 3;   # mark, word, ' — '
-    my @s = fold($v.sentence, $width - $lead);
+    my @s = wrap($v.sentence, $width - $lead);
     my @out = "$head {$utf8 ?? '—' !! '--'} {@s[0] // ''}";
     @out.push((' ' x $lead) ~ $_) for @s[1 .. *];
     @out.List;
@@ -309,7 +309,7 @@ my sub verdict-lines(Verdict $v, Int $width, Bool :$colour, Bool :$utf8 --> List
 my sub said-lines(Said $s, Int $width, Bool :$colour, Bool :$utf8 --> List) {
     my $mark = $s.mark ne '' ?? ($utf8 ?? $s.mark !! $s.who.substr(0, 1).uc) !! '';
     my @out = '  ' ~ ($mark ne '' ?? "$mark " !! '') ~ ink($s.who, 'bold', :$colour);
-    @out.push('    ' ~ $_) for fold($s.text, $width - 4);
+    @out.push('    ' ~ $_) for wrap($s.text, $width - 4);
     @out.List;
 }
 
@@ -321,16 +321,16 @@ my sub byline-lines(Byline $b, Int $width, Bool :$colour, Bool :$utf8 --> List) 
     my $who  = $mark ~ $b.name;
     # the name stays with the mark; the words that describe it give way to
     # the next line in a narrow window rather than off the edge
-    my @fold = fold("$who $dot $rest", $width - 4);
+    my @wrap = wrap("$who $dot $rest", $width - 4);
     return ('    ' ~ ink($who, 'bold', :$colour),) if $rest eq '';
-    my $first = @fold[0];
+    my $first = @wrap[0];
     my @out = '    ' ~ ink($who, 'bold', :$colour) ~ ink($first.substr(min($who.chars, $first.chars)), 'dim', :$colour);
-    @out.push('    ' ~ ink($_, 'dim', :$colour)) for @fold[1 .. *];
+    @out.push('    ' ~ ink($_, 'dim', :$colour)) for @wrap[1 .. *];
     @out.List;
 }
 
 my sub step-lines(Str $label, Step $s, Int $width, Bool :$colour --> List) {
-    my @a = fold($s.advice, $width - 7);
+    my @a = wrap($s.advice, $width - 7);
     my @out = ink(sprintf('%-7s', $label), 'bold', :$colour) ~ (@a[0] // '');
     @out.push((' ' x 7) ~ $_) for @a[1 .. *];
     # the command is never folded: a person has to be able to copy it whole
@@ -349,10 +349,10 @@ sub screen-lines(Screen $s, Int :$width = screen-width(), Bool :$colour = False,
     my $lockup = ink($utf8 ?? LOCKUP !! LOCKUP-PLAIN, 'brand', :$colour);
     # a long request is folded under the title rather than cut: the words
     # a person typed are how they recognise their own run
-    my @title = fold($words, $width - 4);
+    my @title = wrap($words, $width - 4);
     @out.push($lockup ~ ' ' ~ ink(@title[0], 'bold', :$colour));
     @out.push('    ' ~ ink($_, 'bold', :$colour)) for @title[1 .. *];
-    @out.append(fold($s.subtitle.grep(* ne '').join(" $dot "), $width - 4).map({ ink('    ' ~ $_, 'dim', :$colour) })) if $s.subtitle.grep(* ne '');
+    @out.append(wrap($s.subtitle.grep(* ne '').join(" $dot "), $width - 4).map({ ink('    ' ~ $_, 'dim', :$colour) })) if $s.subtitle.grep(* ne '');
     @out.append(byline-lines($s.byline, $width, :$colour, :$utf8)) with $s.byline;
 
     for $s.blocks -> $b {
@@ -360,9 +360,9 @@ sub screen-lines(Screen $s, Int :$width = screen-width(), Bool :$colour = False,
         given $b {
             when Rows    { @out.append(row-lines($_, $width, :$colour)) for .rows }
             when Table   { @out.append(table-lines($_, $width, :$colour, :$utf8)) }
-            when Verdict { @out.append(verdict-lines($_, $width, :$colour, :$utf8)) }
+            when Upshot { @out.append(upshot-lines($_, $width, :$colour, :$utf8)) }
             when Said    { @out.append(said-lines($_, $width, :$colour, :$utf8)) }
-            when Note    { @out.append(fold(.text, $width - 2).map({ '  ' ~ ink($_, 'dim', :$colour) })) }
+            when Note    { @out.append(wrap(.text, $width - 2).map({ '  ' ~ ink($_, 'dim', :$colour) })) }
             when Legend  { @out.append(.marks.map(-> $m { '  ' ~ $m.label ~ ' ' ~ ink($m.value, 'dim', :$colour) })) }
         }
     }
@@ -374,7 +374,7 @@ sub screen-lines(Screen $s, Int :$width = screen-width(), Bool :$colour = False,
     }
     if $s.closer ne '' {
         @out.push('');
-        @out.append(fold($s.closer, $width));
+        @out.append(wrap($s.closer, $width));
     }
     @out.List;
 }

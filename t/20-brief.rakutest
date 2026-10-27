@@ -54,7 +54,7 @@ my ($rc, $out, $err) = cli('--brief', 'helper', 'note:', 'milk');
 is $rc, 0, 'a run in pipeline mode completes' or diag $err;
 is-records($out, 'a run is records');
 is $err, '', 'and opens no screen on standard error';
-ok $out.lines.tail ~~ / ^ 'completed' \t <[0..9 A..Z]> ** 26 \t .* \t \S+ 'receipt.json' \t /, 'the receipt record is last: status, package, summary, receipt, waiting-on' or diag $out;
+ok $out.lines.tail ~~ / ^ 'done' \t <[0..9 A..Z]> ** 26 \t .* \t \S+ 'receipt.json' \t /, 'the receipt record is last: outcome, package, summary, receipt, waiting-on' or diag $out;
 ok $out.lines[0] ~~ / ^ \w+ \t /, 'each event is a record of its kind and its words' or diag $out;
 ok $out.lines.grep(*.starts-with("procedure_selected\tprocedure note (no model)")).elems == 1, 'with the words a person would have read' or diag $out;
 
@@ -73,7 +73,21 @@ for ('status',), ('agents',), ('trust', 'show'), ('trust', 'check'), ('doctor',)
 
 # the field order of the records a caller reads
 ($rc, $out) = cli('--brief', 'status');
-ok $out.lines[0] ~~ / ^ \d\d\d\d '-' \S+ \t 'helper' \t 'completed' \t 'note: milk' \t $ /, 'status: when, agent, status, request, waiting-on' or diag $out;
+ok $out.lines[0] ~~ / ^ \d\d\d\d '-' \S+ \t 'helper' \t 'done' \t 'note: milk' \t $ /, 'status: when, agent, outcome, request, waiting-on' or diag $out;
+# Every record that says what became of a run says it in the envelope's
+# own word.  'completed' is what a receipt stores and 'no change' is what
+# a person reads; neither is what a caller is given, because a caller
+# matching the envelope's 'no_change' against 'no change' finds nothing.
+my @vocab = <done no_change blocked denied failed stopped>;
+for ('status',) -> @cmd {
+    my $recs = cli('--brief', |@cmd)[1];
+    for $recs.lines.grep(*.chars) -> $line {
+        my $word = $line.split("\t")[2] // '';
+        ok @vocab.first({ $_ eq $word }).defined,
+            "321 {@cmd} says what became of a run in one envelope word, not '$word'";
+    }
+}
+
 ($rc, $out) = cli('--brief', 'agents');
 is $out, "example.test/helper\tdevelopment\t1.2.0\thelper\n", 'agents: id, level, version, alias';
 ($rc, $out) = cli('--brief', 'trust', 'check');

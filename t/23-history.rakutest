@@ -76,6 +76,19 @@ subtest 'a total is only of what was measured' => {
     is %t<unreported>, 1, 'the run whose harness reported nothing is counted as unreported';
     is %t<modelless>, 2, 'and the runs that used no model are counted as that';
     ok %t<measured> < 1, 'an unreported cost is never added in as a zero, nor as a guess';
+
+    # A basis we do not recognise must still be counted somewhere: a run
+    # that falls through every bucket is a run the screen never mentions,
+    # and a spend line that accounts for fewer runs than there are reads
+    # as if it accounted for all of them.
+    run-dir($runs, '01M0000000000000000000000Z', status => 'completed', hours-ago => 3,
+            usd => 0, basis => 'estimated', objective => 'a basis this code has not met');
+    my %u = tally(read-runs($runs, :days(400), :$now));
+    is %u<unstated>, 1, 'a basis we do not know is counted as unstated, not dropped';
+    is %u<measured-runs> + %u<unreported> + %u<modelless> + %u<unstated>, %u<runs>,
+        'and every run lands in exactly one of the four';
+    unlink $runs.add('01M0000000000000000000000Z').add('receipt.json');
+    rmdir $runs.add('01M0000000000000000000000Z');
 }
 
 subtest 'the screen says what happened and nothing that did not' => {

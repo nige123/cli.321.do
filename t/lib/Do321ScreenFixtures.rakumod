@@ -49,7 +49,7 @@ sub fixtures(--> List) is export {
                 Row.new(label => 'granted:',   value => 'repo.read, and nothing else: no shell, no network, no writing'),
             ]),
             Said.new(mark => '◍', who => 'Prompt', text => 'This is the public website for 321, a Perl and Mojolicious site rendered on the server. It explains what 321 is for, profiles the agents, and links to the documentation and releases.'),
-            Verdict.new(state => 'no change', sentence => 'it answered from the files here and changed nothing'),
+            Upshot.new(state => 'no change', sentence => 'it answered from the files here and changed nothing'),
             Rows.new(rows => [
                 Row.new(label => 'cost:',    value => '$0.31, 2 turns, 1 attempt, as the harness reported'),
                 Row.new(label => 'receipt:', value => '~/.321/runs/01M5Y6QK8WVD3ZPT1XHN4JCR7B/receipt.json'),
@@ -102,7 +102,7 @@ sub fixtures(--> List) is export {
         title => 'b1ll: wrap the status rows at the real terminal width',
         byline => B1LL,
         blocks => [
-            Verdict.new(state => 'done', sentence => 'the rows fold at the terminal width, clamped 40 to 100'),
+            Upshot.new(state => 'done', sentence => 'the rows fold at the terminal width, clamped 40 to 100'),
             Rows.new(rows => [
                 Row.new(label => 'changed:', value => 'lib/Do321/Screen.rakumod, t/21-screen.rakutest'),
                 Row.new(label => 'checked:', value => '1652 tests just now, 51s'),
@@ -119,7 +119,7 @@ sub fixtures(--> List) is export {
         title => 'prompt: in one sentence, what is this repository for?',
         byline => PROMPT,
         blocks => [
-            Verdict.new(state => 'no change', sentence => 'answered from README.md and changed nothing'),
+            Upshot.new(state => 'no change', sentence => 'answered from README.md and changed nothing'),
             Said.new(mark => '◍', who => 'Prompt', text => 'This repository is the server-rendered public website for 321, the meta harness that keeps your agents the same while the harness underneath can be swapped.'),
             Rows.new(rows => [
                 Row.new(label => 'cost:',    value => '$0.34, 3 turns, 1 attempt, as the harness reported'),
@@ -133,7 +133,7 @@ sub fixtures(--> List) is export {
         title => '1da: go 123.web live',
         byline => ODA,
         blocks => [
-            Verdict.new(state => 'blocked', sentence => 'a plan is ready and nothing has been deployed'),
+            Upshot.new(state => 'blocked', sentence => 'a plan is ready and nothing has been deployed'),
             Rows.new(rows => [
                 Row.new(label => 'needs:',   value => 'your word for this exact plan'),
                 Row.new(label => 'plan:',    value => '123.web → live at 2d8417c, written to the receipt'),
@@ -152,7 +152,7 @@ sub fixtures(--> List) is export {
     'denied' => ('a refusal with a recovery step that actually recovers it', Screen.new(
         title => 'b1ll',
         blocks => [
-            Verdict.new(state => 'denied', sentence => 'the package moved since you pinned it, so nothing ran'),
+            Upshot.new(state => 'denied', sentence => 'the package moved since you pinned it, so nothing ran'),
             Rows.new(rows => [
                 Row.new(label => 'pinned:',  value => 'sha256:be4cfffeb67dfe42d6… in ~/.321/trust.json'),
                 Row.new(label => 'on disk:', value => 'sha256:fa04f4d3e6bf0aa6cc… at /home/s3/agents.321.do/packages/321.do/b1ll'),

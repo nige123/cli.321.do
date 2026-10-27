@@ -44,6 +44,9 @@ my sub stamp(Str $iso --> DateTime) {
     try DateTime.new($iso) // DateTime.new(0);
 }
 
+#| read-runs and tally carry the ':read' tag as well as the default, so a
+#| caller can take the two readers without this module's when-text, which
+#| is not the only one in the program.
 #| The runs under a directory, newest first.  A run id is a ULID, so the
 #| directory names already sort chronologically and the newest can be read
 #| without touching the other nine hundred.  Reading stops at the window,
@@ -55,7 +58,7 @@ sub read-runs(
     Int :$cap = 500,
     DateTime :$now = DateTime.now,
     --> List
-) is export {
+) is export(:DEFAULT, :read) {
     return () unless $dir.d;
     my @out;
     my $floor = $now.earlier(:$days);
@@ -97,12 +100,17 @@ sub read-runs(
 
 #| What the runs add up to.  Each outcome counted under its own word, and
 #| the spend split into what was measured and what was not.
-sub tally(@runs --> Hash) is export {
+sub tally(@runs --> Hash) is export(:DEFAULT, :read) {
     my %by;
     %by{.state}++ for @runs;
     my @measured = @runs.grep({ .basis eq 'harness' });
     my @unreported = @runs.grep({ .basis eq 'unreported' });
     my @free = @runs.grep({ .basis eq 'none' });
+    # A basis we do not know is not a basis we may ignore: every run lands
+    # in exactly one of these four, and the screen says all four, so a
+    # total can never quietly account for fewer runs than there are
+    # (cost-carries-its-basis.cli.321.do).
+    my @unstated = @runs.grep({ !(.basis eq any(<harness unreported none>)) });
     %(
         runs       => @runs.elems,
         by         => %by,
@@ -110,6 +118,7 @@ sub tally(@runs --> Hash) is export {
         measured-runs => @measured.elems,
         unreported => @unreported.elems,
         modelless  => @free.elems,
+        unstated   => @unstated.elems,
         waiting    => @runs.grep({ .state eq 'blocked' }).elems,
     );
 }

@@ -49,7 +49,7 @@ subtest 'a screen fits the width it was given, at any width, with no word broken
     }
     # a word is never cut: every word on a folded line is a word of the text
     my $long = 'a' x 50 ~ ' and then some more words to push this over the edge of a narrow window';
-    my @l = fold($long, 40);
+    my @l = wrap($long, 40);
     is @l.grep(*.chars > 40).elems, 1, 'only a word longer than the width can exceed it';
     is @l.join(' ').words.join(' '), $long.words.join(' '), 'and folding loses no word';
 }
@@ -80,7 +80,7 @@ subtest 'colour and character set are separate switches' => {
 subtest 'an agent looks the same whatever happened; a state carries all the colour' => {
     my $base = %( title => 'b1ll: do the thing', byline => B1LL );
     my @drawn = <done blocked failed>.map(-> $state {
-        screen-lines(Screen.new(|$base, blocks => [ Verdict.new(:$state, sentence => 'a sentence') ]),
+        screen-lines(Screen.new(|$base, blocks => [ Upshot.new(:$state, sentence => 'a sentence') ]),
                      :width(80), :colour, :utf8);
     });
     is @drawn[0][1], @drawn[1][1], 'B1LL reads the same on a blocked run as on a done one';
@@ -100,7 +100,7 @@ subtest 'an agent looks the same whatever happened; a state carries all the colo
     # every state reads without colour: the mark and the word both say it
     for <done no change blocked waiting failed denied stopped> -> $w { }
     for ('done', 'no change', 'blocked', 'waiting', 'not checked', 'failed', 'denied', 'stopped') -> $state {
-        my @l = screen-lines(Screen.new(title => 'x', blocks => [ Verdict.new(:$state) ]), :width(40), :!colour, :utf8);
+        my @l = screen-lines(Screen.new(title => 'x', blocks => [ Upshot.new(:$state) ]), :width(40), :!colour, :utf8);
         like @l[2], / ^ <[✓·?✗]> ' ' /, "$state opens with one of the four marks, without colour";
         ok @l[2].contains($state), "and says the word '$state'";
     }

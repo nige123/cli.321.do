@@ -111,7 +111,7 @@ constant SCREEN-LINES = 24;
     ok !$out.contains('the last run failed') && $out ~~ / \n \h+ '321 op <request...>' \n /, 'an older failure that later runs moved past is not news' or diag $out;
     ok $out.lines.first(/^ '  ' .* \s 'completed' $/) ~~ /^ \s+ 'just now' \s/, 'a run just made says so in a person\'s words' or diag $out;
     ($rc, $out) = cli($home, $tp, 'status', '--brief', :env(%bound));
-    ok $out.lines.elems == 2 && $out.lines[0] ~~ / ^ \d\d\d\d '-' .* "\top\tcompleted\tstatus\t" $ / && !$out.contains('next:'), '--brief is one tab-separated record per run, newest first' or diag $out;
+    ok $out.lines.elems == 2 && $out.lines[0] ~~ / ^ \d\d\d\d '-' .* "\top\tdone\tstatus\t" $ / && !$out.contains('next:'), '--brief is one tab-separated record per run, newest first' or diag $out;
 
     # a run waiting on an answer wins over everything newer
     ($rc, $out) = cli($home, $tp, '--non-interactive', 'op', 'plan', 'live', :env(%bound));

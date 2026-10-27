@@ -32,6 +32,9 @@ class Cmd is export {
     has Str  $.what is required;
     has Word @.subs;
     has Flag @.flags;
+    #| What its one argument is, where it takes one instead of a word of
+    #| its own: 'agent', 'file', 'dir'.  A shell offers those.
+    has Str  $.values = '';
     #| A seam is a command another program calls and reads: it prints its
     #| record and no screen whenever stdout is not a terminal, and a shell
     #| does not offer it to a person.
@@ -76,9 +79,15 @@ sub global-flags(--> List) is export {
 #| Every command, in the order help shows them.
 sub commands(--> List) is export {
     (
-    Cmd.new(name => 'try', group => EVERY-DAY, what => 'read this directory with the reader that comes with 321'),
+    # '321 try', the first thing a newcomer runs, is designed and not here
+    # yet: it asks the built-in reader about this directory, so its screen
+    # is the run's screen, and that is the next command to move onto
+    # Do321::Screens.  The registry says what 321 does, so a word it does
+    # not answer is not listed and no shell offers one.
     Cmd.new(name => 'agents', group => EVERY-DAY, what => 'who you can ask here, and what one of them is for',
         subs => (Word.new(name => 'check', what => 'load every configured package and say which fail'),)),
+    Cmd.new(name => 'whois', group => TRUST, values => 'agent',
+        what => 'meet an agent: what it is for, how it works, what it may do'),
     Cmd.new(name => 'status', group => EVERY-DAY, what => 'where you are, and anything waiting on you',
         flags => (Flag.new(name => '--runs', :takes, what => 'how many recent runs to list'),)),
     Cmd.new(name => 'log', group => EVERY-DAY, what => 'what the crew has done, and what came of it',

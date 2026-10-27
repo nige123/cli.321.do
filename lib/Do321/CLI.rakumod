@@ -25,6 +25,14 @@ use Do321::Controller;
 use Do321::Enforcement;
 use Do321::Help;
 use Do321::Look;
+# Only the names these commands call: Do321::Screen's value types (Row,
+# State, Table, Note and the rest) are deliberately generic and belong to
+# the screen builders in Do321::Screens, not to a namespace shared with
+# Run, Adapter and Controller.  Do321::History keeps a when-text of its
+# own, and this module's is a different thing.
+use Do321::Screens;
+use Do321::History :read;
+use Do321::Complete;
 
 #| Stamped at build time in the release workflow.
 constant VERSION is export = '0.4.4';
@@ -227,6 +235,8 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'trust'    { return cmd-trust($env, $g, @rest[1 .. *]) }
         when 'doctor'   { return cmd-doctor($env, $g, @rest[1 .. *]) }
         when 'status'   { return cmd-status($env, $g, @rest[1 .. *]) }
+        when 'log'      { return cmd-log($env, $g, @rest[1 .. *]) }
+        when 'completion' { return cmd-completion($env, $g, @rest[1 .. *]) }
         when 'key'      { return cmd-key($env, $g, @rest[1 .. *]) }
         when 'receipt'  { return cmd-receipt($env, $g, @rest[1 .. *]) }
         when 'hooks'    { return cmd-hooks($env, $g, @rest[1 .. *]) }
@@ -483,7 +493,7 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
     # one run per line, newest first, for a tool: when (ISO 8601), agent,
     # status, what was asked, what it waits on
     if $g.brief {
-        $env.stdout.say(brief-line(.<startedAt>, .<agent>, .<status>, .<objective>, .<blockedOn>)) for @runs;
+        $env.stdout.say(brief-line(.<startedAt>, .<agent>, outcome-of(.<status>), .<objective>, .<blockedOn>)) for @runs;
         return 0;
     }
 
@@ -774,6 +784,98 @@ sub materialise-builtin(Str $name, IO::Path $home --> IO::Path) is export {
         write-digest-file($dir, compute($dir)[0]);
     }
     $dir;
+}
+
+# ------------------------------------------------------------------- log
+
+#| `321 log`: what the crew has done, read back from the receipts.  The
+#| command gathers facts and hands them to one screen builder; the
+#| renderer is told the width, the colour and the character set
+#| separately (Do321::Screens, Do321::Screen).  Every count here is a
+#| receipt that exists: a run that reported no cost is said to have
+#| reported none, never averaged into one that did
+#| (cost-carries-its-basis.cli.321.do).
+sub cmd-log(Env $env, Global $g, @args --> Int) {
+    my $days  = 7;
+    my $agent = '';
+    # A command never shows a person's screen where a document was asked
+    # for, wherever the ask stands on the line.
+    my $json  = $g.json-out;
+    my @rest  = @args;
+    while @rest {
+        my $word = @rest.shift;
+        given $word {
+            when '--json'  { $json = True }
+            when '--brief' { $g.brief = True }
+            when '--plain' { }   # taken around the command
+            when '--days' {
+                my $v = (@rest.shift // '').Str;
+                return usage-error($env, 'log', "--days takes a number of days, not '$v'")
+                    unless $v ~~ / ^ \d+ $ / && $v.Int > 0;
+                $days = $v.Int;
+            }
+            when '--agent' {
+                $agent = (@rest.shift // '').Str;
+                return usage-error($env, 'log', 'say which crew member: 321 agents lists them')
+                    if $agent eq '' || $agent.starts-with('-');
+            }
+            default { return usage-error($env, 'log', "it takes --days N, --agent NAME, --json and --brief, not '$word'") }
+        }
+    }
+
+    my $dir   = home-of($env).add('runs');
+    # One reading opens at most this many receipts; the screen says so
+    # when it stopped there, rather than letting a count look complete.
+    constant CAP = 500;
+    my @runs  = read-runs($dir, :$days, :$agent, :cap(CAP));
+    my %tally = tally(@runs);
+    my $capped = @runs.elems >= CAP;
+
+    # A tool gets one record per run, newest first, and nothing else.
+    if $g.brief {
+        for @runs -> $r {
+            $env.stdout.say(brief-line($r.started.Str, $r.agent, outcome-of($r.status),
+                ($r.objective ne '' ?? $r.objective !! $r.summary), $r.waiting));
+        }
+        return 0;
+    }
+    if $json {
+        $env.stdout.say(log-json(@runs, %tally, :$days, :$agent, dir => $dir.Str));
+        return 0;
+    }
+    my $home = ($*HOME // ''.IO).Str;
+    my $shown = $home ne '' && $dir.Str.starts-with($home) ?? '~' ~ $dir.Str.substr($home.chars) !! $dir.Str;
+    $env.stdout.say($_) for screen-text(
+        log-screen(@runs, %tally, :$days, :$agent, :$capped, dir => $shown),
+        :colour(pretty-on()), :utf8(utf8-terminal()));
+    0;
+}
+
+# ------------------------------------------------------------ completion
+
+#| `321 completion bash|zsh|fish` writes the script a shell sources;
+#| `321 completion words -- <typed...>` is the seam that script calls on
+#| every TAB.  Both read the one registry that dispatch and help read, so
+#| no shell holds a list of its own and none can drift.  Completing
+#| nothing runs, loads no package and asks for no authority
+#| (loading-executes-nothing.cli.321.do): it reads trust.json and each
+#| package's agent.json, and writes nothing anywhere.
+sub cmd-completion(Env $env, Global $g, @args --> Int) {
+    return usage-error($env, 'completion', 'say which shell: bash, zsh or fish') unless @args;
+    my $what = @args[0];
+    if $what eq 'words' {
+        my @typed = @args[1 .. *];
+        @typed.shift if @typed && @typed[0] eq '--';
+        my $trust = $env.trust-path ne ''
+            ?? $env.trust-path.IO
+            !! home-of($env).add('trust.json');
+        $env.stdout.say($_) for candidates(@typed, :$trust);
+        return 0;
+    }
+    return usage-error($env, 'completion', "there is no completion for '$what'; it is bash, zsh or fish")
+        unless so($what eq 'bash' | 'zsh' | 'fish');
+    $env.stdout.print(script($what));
+    0;
 }
 
 sub cmd-packages(Env $env, Global $g, @args --> Int) {
@@ -1863,7 +1965,7 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     # the receipt's record, last: the verdict word first, then what a caller
     # comes back for
     elsif $g.brief {
-        $out.say(brief-line(%receipt<status>, %wp<packageId>, %receipt<summary> // '', $run-dir.add('receipt.json').Str, %receipt<blockedOn> // ''));
+        $out.say(brief-line(outcome-of(%receipt<status>), %wp<packageId>, %receipt<summary> // '', $run-dir.add('receipt.json').Str, %receipt<blockedOn> // ''));
     }
     else {
         my $prefix = '321 ' ~ ($g.package-dir ne '' ?? "--package-dir {$g.package-dir} " !! '') ~ $name;

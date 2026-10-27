@@ -120,6 +120,11 @@ sub candidates(
     with command($head) -> $cmd {
         my @typed = @before.grep({ !.starts-with('-') });
         if @typed.elems == 1 {
+            # a command whose one argument is a thing, not a word of its own
+            if !$cmd.subs && $cmd.values ne '' {
+                return ('--paths--',) if paths-wanted($cmd.values);
+                return values-for($cmd.values, $trust, @adapters).grep({ .starts-with($current) }).List;
+            }
             return $cmd.subs.map(*.name).grep({ .starts-with($current) }).sort.List;
         }
         with $cmd.subs.first({ .name eq @typed[1] }) -> $word {
