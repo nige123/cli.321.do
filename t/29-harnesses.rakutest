@@ -1,0 +1,141 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Sys;
+use Do321::RunDir;
+use Do321::Host;
+
+# One agent, two harnesses, at once: each run asks for its engine, each
+# works in a worktree of its own, a second writer in a shared workspace is
+# refused, and a run started again on another harness is a new run with
+# nothing carried over.  The harnesses are the fake Claude Code and 321's
+# own stand-in; no model is involved.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+my $trust = $home.add('trust.json');
+my $pkg = fixture('example.test/helper');
+$trust.spurt(encode-json({ schema => SCHEMA-TRUST-CONFIG,
+    publishers => { 'example.test' => { packages => { helper => { path => $pkg.Str, version => '1.2.0', digest => compute($pkg)[0], trust => LEVEL-DEVELOPMENT } } } },
+    aliases => { helper => 'example.test/helper' } }));
+my %env = DO_321_HOME => $home.Str, DO_321_TRUST => $trust.Str, FAKE_CLAUDE_MODE => 'hang', FAKE_CLAUDE_ESCAPEE => $home.add('escapees').Str,
+    DO_321_CLAUDE_BINARY => repo-root().add('testdata/fakeclaude-escape/claude').Str,
+    DO_321_CODEX_BINARY => repo-root().add('testdata/fakecodex/codex').Str,
+    DO_321_IZ4 => '/nonexistent/iz4', DP_BIN => '', DP_EXECUTE => '', DO_321_BRIEF => '';
+%*ENV{.key} = .value for %env;
+
+# a workspace with one commit, as a repository a person works in
+my $ws = $home.add('shop');
+$ws.mkdir;
+sub git(*@a) { my $p = run 'git', '-C', $ws.Str, |@a, :out, :err; my $o = $p.out.slurp(:close); $p.err.slurp(:close); $o }
+git('init', '-q');
+git('config', 'user.email', 'test@example.test');
+git('config', 'user.name', 'test');
+$ws.add('README').spurt("shop\n");
+git('add', 'README');
+git('commit', '-qm', 'first');
+
+sub mc(*@args --> List) {
+    my @cmd = %*ENV<DO_321_MC_TEST_BIN> ?? (%*ENV<DO_321_MC_TEST_BIN>,)
+        !! ($*EXECUTABLE.Str, '-I', repo-root().add('lib').Str, repo-root().add('bin/321-mc').Str);
+    my $p = run |@cmd, |@args, :out, :err, :cwd($home.Str);
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    ($p.exitcode, $out, $err);
+}
+
+sub wait-for(&cond, Num $secs = 20e0 --> Bool) {
+    my $end = now + $secs;
+    while now < $end { return True if cond(); sleep 0.2 }
+    False;
+}
+
+sub events(RunDir $r --> List) { $r.events-file.e ?? $r.events-file.lines.map({ parse-json($_) }).List !! () }
+sub selected(RunDir $r --> Str) { (events($r).first(*<kind> eq 'adapter_selected') // {})<payload><adapter> // '' }
+
+sub wa-of(RunDir $r --> Str) { $r.run<workspace> }
+
+my @runs;
+my @aside;
+END { for |@runs, |@aside -> $r { try force-stop($r) if liveness($r)<phase> ne 'ended' } }
+
+subtest 'what this machine can run on' => {
+    my ($rc, $out) = mc('--brief', 'harnesses');
+    is $rc, 0, 'harnesses answers';
+    ok $out.lines.first(*.starts-with("claude_code\tready")), 'Claude Code is ready' or diag $out;
+    ok $out.lines.first(*.starts-with("codex\tready")), 'and so is Codex' or diag $out;
+    my @codex = $out.lines.first(*.starts-with('codex')).split("\t");
+    ok @codex[3].contains('network_deny') && @codex[4].contains('tool_allowlist'), 'with what it enforces and cannot, in the feature words' or diag @codex.raku;
+    my ($rc2, $, $err) = mc('start', '--harness', 'nosuch', 'helper', 'tidy the README');
+    ok $err.contains("no harness is called 'nosuch'"), 'nor one that does not exist' or diag $err;
+}
+
+subtest 'a harness that cannot hold the grant is refused by the runtime, and says why' => {
+    my ($rc, $out, $err) = mc('--brief', 'start', '--harness', 'codex', 'helper', 'read the README');
+    is $rc, 0, 'the run starts: the choice is the runtime\'s to check' or diag $err;
+    my $r = run-dir($out.split("\t")[0]);
+    @aside.push($r);
+    ok wait-for({ $r.receipt-file.e && !$r.live-file.e }), 'and ends';
+    is $r.receipt<status>, 'denied', 'denied, not run with the requirement waived';
+    ok $r.receipt.raku.contains('codex') && $r.receipt.raku.contains('tool_allowlist'), 'naming the harness and what it cannot enforce';
+    nok events($r).first(*<kind> eq 'adapter_selected'), 'Codex was never started';
+}
+
+subtest 'one agent on two harnesses at once, each in a worktree of its own' => {
+    my ($rc, $out, $err) = mc('--brief', 'start', '--harness', 'claude', '--isolate', '--workspace', $ws.Str, 'helper', 'tidy the README');
+    is $rc, 0, 'on Claude Code' or diag $err;
+    @runs.push(run-dir($out.split("\t")[0]));
+    ($rc, $out, $err) = mc('--brief', 'start', '--harness', 'fake', '--isolate', '--workspace', $ws.Str, 'helper', 'tidy the README');
+    is $rc, 0, 'and on the stand-in' or diag $err;
+    @runs.push(run-dir($out.split("\t")[0]));
+    my ($a, $b) = @runs;
+    is ($a.run<harness><requested>, $b.run<harness><requested>), <claude_code fake>, 'each run records the harness asked for';
+    ok wait-for({ selected($a) ne '' && selected($b) ne '' }), 'each reached the runtime';
+    is (selected($a), selected($b)), <claude_code fake>, 'and the runtime ran each on that harness';
+    my ($wa, $wb) = $a.run<isolation><path>, $b.run<isolation><path>;
+    isnt $wa, $wb, 'two worktrees, not one';
+    ok $wa.IO.add('README').e && $wb.IO.add('README').e, 'each a checkout of the workspace';
+    is ($a.run<workspace>, $b.run<workspace>), ($wa, $wb), 'and each run works in its own';
+    my $list = git('worktree', 'list');
+    ok $list.contains($wa) && $list.contains($wb), 'git knows them as worktrees of the workspace';
+    is $a.run<isolation><base>, git('rev-parse', 'HEAD').trim, 'made from its last commit';
+    isnt $a.id, $b.id, 'two runs';
+}
+
+subtest 'a second writer in a shared workspace is refused' => {
+    ok wait-for({ liveness(@runs[0])<phase> eq 'running' }), 'the first run is working';
+    my ($rc, $out, $err) = mc('start', '--workspace', wa-of(@runs[0]), 'helper', 'and another thing');
+    isnt $rc, 0, 'a second run in the same workspace does not start';
+    ok $err.contains('already working in') && $err.contains('--isolate'), 'it says who is there, and what to do' or diag $err;
+}
+
+subtest 'stopping one leaves the other as it was' => {
+    my ($a, $b) = @runs;
+    my $before = liveness($b);
+    my ($rc) = mc('stop', $a.short);
+    is $rc, 3, 'the Claude Code run stops';
+    is $a.receipt<status>, 'stopped', 'with its own receipt';
+    is liveness($b)<phase>, $before<phase> eq 'running' ?? 'running' !! liveness($b)<phase>, 'the other run is untouched';
+    nok ($b.receipt<status> // '') eq 'stopped', 'and not stopped';
+}
+
+subtest 'run again on another harness: a new run, nothing carried over' => {
+    my $a = @runs[0];
+    my ($rc, $out, $err) = mc('--brief', 'restart', $a.short, '--harness', 'fake', '--yes');
+    is $rc, 0, 'started' or diag $err;
+    my $n = run-dir($out.split("\t")[0]);
+    @runs.push($n);
+    is $n.run<harness><requested>, 'fake', 'on the harness asked for';
+    is $n.run<continues><runId>, $a.id, 'naming the run it is again of';
+    isnt $n.run<isolation><path>, $a.run<isolation><path>, 'in a fresh worktree, not the old one';
+    is $n.run<isolation><of>, $ws.Str, 'of the same workspace';
+    nok $n.package-file.slurp.contains('"approval"'), 'with no approval in its package';
+    ok wait-for({ selected($n) eq 'fake' }), 'and the runtime runs it there';
+    my ($rc2, $list) = mc('--brief', 'runs');
+    ok $list.lines.first({ .starts-with($n.id) && .contains("\tfake\t") }), 'the records name each run\'s harness' or diag $list;
+}
+
+done-testing;

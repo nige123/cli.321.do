@@ -183,7 +183,7 @@ subtest 'what the screen says without evidence' => {
     write-atomic($a.status-file, encode-json({ heartbeatAt => DateTime.now.utc.earlier(:minutes(1)).Str }));
     $cr.checked = 0e0;
     $cr.refresh;
-    ok state-of($cr, 1)[1].starts-with('no heartbeat for'), 'a host that stopped beating is said so';
+    ok crew-line($cr, 1)[1].starts-with('no heartbeat for'), 'a host that stopped beating is said so';
     $a.status-file.unlink;
 
     $mm.sel = $mm.crew.first({ .id eq $b.id }, :k);
@@ -199,6 +199,26 @@ subtest 'what the screen says without evidence' => {
     ok actions-for($mm).first(*<key> eq 'restart'), 'an ended run can be run again';
     do-action($mm, 'restart');
     ok $mm.confirm[0].contains('own budget') && $mm.confirm[0].contains('no approval carries over'), 'after a question that says what that means';
+}
+
+subtest 'the agent first, the harness beside it' => {
+    my $h1 = make-run('Bea', 'add a coupon field', [['host', 'host_started', { request => 'add a coupon field' }], ['run', 'adapter_selected', { adapter => 'claude_code' }]]);
+    my $h2 = make-run('Bea', 'add a coupon field', [['host', 'host_started', { request => 'add a coupon field' }], ['run', 'adapter_selected', { adapter => 'codex' }]]);
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $h1.id }, :k);
+    my $t = render($mm, 36, 120).text;
+    my $r1 = $t.lines.first(*.contains($h1.short));
+    my $r2 = $t.lines.first(*.contains($h2.short));
+    ok $r1.contains('BEA') && $r1.contains('claude'), 'one row: Bea, on Claude Code' or diag $r1;
+    ok $r2.contains('BEA') && $r2.contains('codex'), 'the other: Bea, on Codex' or diag $r2;
+    ok $r1.index('BEA') < $r1.index('claude'), 'the agent leads, the harness follows';
+    ok $t.contains("{$h1.short} · on Claude Code"), 'the selected run says which engine it is on';
+    $mm.sel = $mm.crew.first({ .id eq $h2.id }, :k);
+    my $w = render($mm, 40, 160).text;
+    ok $w.contains('on Codex'), 'from 150 columns the conversation is headed with the engine too';
+    ok $w.lines.first({ .contains('cannot') && .contains('tool_allowlist') }), 'and the evidence says what that engine cannot do';
+    ok $w.lines.first({ .contains('codex · add a coupon') }), 'the rail tags each run with its engine';
 }
 
 subtest 'decoding keys' => {

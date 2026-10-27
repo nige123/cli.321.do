@@ -1,0 +1,110 @@
+# The Codex adapter against a stand-in for the `codex` executable
+# (testdata/fakecodex/codex): what it claims, the command it builds, how
+# it reads the event stream, and how it stops.  No model is involved.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Adapter;
+use Do321::Codex;
+use Do321::Harnesses;
+
+my $fake = repo-root().add('testdata/fakecodex/codex').Str;
+my $dir = temp-dir();
+
+sub spec(*%f --> Spec) { Spec.new(:prompt('fix the challenge encoding'), :workspace($dir.Str), |%f) }
+
+sub drive(Spec $s, *%env --> List) {
+    my @events;
+    my $ctl = Control.new(:emit(-> $k, %p { @events.push(%( kind => $k, |%p )) }));
+    my $log = $dir.add('codex.log');
+    $log.unlink if $log.e;
+    my $a = Codex.new(:binary($fake), :kill-wait(2), :env(%( %*ENV, FAKE_CODEX_LOG => $log.Str, FAKE_CODEX_PROMPT => $dir.add('prompt').Str, |%env )));
+    my $cancel = Cancel.new;
+    my $out = $a.run($cancel, $s, $ctl);
+    ($out, @events.List);
+}
+
+subtest 'what it claims, and only that' => {
+    my %e = Codex.new.enforcement;
+    ok %e{FEAT-NETWORK-DENY}, 'its sandbox denies the network';
+    nok %e{FEAT-TOOL-ALLOWLIST}, 'it has no list of tools, and does not claim one';
+    nok %e{FEAT-TURN-LIMIT} || %e{FEAT-SPEND-LIMIT}, 'nor a turn or spend limit';
+    nok %e{FEAT-LIVE-STEER} || %e{FEAT-PAUSE}, 'nor live steering or hold';
+    is codex-sandbox([CAP-REPO-READ, CAP-SHELL-RUN]), 'read-only', 'reading with a shell runs read-only';
+    is codex-sandbox([CAP-REPO-READ, CAP-REPO-WRITE, CAP-SHELL-RUN]), 'workspace-write', 'writing runs in the workspace only';
+    is codex-sandbox([CAP-REPO-READ]), '', 'without a shell grant it cannot be held to the grant: it always has one';
+    is codex-sandbox([CAP-REPO-READ, CAP-SHELL-RUN, CAP-NET-FETCH]), '', 'nor with the network granted';
+    is codex-sandbox([CAP-SHELL-RUN, CAP-DEPLOY-INVOKE]), '', 'nor with anything it does not know';
+    ok Codex.new.confines([CAP-REPO-WRITE, CAP-SHELL-RUN]), 'confines() says the same';
+    ok abilities(Codex.new)<cannot>.first(FEAT-TOOL-ALLOWLIST), 'and the screens list tool_allowlist under cannot';
+    nok Codex.new(:binary('/nonexistent/codex')).detect.available, 'a missing binary is not available';
+    ok Codex.new(:binary($fake), :env(%*ENV)).detect.available, 'an installed, signed-in codex is available';
+    {
+        %*ENV<FAKE_CODEX_LOGGED_OUT> = '1';
+        my $d = Codex.new(:binary($fake)).detect;
+        %*ENV<FAKE_CODEX_LOGGED_OUT>:delete;
+        ok !$d.available && $d.reason.contains('not logged in'), 'one that is not signed in is not, and says why';
+    }
+}
+
+subtest 'the command it builds' => {
+    my @a = Codex.new.args(spec(:grants([CAP-REPO-READ, CAP-REPO-WRITE, CAP-SHELL-RUN])));
+    is @a[0], 'exec', 'codex exec';
+    ok @a.join(' ').contains('sandbox_mode="workspace-write"'), 'in the sandbox the grant allows';
+    ok @a.join(' ').contains('network_access=false'), 'with the network off';
+    ok @a.join(' ').contains('approval_policy="never"'), 'never waiting on a person';
+    is @a.tail, '-', 'the prompt comes on standard input';
+    nok @a.grep(*.contains('encoding')), 'never on the command line';
+    my @r = Codex.new.args(spec(:grants([CAP-REPO-READ, CAP-SHELL-RUN]), :session-ref('T-1')));
+    is @r[0, 1].List, <exec resume>, 'a later attempt resumes';
+    is @r[*-2], 'T-1', 'the same thread';
+    ok @r.join(' ').contains('sandbox_mode="read-only"'), 'in the sandbox for the grant';
+}
+
+subtest 'a run, read from its stream' => {
+    my ($out, $events) = drive(spec(:grants([CAP-REPO-READ, CAP-REPO-WRITE, CAP-SHELL-RUN])));
+    my @ev = @$events;
+    is $out.status, STATUS-COMPLETED, 'completed';
+    is $out.session-ref, '0199a7f2-0000-7000-8000-00000000c0de', 'the thread is the session';
+    is $dir.add('prompt').slurp, 'fix the challenge encoding', 'the prompt arrived whole on standard input';
+    ok @ev.first({ .<kind> eq EVENT-TOOL-CALL && .<tool> eq 'shell' && .<target>.contains('prove') }), 'a shell command is a tool call';
+    ok @ev.first({ .<kind> eq EVENT-TOOL-RESULT && !.<ok> && .<exitCode> == 1 }), 'and its failure is said';
+    ok @ev.first({ .<kind> eq EVENT-TOOL-CALL && .<tool> eq 'edit' && .<target> eq 'Calc.pm' }), 'a file change is a tool call';
+    ok @ev.first({ .<kind> eq EVENT-PROGRESS && (.<text> // '') eq 'Fixed the encoding; the tests pass.' }), 'the agent speaks in its own words';
+    nok @ev.first({ (.<text> // '') eq 'thinking' }), 'its reasoning is not shown as speech';
+    is $out.cost<tokens>, 1500, 'tokens as Codex counted them';
+    is $out.cost<basis>, COST-UNREPORTED, 'and no money claimed: Codex does not report it';
+}
+
+subtest 'a structured result' => {
+    my ($out) = drive(spec(:output-schema('{"type":"object"}')), :FAKE_CODEX_MODE<structured>, :FAKE_CODEX_STATUS<no_change>);
+    is $out.status, STATUS-NO-CHANGE, 'the status is the document\'s';
+    is $out.summary, 'fixed the encoding', 'and so is the summary';
+    ok $out.conditions[0]<met>, 'with its conditions';
+}
+
+subtest 'a failure is a failure' => {
+    my ($out, $events) = drive(spec(), :FAKE_CODEX_MODE<fail>);
+    my @ev = @$events;
+    is $out.status, STATUS-FAILED, 'failed';
+    ok $out.errors.join.contains('401'), 'with what Codex said';
+    ok @ev.first({ (.<notice> // '').starts-with('Reconnecting') }), 'its retries are notices';
+}
+
+subtest 'a stop ends it' => {
+    my @events;
+    my $ctl = Control.new(:emit(-> $k, %p { @events.push($k) }));
+    my $a = Codex.new(:binary($fake), :kill-wait(2), :env(%( %*ENV, FAKE_CODEX_MODE => 'hang' )));
+    my $cancel = Cancel.new;
+    start { sleep 1; $cancel.cancel('a person stopped it') };
+    my $t0 = now;
+    my $out = $a.run($cancel, spec(), $ctl);
+    is $out.status, STATUS-STOPPED, 'stopped';
+    ok now - $t0 < 6, 'promptly';
+}
+
+done-testing;

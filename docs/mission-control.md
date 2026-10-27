@@ -15,7 +15,9 @@ separate entry, `321-mc`, built beside `321`:
 | `321-mc attach <run>` | opens Mission Control on one run; in a pipe, prints its phase |
 | `321-mc stop <run>` | asks the run to stop through its inbox and waits for its own evidence |
 | `321-mc stop <run> --force` | stops a run whose host is not answering, by process identity |
-| `321-mc restart <run>` | a new run of an ended run's request, with its own id and budget; asks first on a terminal, and takes `--yes` in a pipe |
+| `321-mc start --harness <name> --isolate <agent> <request...>` | the same, on the harness named, in a worktree of its own |
+| `321-mc restart <run>` | a new run of an ended run's request, with its own id and budget; asks first on a terminal, and takes `--yes` in a pipe; `--harness` runs it on another engine |
+| `321-mc harnesses` | the engines this machine has, whether 321 drives each, and what each can do |
 | `321-mc runs` | one record per run: id, phase, outcome, agent, request |
 
 A run is named by its id or the last three characters of it.
@@ -59,6 +61,57 @@ steer is shown at once as sending, and as unconfirmed when its run has not
 taken it within five seconds. A running run whose host has not written its
 status for ten seconds says so; whether it is lost is still decided by
 the kernel, not by the silence.
+
+## Agents and harnesses
+
+An agent is the crew: its name, role, character and package, installed
+once. A harness is the engine a run uses: Claude Code, Codex, or 321's own
+procedure executor. A run binds one agent package to one harness, one
+workspace and one request:
+
+    agent + harness + mission = run
+
+So Bea on Claude Code and Bea on Codex are two runs, each with its own id,
+log, inbox, receipt and controls, and stopping one never touches the
+other. The screen leads with the agent and shows the harness beside it,
+quieter: `BEA  claude` and `BEA  codex`. The evidence pane lists what that
+harness can and cannot do.
+
+**What a harness can do comes from its adapter.** Each adapter states
+which features it enforces (tool allowlist, network off, turn and spend
+limits, structured output, event stream, resume, graceful stop, live
+steer, hold). Mission Control turns those claims into words ("steer
+between steps", "keeps the network off", "no spend limit") and offers
+only the controls that follow from them. Nothing on the screen is keyed
+to a provider's name, so a new adapter is shown correctly as soon as it
+is registered.
+
+| | Claude Code | Codex |
+|---|---|---|
+| tools held to the grant | yes, by an allowlist | no: its sandbox limits effects, not tools; its web search and MCP servers run outside it |
+| network off | no | yes, by its sandbox (tried: no host resolves) |
+| turn and spend limits | yes | no |
+| steer | between steps | between steps |
+| hold | ends the step | ends the step |
+| cost | dollars, as it reports them | tokens only, with the cost marked unreported |
+
+**Choosing a harness.** `--harness` names one, and `bea on codex` in the
+new-run line does the same. Without one, the runtime picks the first
+harness able to enforce what the package needs. Either way, the runtime
+checks the choice again: a harness that cannot enforce a requirement is
+refused, never used with the requirement waived.
+
+**Workspaces.** Two runs that can write never share a workspace. A second
+one is refused and told about `--isolate`, which gives the run a git
+worktree of the workspace at its last commit, under `~/.321/worktrees`.
+Changes not yet committed are not in it. The run never commits. You
+review what it did there, take it, and remove the worktree with
+`git worktree remove`.
+
+**Running again on another harness** makes a new run of the same request
+with its own budget. It names the old run and that run's receipt
+digest, gets a fresh worktree if the old run had one, and carries no
+approval or grant. Nothing of the old harness's session moves across.
 
 ## The run directory
 
@@ -114,6 +167,17 @@ with your words. The screen says "taken" when the runtime has applied a
 steer. It never says the agent obeyed.
 
 ## Known gaps
+
+- Codex is registered, and is chosen only where its claims cover the
+  package. It has a sandbox, not a tool allowlist, so a package with tool
+  grants is refused on it, and the receipt names what it cannot enforce.
+  Whether a sandbox may count for some grants, per grant and with its
+  basis in the receipt, is the owner's decision. Codex also needs
+  `codex login`.
+- 123.do cannot yet ask for or limit a harness. The owner's trust policy
+  (`adapters.preferred` and `adapters.denied`) already can. A work
+  package field for it is a change to the shared contract with 123.do,
+  and is proposed rather than made.
 
 - `321 run` ignores SIGTERM once its stdin has closed. When a host is
   killed outright, its runtime and harness keep running until

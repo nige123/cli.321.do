@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# A stand-in for OpenAI's `codex` CLI, speaking `codex exec --json` as
+# codex-cli 0.164.0 does (event and item names read off the real binary,
+# the opening and failure lines captured from it).  No model.
+#   FAKE_CODEX_MODE    complete (default) | structured | fail | hang
+#   FAKE_CODEX_LOG     where to write the argv, one line per call
+#   FAKE_CODEX_PROMPT  where to write what arrived on stdin
+#   FAKE_CODEX_STATUS  the status in a structured result (default changed)
+set -u
+if [ "${1:-}" = "--version" ]; then echo "codex-cli 0.0.1-fake"; exit 0; fi
+if [ "${1:-}" = "login" ]; then if [ -n "${FAKE_CODEX_LOGGED_OUT:-}" ]; then echo "Not logged in"; exit 1; fi; echo "Logged in using ChatGPT"; exit 0; fi
+[ -n "${FAKE_CODEX_LOG:-}" ] && { printf '%q ' "$@" >> "$FAKE_CODEX_LOG"; printf '\n' >> "$FAKE_CODEX_LOG"; }
+prompt=$(cat)
+[ -n "${FAKE_CODEX_PROMPT:-}" ] && printf '%s' "$prompt" > "$FAKE_CODEX_PROMPT"
+thread="0199a7f2-0000-7000-8000-00000000c0de"
+resume=""; for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
+echo "{\"type\":\"thread.started\",\"thread_id\":\"$thread\"}"
+echo '{"type":"turn.started"}'
+mode=${FAKE_CODEX_MODE:-complete}
+if [ "$mode" = "hang" ]; then trap 'exit 143' TERM; while :; do sleep 0.05; done; fi
+if [ "$mode" = "fail" ]; then
+  echo '{"type":"error","message":"Reconnecting... 1/5 (unexpected status 401 Unauthorized)"}'
+  echo '{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized"}}'
+  exit 1
+fi
+echo '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc prove t/","aggregated_output":"","exit_code":null,"status":"in_progress"}}'
+echo '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"bash -lc prove t/","aggregated_output":"not ok 1","exit_code":1,"status":"failed"}}'
+echo '{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"thinking"}}'
+echo '{"type":"item.completed","item":{"id":"item_3","type":"file_change","changes":[{"path":"/w/lib/Calc.pm","kind":"update"}],"status":"completed"}}'
+if [ "$mode" = "structured" ]; then
+  st=${FAKE_CODEX_STATUS:-changed}
+  echo "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_4\",\"type\":\"agent_message\",\"text\":\"{\\\"status\\\":\\\"$st\\\",\\\"summary\\\":\\\"fixed the encoding${resume:+ (resumed)}\\\",\\\"conditions\\\":[{\\\"met\\\":true,\\\"proof\\\":\\\"prove t/ passes\\\"}]}\"}}"
+else
+  echo '{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"Fixed the encoding; the tests pass."}}'
+fi
+echo '{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":800,"output_tokens":300}}'

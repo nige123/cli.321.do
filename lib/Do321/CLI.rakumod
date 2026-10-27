@@ -18,6 +18,7 @@ use Do321::Keys;
 use Do321::Trust;
 use Do321::Tool;
 use Do321::Adapter;
+use Do321::Codex;
 use Do321::Run;
 use Do321::Wire;
 use Do321::Hooks;
@@ -51,9 +52,9 @@ class Env is export {
 }
 
 #| The installed adapter set: the procedure executor and the fake (hidden,
-#| selectable only by name) and Claude Code.  DO_321_CLAUDE_BINARY names the
-#| harness executable for an isolated test environment without touching
-#| PATH.
+#| selectable only by name), Claude Code and Codex.  DO_321_CLAUDE_BINARY
+#| and DO_321_CODEX_BINARY name the harness executables for an isolated
+#| test environment without touching PATH.
 sub default-registry($stderr --> Registry) is export {
     # DO_321_FAKE_SCRIPT is a test seam: a JSON list of procedure steps the
     # hidden fake adapter runs instead of its default script (the JSON
@@ -71,7 +72,11 @@ sub default-registry($stderr --> Registry) is export {
         # of the same stream to standard error would say every line twice on a
         # terminal.  :stderr carries the harness's error output, which nothing
         # else shows.
-        .register(ClaudeCode.new(:binary(%*ENV<DO_321_CLAUDE_BINARY> // ''), :stderr($stderr)));
+        .register(ClaudeCode.new(:binary(%*ENV<DO_321_CLAUDE_BINARY> // ''), :stderr($stderr)))
+        # Codex is chosen only where its claims cover the package: it has
+        # a sandbox, not a tool allowlist, so a package with tool grants is
+        # never placed on it.
+        .register(Codex.new(:binary(%*ENV<DO_321_CODEX_BINARY> // ''), :stderr($stderr)));
 }
 
 #| DO_321_FAKE_CONTROLS is a test seam: a JSON object of control =>
@@ -1051,6 +1056,7 @@ sub adapter-note(Str $name --> Str) {
     given $name {
         when 'procedure' { 'runs a package procedure; no model' }
         when 'fake'      { 'a stand-in for tests' }
+        when 'codex'     { 'OpenAI Codex; a sandbox, not a tool allowlist' }
         default          { '' }
     }
 }
@@ -1142,8 +1148,10 @@ sub cmd-doctor(Env $env, Global $g, @args --> Int) {
     my $here = @adapters.grep(*<available>).elems;
     my $wide = (@adapters.map(*<name>.chars), @tools.map(*<name>.chars)).flat.max // 10;
     $w.say($_) for flat row-lines('adapters:', "$here of {@adapters.elems} here; a harness runs a model, the rest run without one");
+    # the version column is as wide as its longest entry, so a reason never runs into what follows
+    my $where-wide = (@adapters.map(*<where>.chars).max // 0) max 22;
     for @adapters -> %a {
-        $w.say(sprintf('  %-*s  %-22s %s', $wide, %a<name>, %a<where>, %a<what>));
+        $w.say(sprintf('  %-*s  %-*s %s', $wide, %a<name>, $where-wide, %a<where>, %a<what>));
         if $verbose {
             $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'enforces:', %a<yes>.join(', ') || 'nothing'));
             $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'not enforced:', %a<no>.join(', '))) if %a<no>;

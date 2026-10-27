@@ -14,6 +14,7 @@ use Do321::RunDir;
 use Do321::Fold;
 use Do321::Host;
 use Do321::Deck;
+use Do321::Harnesses;
 
 constant EXIT-OK      = 0;
 constant EXIT-STOPPED = 3;
@@ -57,10 +58,11 @@ sub help-text(--> Str) {
         "  $ME                      open Mission Control (on a terminal)",
         "  $ME attach <run>         open it on one run",
         "  $ME runs                 every run, one record per line",
+        "  $ME harnesses            the engines an agent can run on, and what each can do",
         '',
-        "  $ME start <agent> <request...>   start a run that keeps going when you leave",
+        "  $ME start <agent> <request...>   start a run that keeps going when you leave; --harness, --isolate",
         "  $ME stop <run>           ask a run to stop; --force when its host is not answering",
-        "  $ME restart <run>        run an ended run's request again, with its own budget",
+        "  $ME restart <run>        run an ended run's request again, with its own budget; --harness",
         '',
         '  a run is named by its id or the last three characters of it',
         "  --brief or --json alone: the runs as records   --trust FILE: as for 321",
@@ -72,7 +74,7 @@ sub help-text(--> Str) {
 #| Run Mission Control's command line; returns the exit code.
 sub mc-main(@argv --> Int) is export {
     my @args = @argv;
-    my %o = brief => records-asked(), json => False, trust => '', workspace => '', force => False, yes => False;
+    my %o = brief => records-asked(), json => False, trust => '', workspace => '', force => False, yes => False, harness => '', isolate => False;
     my @rest;
     my $i = 0;
     while $i < @args {
@@ -85,6 +87,8 @@ sub mc-main(@argv --> Int) is export {
             when '--yes'       { %o<yes> = True }
             when '--trust'     { return usage('--trust needs a file') if $i + 1 >= @args; %o<trust> = @args[++$i] }
             when '--workspace' { return usage('--workspace needs a directory') if $i + 1 >= @args; %o<workspace> = @args[++$i] }
+            when '--harness'   { return usage('--harness needs a name; 321-mc harnesses lists them') if $i + 1 >= @args; %o<harness> = @args[++$i] }
+            when '--isolate'   { %o<isolate> = True }
             default            { @rest.append(@args[$i .. *]); last }
         }
         $i++;
@@ -92,8 +96,11 @@ sub mc-main(@argv --> Int) is export {
     # options may also follow the command word, before the run or agent
     if @rest && @rest[0] ne 'start' {
         my @r = @rest[0];
+        my $want-harness = False;
         for @rest[1 .. *] -> $a {
+            if $want-harness { %o<harness> = $a; $want-harness = False; next }
             given $a {
+                when '--harness' { $want-harness = True }
                 when '--brief' { %o<brief> = True }
                 when '--json'  { %o<json> = True }
                 when '--force' { %o<force> = True }
@@ -124,6 +131,7 @@ sub mc-main(@argv --> Int) is export {
         when 'attach' { return cmd-attach(%o, @rest[1 .. *]) }
         when 'runs'   { return cmd-runs(%o) }
         when 'restart' { return cmd-restart(%o, @rest[1 .. *]) }
+        when 'harnesses' { return cmd-harnesses(%o) }
     }
     usage("'{@rest[0]}' is not a Mission Control word");
 }
@@ -133,10 +141,18 @@ sub mc-main(@argv --> Int) is export {
 sub cmd-start(%o, @args --> Int) {
     my @words = @args;
     my $ws = %o<workspace>;
-    if @words && @words[0] eq '--workspace' { return usage('--workspace needs a directory') if @words < 2; $ws = @words[1]; @words = @words[2 .. *] }
+    # options come before the agent: what follows it is the request, word for word
+    while @words && @words[0].starts-with('--') {
+        given @words.shift {
+            when '--workspace' { return usage('--workspace needs a directory') unless @words; $ws = @words.shift }
+            when '--harness'   { return usage('--harness needs a name; 321-mc harnesses lists them') unless @words; %o<harness> = @words.shift }
+            when '--isolate'   { %o<isolate> = True }
+            default            { return usage("'$_' is not an option of start") }
+        }
+    }
     return usage('say which agent and what it should do') if @words < 2;
     my ($name, @req) = @words;
-    my ($r, $err) = launch-run($name, @req.join(' '), :workspace($ws), :via('321-mc start'));
+    my ($r, $err) = launch-run($name, @req.join(' '), :workspace($ws), :via('321-mc start'), :harness(%o<harness>), :isolate(%o<isolate>));
     with $err { note "$ME: $err"; return $r.defined ?? EXIT-INTERNAL !! 5 }
     say-started(%o, $r, 'start');
 }
@@ -150,7 +166,14 @@ sub say-started(%o, RunDir $r, Str $word --> Int) {
     .say for row-lines('asked:', %run<request>);
     if %run<continues> ~~ Associative { .say for row-lines('again of:', "{%run<continues><runId>}, whose receipt is unchanged") }
     .say for row-lines('run:', "{$r.id}, keeps going when you close this terminal");
-    .say for row-lines('workspace:', %run<workspace> ne '' ?? "{%run<workspace>}; you commit, the agent only edits" !! 'none');
+    my $asked = (%run<harness> // {})<requested> // '';
+    .say for row-lines('harness:', $asked ne '' ?? harness-name($asked) !! 'the first one able to enforce what the agent needs');
+    my %iso = (%run<isolation> // {}).Hash;
+    if %iso {
+        .say for row-lines('workspace:', "a worktree of {%iso<of>} at {%iso<base>.substr(0, 7)}, in {%iso<path>}");
+        .say for row-lines('', 'changes not yet committed there are not in it; the run never commits');
+    }
+    else { .say for row-lines('workspace:', %run<workspace> ne '' ?? "{%run<workspace>}; you commit, the agent only edits" !! 'none') }
     say '';
     say next-text('watch it, steer it or stop it', "$ME attach {$r.short}");
     EXIT-OK;
@@ -165,14 +188,20 @@ sub cmd-restart(%o, @args --> Int) {
     my ($old, $err) = find-run(@args[0]);
     with $err { return usage($_) }
     with restart-refusal($old) { note "$ME: {who-of($old)}: $_"; note next-text('stop it', "$ME stop {$old.short}"); return EXIT-USAGE }
-    my $q = restart-question($old);
+    my $h = '';
+    if %o<harness> ne '' {
+        my ($name, $why) = check-harness(%o<harness>);
+        with $why { note "$ME: $why"; return EXIT-USAGE }
+        $h = $name;
+    }
+    my $q = restart-question($old, :harness($h));
     unless %o<yes> {
         return usage("$q Add --yes to start it") unless $*IN.t && $*OUT.t && !%o<json> && !%o<brief>;
         print "$q  y/N ";
         my $a = $*IN.get // '';
         unless $a.trim.lc eq 'y' | 'yes' { say 'nothing was started'; return EXIT-OK }
     }
-    my ($r, $why) = restart-run($old, :via('321-mc restart'));
+    my ($r, $why) = restart-run($old, :via('321-mc restart'), :harness($h));
     with $why { note "$ME: $why"; return $r.defined ?? EXIT-INTERNAL !! 5 }
     say-started(%o, $r, 'restart');
 }
@@ -277,10 +306,43 @@ sub cmd-runs(%o --> Int) {
     for all-runs() -> $r {
         my %l = liveness($r);
         my %run = $r.run;
-        @rows.push(%( runId => $r.id, phase => %l<phase>, outcome => %l<outcome> // '', agent => %run<agent><id> // '',
-                      request => %run<request> // '', why => %l<why> // '' ));
+        # a run started elsewhere has no run.json: its package and receipt say who and what
+        my %wp = %run ?? %() !! ((read-json-file($r.package-file, :group-ok) // {}).Hash);
+        my %rc = %run ?? %() !! $r.receipt;
+        @rows.push(%( runId => $r.id, phase => %l<phase>, outcome => %l<outcome> // '',
+                      agent => %run<agent><id> // (%rc<agent> // {})<id> // '',
+                      harness => ((%run<harness> // {})<requested> || (%rc<harness> // {})<adapter> // ''),
+                      request => %run<request> // %wp<objective> // '', why => %l<why> // '' ));
     }
     if %o<json> { say encode-json(%( runs => @rows )); return EXIT-OK }
-    say record-line(.<runId>, .<phase>, .<outcome>, .<agent>, .<request>) for @rows;
+    say record-line(.<runId>, .<phase>, .<outcome>, .<agent>, .<harness>, .<request>) for @rows;
+    EXIT-OK;
+}
+
+# ---------------------------------------------------------------- harnesses
+
+#| The engines this machine has, whether 321 drives each, and what each
+#| can do for a person watching a run.
+sub cmd-harnesses(%o --> Int) {
+    my @h = harness-records();
+    if %o<json> { say encode-json(%( harnesses => @h )); return EXIT-OK }
+    if %o<brief> {
+        say record-line(.<name>, (.<ready> ?? 'ready' !! .<available> ?? 'not driven' !! 'not installed'), .<version>,
+            .<enforces>.join(','), .<cannot>.join(',')) for @h;
+        return EXIT-OK;
+    }
+    my $ready = @h.grep(*<ready>).elems;
+    say title('harnesses', "{$ready} of {+@h} ready");
+    say '';
+    for @h -> %h {
+        my $state = %h<ready> ?? "ready, {%h<version>}" !! %h<available> ?? "installed ({%h<version>}); this 321 does not drive it yet" !! "not here: {%h<reason>}";
+        .say for row-lines(%h<display> ~ ':', $state);
+        if %h<available> {
+            .say for row-lines('  enforces:', %h<enforces>.join(', '));
+            .say for row-lines('  cannot:', %h<cannot>.join(', ') || 'nothing it is asked for');
+        }
+    }
+    say '';
+    say next-text('run an agent on one', "$ME start --harness {(@h.first(*<ready>) // @h[0] // {})<name> // 'NAME'} <agent> <request...>");
     EXIT-OK;
 }

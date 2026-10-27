@@ -21,6 +21,7 @@ use Do321::RunDir;
 use Do321::Fold;
 use Do321::Host;
 use Do321::Term;
+use Do321::Harnesses;
 
 #| A control with no acknowledgement in this long is called unconfirmed.
 constant ACK-TIMEOUT = 5;
@@ -75,6 +76,9 @@ class Crew is export {
     method name(--> Str) { (%!run<agent><displayName> // %!run<agent><name> // '?').uc.substr(0, 6) }
     method display(--> Str) { %!run<agent><displayName> // %!run<agent><name> // '?' }
     method byline(--> Str) { %!run<agent><byline> // '' }
+    #| The harness the run is on: the one the runtime chose, else the one asked for.
+    method harness(--> Str) { $!state.harness || ((%!run<harness> // {})<requested> // '') }
+    method tag(--> Str) { self.harness ne '' ?? harness-tag(self.harness) !! '' }
     method request(--> Str) { (%!run<request> // '').subst(/\s+/, ' ', :g) }
     method phase(--> Str) { $!state.phase eq 'ended' ?? 'ended' !! %!live<phase> // $!state.phase }
     method outcome(--> Str) { $!state.outcome ne '' ?? $!state.outcome !! (%!live<outcome> // '') }
@@ -121,6 +125,8 @@ class Model is export {
     has @.palette;
     has Int $.pal is rw = 0;
     has Str $.new-agent is rw = '';
+    has Str $.new-harness is rw = '';
+    has Str $.pick-harness is rw = '';
     has Bool $.quit is rw = False;
     has Num $.scanned is rw = 0e0;
     has Str $.filter is rw = 'all';       # all | active | needs
@@ -183,7 +189,7 @@ sub met(Crew $c --> Str) {
 #| A run's state as a mark, a word and a tone: the deck's STATE column.
 #| The beat strikes once in four ticks while events arrive, and stops when
 #| they have not for BEAT-QUIET seconds.
-sub state-of(Crew $c, Int $tick, Bool :$narrow = False --> List) is export {
+sub crew-line(Crew $c, Int $tick, Bool :$narrow = False --> List) is export {
     my $s = $c.state;
     my $quiet = $s.last-at ne '' ?? (now - ((try DateTime.new($s.last-at).Instant) // now)) !! 0;
     my $ctl = control-note($c);
@@ -248,7 +254,7 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         # one line for the crew; the selected run's conversation takes the rest
         my $c = $cv.put(0, 0, "{icon()} 321 ", 'brand');
         for @crew.kv -> $i, $cr {
-            my ($mark, $, $tone) = state-of($cr, $m.tick, :narrow);
+            my ($mark, $, $tone) = crew-line($cr, $m.tick, :narrow);
             my $label = "{$cr.short} {$cr.name}{$i != $m.sel && $cr.unread ?? '+' ~ $cr.unread !! ''} ";
             if $c + text-width($label) + 2 > $cols - 4 { $cv.put(0, $c, "+{@crew - $i}", 'dim'); last }
             my $st = $i == $m.sel ?? 'sel+bold' !! '';
@@ -261,7 +267,7 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         my $sc = $m.selected;
         if $sc.defined {
             my $right = "{met($sc)} · {ago($sc.state.last-at)}";
-            $cv.put($row, 1, "{$sc.name} {$sc.short} · {$sc.request}", 'bold', :max($cols - text-width($right) - 3));
+            $cv.put($row, 1, "{$sc.name} {$sc.short}{$sc.tag ne '' ?? ' · ' ~ $sc.tag !! ''} · {$sc.request}", 'bold', :max($cols - text-width($right) - 3));
             $cv.put($row, $cols - text-width($right) - 1, $right, 'dim');
             $row++;
         }
@@ -293,7 +299,8 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         draw-rail($cv, $m, @crew, $row, $foot, $rw, $empty);
         if $sc.defined {
             my $c = $cv.put($row, $mid, $sc.display, 'bold', :max($mw));
-            $cv.put($row, $c, ", {$sc.byline}", '', :max($mid + $mw - $c)) if $sc.byline ne '';
+            $c = $cv.put($row, $c, ", {$sc.byline}", '', :max($mid + $mw - $c)) if $sc.byline ne '';
+            $cv.put($row, $c, "  on {harness-name($sc.harness)}", 'dim', :max($mid + $mw - $c)) if $sc.harness ne '';
             draw-comms($cv, $sc, $row + 1, $foot, $mid, $mw);
             draw-evidence($cv, $sc, $row, $foot, $cols - $ew + 1, $ew - 1);
         }
@@ -323,7 +330,7 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
     my $row = $top;
     my $deck-max = (($rows div 3) - 1) max 3;
     my $wide = $cols >= 110;
-    my @w = $wide ?? (6, 8, 0, 30, 9, 6, 6, 9) !! (5, 7, 0, 18, 6, 5, 0, 0);
+    my @w = $wide ?? (6, 16, 0, 30, 9, 6, 6, 9) !! (5, 7, 0, 18, 6, 5, 0, 0);
     my $spare = $cols - 2 - @w.sum - 1;
     # the mission gets up to 44 columns; anything more goes to the state
     @w[2] = $spare min 44;
@@ -346,12 +353,18 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
             $row++;
             last;
         }
-        my ($mark, $word, $tone) = state-of($cr, $m.tick, :narrow(!$wide));
+        my ($mark, $word, $tone) = crew-line($cr, $m.tick, :narrow(!$wide));
         my $sel = $i == $m.sel;
         $word ~= " · {$cr.unread} new" if !$sel && $cr.unread;
         my $c = $cv.put($row, 0, $sel ?? '▶ ' !! '  ', $sel ?? 'bold' !! '');
         $c = $cv.put($row, $c, pad($cr.short, @w[0]), $sel ?? 'bold' !! '');
-        $c = $cv.put($row, $c, pad($cr.name, @w[1] - 1) ~ ' ', $sel ?? 'bold' !! '');
+        if $wide {
+            # the agent first; the harness beside it, quieter
+            my $nc = $cv.put($row, $c, pad($cr.name, 7), $sel ?? 'bold' !! '');
+            $cv.put($row, $nc, fit($cr.tag, @w[1] - 8), 'dim');
+            $c += @w[1];
+        }
+        else { $c = $cv.put($row, $c, pad($cr.name, @w[1] - 1) ~ ' ', $sel ?? 'bold' !! '') }
         $c = $cv.put($row, $c, pad($cr.request, @w[2] - 1) ~ ' ', $sel ?? 'bold' !! '');
         my $sc = $cv.put($row, $c, $mark ~ ' ', $tone);
         $cv.put($row, $sc, fit($word, @w[3] - 3), $tone eq 'ok' ?? '' !! $tone);
@@ -376,7 +389,7 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
     if $sc.defined {
         my $c = $cv.put($row, 1, $sc.display, 'bold');
         $c = $cv.put($row, $c, ", {$sc.byline}") if $sc.byline ne '';
-        my $right = "{$sc.short} · {$sc.state.attempts > 1 ?? "attempt {$sc.state.attempts} · " !! ''}{($sc.run<workspace> // '') || 'no workspace'}";
+        my $right = "{$sc.short}{$sc.harness ne '' ?? ' · on ' ~ harness-name($sc.harness) !! ''} · {$sc.state.attempts > 1 ?? "attempt {$sc.state.attempts} · " !! ''}{($sc.run<workspace> // '') || 'no workspace'}";
         $cv.put($row, ($c + 4) max ($cols - text-width($right) - 1), $right, 'dim', :max($cols - $c - 5));
     }
     $row + 1;
@@ -391,13 +404,13 @@ sub draw-rail(Canvas $cv, Model $m, @crew, Int $top, Int $bottom, Int $w, Str $e
         next if $i < $first;
         if $r + 1 >= $bottom { $cv.put($bottom - 1, 2, "and {@crew - $i} more  ↑↓", 'dim'); last }
         my $sel = $i == $m.sel;
-        my ($mark, $word, $tone) = state-of($cr, $m.tick, :narrow);
+        my ($mark, $word, $tone) = crew-line($cr, $m.tick, :narrow);
         $word ~= " · {$cr.unread} new" if !$sel && $cr.unread;
         my $c = $cv.put($r, 0, $sel ?? '▶ ' !! '  ', $sel ?? 'bold' !! '');
         $c = $cv.put($r, $c, "{$cr.short} " ~ pad($cr.name, 7), $sel ?? 'bold' !! '');
         $c = $cv.put($r, $c, $mark ~ ' ', $tone);
         $cv.put($r, $c, fit($word, $w - $c - 1), $tone eq 'ok' ?? 'dim' !! $tone);
-        $cv.put($r + 1, 6, fit($cr.request, $w - 7), 'dim');
+        $cv.put($r + 1, 6, fit(($cr.tag ne '' ?? "{$cr.tag} · " !! '') ~ $cr.request, $w - 7), 'dim');
         if $sel { $cv.tint($r, 0, $w, 'sel'); $cv.tint($r + 1, 0, $w, 'sel') }
         $r += 2;
     }
@@ -412,7 +425,12 @@ sub evidence-rows(Crew $c --> List) is export {
     my $hb = $c.heartbeat-age;
     my @r;
     @r.push(['phase', $c.phase ~ ($c.outcome ne '' ?? ", {$c.outcome}" !! ''), '']);
-    @r.push(['harness', $s.harness || 'not chosen yet', '']);
+    my $h = $c.harness;
+    @r.push(['harness', $h ne '' ?? harness-name($h) ~ ($s.harness eq '' ?? ', asked for' !! '') !! 'not chosen yet', '']);
+    with known-registry().get($h) -> $a {
+        my %ab = abilities($a);
+        @r.push(['cannot', %ab<cannot>.join(', '), 'wait']) if %ab<cannot>;
+    }
     @r.push(['attempts', $s.attempts.Str, '']);
     @r.push(['tools', many-of($s.tools, 'call'), '']);
     @r.push(['cost', $s.cost-reported ?? "{$s.cost-text}, as the harness reported it" !! 'none reported yet', '']);
@@ -478,14 +496,14 @@ sub draw-comms(Canvas $cv, Crew $sc, Int $top, Int $bottom, Int $left, Int $widt
 }
 
 sub input-view(Model $m, Int $w --> Str) {
-    my $t = $m.mode eq 'input' | 'new-agent' | 'new-request' | 'find' ?? $m.input !! '';
+    my $t = $m.mode eq 'input' | 'new-agent' | 'new-request' | 'find' | 'pick-harness' ?? $m.input !! '';
     $t = $t.subst("\n", '⏎', :g);
     text-width($t) > $w ?? '…' ~ $t.substr(* - ($w - 1)) !! $t;
 }
 
 #| Where the cursor goes: the end of the typed text on the input line.
 sub cursor-at(Model $m, Int $rows, Int $cols --> List) is export {
-    return (-1, 0) unless $m.mode eq 'input' | 'new-agent' | 'new-request' | 'find';
+    return (-1, 0) unless $m.mode eq 'input' | 'new-agent' | 'new-request' | 'find' | 'pick-harness';
     my ($prompt) = prompt-and-hint($m, $cols);
     my $pre = $m.input.substr(0, $m.cursor).subst("\n", '⏎', :g);
     my $col = 1 + text-width($prompt) + 1 + text-width($pre);
@@ -502,8 +520,12 @@ sub prompt-and-hint(Model $m, Int $cols --> List) {
             my $item = @p[$m.pal];
             return ("{$item<label>} ({$m.pal + 1}/{+@p})", "{$item<what>}   ↑↓ choose · Enter do it · Esc back");
         }
-        when 'new-agent'   { return ('new run, agent ›', 'the agent\'s name, as you would type 321 <agent>   Enter next · Esc cancel') }
-        when 'new-request' { return ("new run for {$m.new-agent} ›", 'what it should do   Enter start · Esc cancel') }
+        when 'new-agent'   { return ('new run, agent ›', "the agent's name; 'bea on codex' picks the engine   Enter next · Esc cancel") }
+        when 'new-request' { return ("new run for {$m.new-agent}{$m.new-harness ne '' ?? ' on ' ~ harness-name($m.new-harness) !! ''} ›", 'what it should do   Enter start · Esc cancel') }
+        when 'pick-harness' {
+            my @ready = harness-records().grep(*<ready>).map(*<name>);
+            return ("run {$sc.defined ?? $sc.name ~ ' ' ~ $sc.short !! 'it'} again on ›", "one of: {@ready.join(', ') || 'none ready'}   Enter next · Esc cancel");
+        }
         when 'find' { return ('find ›', "words in {$sc.defined ?? $sc.name ~ ' ' ~ $sc.short !! 'this run'}'s conversation   Enter older match · Esc back") }
         when 'nav' {
             return ('', $narrow
@@ -543,7 +565,7 @@ sub comms-lines(Crew $c, Int $w, Bool :$narrow = False, :@starts --> List) is ex
             }
             when 'end' {
                 for wrap($l.text, $w - $time-w - 3).kv -> $i, $part {
-                    @out.push([[' ' ~ pad($i ?? '' !! $t, $time-w - 1), 'dim'], [($i ?? '  ' !! (state-of($c, 0)[0] ~ ' ')), $l.tone], [$part, "bold+{$l.tone}"]]);
+                    @out.push([[' ' ~ pad($i ?? '' !! $t, $time-w - 1), 'dim'], [($i ?? '  ' !! (crew-line($c, 0)[0] ~ ' ')), $l.tone], [$part, "bold+{$l.tone}"]]);
                 }
             }
             default {
@@ -570,7 +592,7 @@ sub comms-lines(Crew $c, Int $w, Bool :$narrow = False, :@starts --> List) is ex
     }
     # a run that ended without a word from its log still says how it ended
     if !$c.state.lines.first(*.who eq 'end') && $c.phase eq 'ended' | 'lost' {
-        my ($mark, $word, $tone) = state-of($c, 0);
+        my ($mark, $word, $tone) = crew-line($c, 0);
         @out.push([[' ' x $time-w, ''], ["$mark $word", "bold+$tone"]]);
     }
     @out.List;
@@ -597,6 +619,7 @@ sub actions-for(Model $m --> List) is export {
         }
         if $c.phase eq 'ended' | 'lost' {
             @a.push(%( key => 'restart', label => 'Run again', what => 'a new run of this request, with its own budget; this one stays as it ended' ));
+            @a.push(%( key => 'restart-on', label => 'Run again on another harness', what => 'the same agent and request on another engine, as a new run; nothing carries over' ));
         }
         if $c.phase eq 'lost' || $c.live<unswept> || control-note($c).contains('unconfirmed') || ($c.phase eq 'stopping' && ($c.live<phase> // '') ne 'ended') {
             @a.push(%( key => 'force', label => 'Force stop', what => 'stops its host and everything below it, checked by process identity' ));
@@ -644,16 +667,22 @@ sub do-action(Model $m, Str $key) is export {
         when 'restart' {
             return unless $c.defined;
             with restart-refusal($c.rd) { $m.tell("not now: $_"); return }
+            $m.pick-harness = '';
             $m.confirm = [restart-question($c.rd), 'restart-now'];
             $m.mode = 'confirm';
         }
+        when 'restart-on' {
+            return unless $c.defined;
+            with restart-refusal($c.rd) { $m.tell("not now: $_"); return }
+            $m.mode = 'pick-harness'; $m.input = ''; $m.cursor = 0;
+        }
         when 'restart-now' {
-            my ($rd, $err) = restart-run($c.rd);
+            my ($rd, $err) = restart-run($c.rd, :harness($m.pick-harness));
             with $err { $m.tell("not started: $_"); return }
             $m.filter = 'all';
             $m.scan;
             $m.sel = $m.visible.first({ .id eq $rd.id }, :k) // 0;
-            $m.tell("started {$rd.short}, again of {$c.short}; it has its own budget");
+            $m.tell("started {$rd.short}, again of {$c.short}{$m.pick-harness ne '' ?? ' on ' ~ harness-name($m.pick-harness) !! ''}; it has its own budget");
         }
         when 'view' { cycle-filter($m) }
         when 'new'    { $m.mode = 'new-agent'; $m.input = ''; $m.cursor = 0 }
@@ -754,7 +783,29 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                 when 'esc'   { $m.mode = 'input'; $m.input = '' ; $m.cursor = 0 }
                 when 'enter' {
                     if $m.input.trim eq '' { $m.tell('say which agent; 321 agents lists them'); return }
-                    $m.new-agent = $m.input.trim; $m.input = ''; $m.cursor = 0; $m.mode = 'new-request';
+                    my ($who, $on) = $m.input.trim.split(/\s+ on \s+/, 2);
+                    $m.new-harness = '';
+                    with $on {
+                        my ($name, $why) = check-harness(.trim);
+                        with $why { $m.tell($why); return }
+                        $m.new-harness = $name;
+                    }
+                    $m.new-agent = $who.trim; $m.input = ''; $m.cursor = 0; $m.mode = 'new-request';
+                }
+                default { edit() }
+            }
+        }
+        when 'pick-harness' {
+            given $k.name {
+                when 'esc'   { $m.mode = 'nav'; $m.input = ''; $m.cursor = 0 }
+                when 'enter' {
+                    my ($name, $why) = check-harness($m.input.trim);
+                    with $why { $m.tell($why); return }
+                    return unless $c.defined;
+                    $m.input = ''; $m.cursor = 0;
+                    $m.pick-harness = $name;
+                    $m.confirm = [restart-question($c.rd, :harness($name)), 'restart-now'];
+                    $m.mode = 'confirm';
                 }
                 default { edit() }
             }
@@ -767,7 +818,7 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                     return $m.tell('say what it should do') if $req eq '';
                     $m.mode = 'input'; $m.input = ''; $m.cursor = 0;
                     $m.tell("starting {$agent}…");
-                    my ($rd, $err) = launch-run($agent, $req, :via('mission-control'));
+                    my ($rd, $err) = launch-run($agent, $req, :via('mission-control'), :harness($m.new-harness));
                     with $err { $m.tell("not started: $_") }
                     else { $m.filter = 'all'; $m.scan; $m.sel = $m.visible.first({ .id eq $rd.id }, :k) // 0; $m.tell("started {$agent} {$rd.short}; it keeps going when you leave") }
                 }
@@ -817,7 +868,7 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                     $c.sent{$id} = ['steer', now.Num, $text];
                     $m.input = ''; $m.cursor = 0;
                     $c.scroll = 0;
-                    $m.tell('sent; on this harness the agent takes it when its current step ends');
+                    $m.tell(steer-note($c.harness));
                 }
                 default { edit() }
             }

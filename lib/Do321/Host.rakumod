@@ -28,6 +28,7 @@ use Do321::CLI;
 use Do321::Sys;
 use Do321::RunDir;
 use Do321::Fold;
+use Do321::Harnesses;
 
 constant HOST-VERSION is export = '0.5.0-dev';
 #| How long a delivered stop may take before the host signals the runtime.
@@ -47,8 +48,17 @@ constant EXIT-LOST is export = 6;
 #| launched here carries no approval; an approval stays where a person
 #| gives one.  Returns (RunDir, error).
 sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-path = '', IO::Path :$home = home-dir(),
-               Str :$via = 'mission-control', :%continues --> List) is export {
+               Str :$via = 'mission-control', :%continues, Str :$harness = '', Bool :$isolate = False --> List) is export {
     return (RunDir, 'say what the agent should do') if $request.trim eq '';
+    # The harness is chosen here or left to the runtime, which picks the
+    # first one able to enforce what the package needs.  Either way the
+    # runtime checks it again: a choice never widens what is enforced.
+    my $adapter = '';
+    if $harness ne '' {
+        my ($name, $why) = check-harness($harness);
+        return (RunDir, $why) with $why;
+        $adapter = $name;
+    }
     private-umask();
     my $cfg = try load-trust($trust-path ne '' ?? $trust-path.IO !! default-trust-path());
     return (RunDir, $!.message) if $!;
@@ -57,8 +67,28 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
     return (RunDir, $err) with $err;
     my ($ws, $kind) = resolve-workspace($workspace);
     ($ws, $kind) = ('', 'none') unless needs-workspace($agent.manifest);
+    # Two runs that write never share a workspace: the second is refused,
+    # or given a worktree of its own.
+    my %isolation;
+    if $ws ne '' && $isolate {
+        return (RunDir, "$ws is not a git repository, so a run cannot have a worktree of it") unless $kind eq 'git';
+        my ($path, $base, $why) = make-worktree($ws, $home);
+        return (RunDir, $why) with $why;
+        %isolation = kind => 'git-worktree', of => $ws, path => $path, base => $base;
+        $ws = $path;
+    }
+    elsif $ws ne '' && writes($agent.manifest) {
+        with workspace-taken($ws, $home) -> $other {
+            my %o = $other.run;
+            return (RunDir, "{%o<agent><displayName> // 'another run'} {$other.short} is already working in $ws; --isolate gives this run a worktree of its own");
+        }
+    }
     my %wp = try build-package($cfg, $agent, $g, $request, $ws, $kind);
-    return (RunDir, $!.message) if $!;
+    if $! {
+        my $why = $!.message;
+        drop-worktree(%isolation) if %isolation;
+        return (RunDir, $why);
+    }
 
     my $rd = try {
         private-dir(home-dir-of($home));
@@ -80,6 +110,7 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
         agent => { id => $agent.id, name => $agent-name, version => (%m<version> // ''), displayName => (%m<displayName> // $agent-name),
                    byline => byline-of(%m) },
         request => $request, workspace => $ws, grants => [ |@(%wp<capabilities><granted>) ],
+        harness => { requested => $adapter }, isolation => (%isolation ?? %isolation !! Nil),
         launchedBy => { uid => my-uid(), via => $via }, launchedAt => now-iso();
     write-atomic($rd.run-file, encode-json-pretty(%run) ~ "\n", :durable);
 
@@ -89,6 +120,43 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
 }
 
 sub home-dir-of(IO::Path $home --> IO::Path) { $home }
+
+#| Take back a worktree no run used.
+sub drop-worktree(%iso) {
+    try { my $p = run 'git', '-C', %iso<of>, 'worktree', 'remove', '--force', %iso<path>, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close) }
+}
+
+#| Whether an agent can change files: one that can, holds its workspace.
+sub writes(%m --> Bool) {
+    so (|@(%m<capabilities><required> // []), |@(%m<capabilities><optional> // [])).first({ $_ eq 'repo.write' | 'files.write' | 'shell.run' });
+}
+
+#| An active run already working in this workspace, or RunDir:U.
+sub workspace-taken(Str $ws, IO::Path $home --> RunDir) {
+    for all-runs($home) -> $r {
+        next unless $r.hosted && ($r.run<workspace> // '') eq $ws;
+        return $r if liveness($r)<phase> eq 'starting' | 'running' | 'held' | 'stopping' | 'blocked';
+    }
+    RunDir;
+}
+
+#| A worktree of the workspace at its last commit, for one run, under
+#| ~/.321/worktrees.  Nothing is committed: the person reviews what the
+#| run changed there and takes it, or removes the worktree.  Returns
+#| (path, base commit, error).
+sub make-worktree(Str $ws, IO::Path $home --> List) {
+    my $root = private-dir($home.add('worktrees'));
+    my $path = $root.add(new-ulid()).Str;
+    my $head = run 'git', '-C', $ws, 'rev-parse', 'HEAD', :out, :err;
+    my $base = $head.out.slurp(:close).trim;
+    $head.err.slurp(:close);
+    return (Str, Str, "$ws has no commit yet, so there is nothing to make a worktree of") if $head.exitcode != 0 || $base eq '';
+    my $add = run 'git', '-C', $ws, 'worktree', 'add', '--detach', $path, $base, :out, :err;
+    $add.out.slurp(:close);
+    my $err = $add.err.slurp(:close);
+    return (Str, Str, "git could not make a worktree: {$err.lines.grep(*.trim ne '').tail // 'it said nothing'}") if $add.exitcode != 0;
+    ($path, $base, Str);
+}
 
 #| Whether an agent can touch files at all; one that cannot gets no
 #| workspace, as at the terminal.
@@ -171,6 +239,8 @@ sub host-main(Str $dir --> Int) is export {
     # The runtime, as its own child, told to go when the host goes.
     my @pre = </usr/bin/setpriv /bin/setpriv>.first(*.IO.x) ?? (</usr/bin/setpriv /bin/setpriv>.first(*.IO.x), '--pdeathsig', 'TERM', '--') !! ();
     my @argv = |@pre, |runtime-argv(), 'run', '--package', $r.package-file.Str, '--receipt', $r.receipt-file.Str, '--history-dir', $r.dir.Str;
+    my $asked = (%run<harness> // {})<requested> // '';
+    @argv.append('--adapter', $asked) if $asked ne '';
     my $proc = Proc::Async.new(:w, |@argv);
     my $receipt-seen = False;
     $proc.stdout.lines.tap(-> $line {
@@ -343,24 +413,29 @@ sub restart-refusal(RunDir $r --> Str) is export {
 
 #| The question a person answers before a run's request is run again: what
 #| the old run did, and that the new one starts from nothing.
-sub restart-question(RunDir $r --> Str) is export {
+sub restart-question(RunDir $r, Str :$harness = '' --> Str) is export {
     my %run = $r.run;
     my %rc = $r.receipt;
     my $files = @(%rc<evidence><filesChanged> // []).elems;
     my $tools = $r.events-file.e ?? fold($r.events-file.lines.map({ try parse-json($_) }).grep(Associative)).tools !! 0;
     my $who = "{%run<agent><displayName> // %run<agent><name> // 'the agent'} {$r.short}";
-    "Run {$who}'s request again? It changed {$files} file{$files == 1 ?? '' !! 's'} and ran {$tools} tool{$tools == 1 ?? '' !! 's'}; "
+    "Run {$who}'s request again{$harness ne '' ?? ' on ' ~ harness-name($harness) !! ''}? It changed {$files} file{$files == 1 ?? '' !! 's'} and ran {$tools} tool{$tools == 1 ?? '' !! 's'}; "
         ~ "the new run has its own budget, and no approval carries over.";
 }
 
 #| A new run of an ended run's request: its own id, its own package, its
 #| own budget.  The old run and its receipt are untouched; the new one
 #| names the old one and the digest of the receipt it read.
-sub restart-run(RunDir $r, Str :$via = 'mission-control' --> List) is export {
+sub restart-run(RunDir $r, Str :$via = 'mission-control', Str :$harness = '' --> List) is export {
     with restart-refusal($r) { return (RunDir, $_) }
     my %run = $r.run;
     my %continues = runId => $r.id, receiptDigest => ($r.receipt-file.e ?? digest-bytes($r.receipt-file.slurp(:bin)) !! Nil);
-    launch-run(%run<agent><name> // '', %run<request> // '', :workspace(%run<workspace> // ''), :$via, :%continues);
+    # A run that had a worktree gets a fresh one of the same workspace:
+    # it never inherits the other run's half-finished files.
+    my %iso = (%run<isolation> // {}).Hash;
+    my $ws = %iso ?? (%iso<of> // '') !! (%run<workspace> // '');
+    my $h = $harness ne '' ?? $harness !! ((%run<harness> // {})<requested> // '');
+    launch-run(%run<agent><name> // '', %run<request> // '', :workspace($ws), :$via, :%continues, :harness($h), :isolate(so %iso));
 }
 
 # ---------------------------------------------------------------- stopping
