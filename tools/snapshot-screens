@@ -1,0 +1,153 @@
+#!/usr/bin/env raku
+use v6.d;
+use lib $*PROGRAM.parent.parent.add('lib').Str, $*PROGRAM.parent.parent.add('t/lib').Str;
+use Do321::Screen;
+use Do321::Result;
+use Do321ScreenFixtures;
+
+#| The snapshot review: every screen in the design, rendered by the real
+#| renderer from the semantic fixtures in t/lib/Do321ScreenFixtures.rakumod.
+#| Nothing here is typed by hand.
+#|
+#|   tools/snapshot-screens              every rendering
+#|   tools/snapshot-screens terminal     just the one a person sees
+#|
+#| Read it on a terminal with cat: the terminal rendering carries its real
+#| colour, so what you see is what ships.
+
+my %RENDERINGS =
+    terminal  => ('a terminal, 80 columns, colour and UTF-8 — what a person sees', { :width(80), :colour, :utf8 }),
+    'no-colour' => ('NO_COLOR, 80 columns: the marks stay, the ink goes',          { :width(80), :!colour, :utf8 }),
+    ascii     => ('a C locale in a narrow window, 56 columns: plain twins',        { :width(56), :!colour, :!utf8 }),
+;
+my @order = <terminal no-colour ascii>;
+
+sub rule(Str $text) { say ''; say '=' x 72; say $text; say '=' x 72; }
+sub part(Str $text) { say ''; say '-' x 72; say $text; say '-' x 72; say ''; }
+
+my @want = @*ARGS ?? @*ARGS !! @order;
+
+rule 'THE 321 SNAPSHOT REVIEW';
+say q:to/END/;
+Every screen below was produced by lib/Do321/Screen.rakumod from the
+semantic fixtures in t/lib/Do321ScreenFixtures.rakumod.  The facts in them
+are this machine's own where they could be read.
+
+The checks to read each one against:
+
+  1  Is the current state immediately obvious?
+  2  Is the important information easy to find?
+  3  Does it reduce uncertainty?
+  4  Does it feel like 321?
+  5  Is the next useful action clear?
+  6  Does the feedback match what actually happened?
+  7  Would it still be pleasant after hundreds of uses?
+
+Snapshots show the first six.  The seventh is yours to judge.
+END
+
+for @want -> $r {
+    my ($what, %how) = |%RENDERINGS{$r};
+    rule "RENDERING: $r — $what";
+    for fixtures() -> $f {
+        my ($moment, $screen) = |$f.value;
+        part "{$f.key}   $moment";
+        say '';
+        .say for screen-lines($screen, |%how);
+        say '';
+        say "  (exit {$screen.exit})" if $screen.exit != 0;
+    }
+}
+
+# ------------------------------------------------------- progress and spinner
+rule 'PROGRESS: one line, rewritten in place, wiped when the work ends';
+say q:to/END/;
+Only one of these lines exists at a time: each rewrites the one before it,
+and the last is wiped, so the screen that follows starts clean.  A bar is
+only ever drawn over a real total; where the size is unknown the spinner
+carries the name of the stage instead of a made-up share.
+END
+
+part 'measurable work: the suite B1LL ran, 1652 tests (terminal, UTF-8)';
+say '';
+for (0, 420, 980, 1652) Z (Duration.new(0.4), Duration.new(11.8), Duration.new(27.2), Duration.new(51.3)) -> ($done, $t) {
+    say bar-line('checking the suite', $done, 1652, $t, :detail($done == 1652 ?? 'all files' !! 't/10-cli.rakutest'), :width(80), :colour, :utf8);
+}
+part 'the same, in a C locale at 56 columns';
+say '';
+say bar-line('checking the suite', 980, 1652, Duration.new(27.2), :detail('t/10-cli.rakutest'), :width(56), :!colour, :!utf8);
+
+part 'work of unknown size: a model is thinking (terminal, UTF-8)';
+say '';
+for (0, 1, 2, 3) Z ('reading Look.rakumod', 'reading Look.rakumod', 'editing Screen.rakumod', 'running the suite') -> ($tick, $stage) {
+    say spin-line($stage, $tick, Duration.new(4.1 + $tick * 9), :hint('type to steer · /stop'), :width(80), :colour, :utf8);
+}
+part 'the same, in a C locale at 56 columns';
+say '';
+say spin-line('editing Screen.rakumod', 2, Duration.new(22.1), :hint('/stop'), :width(56), :!colour, :!utf8);
+
+part 'into a pipe';
+say '';
+say '  (nothing: no bar, no spinner, no control codes)';
+say '';
+say '  with DO_321_PROGRESS=1, a tool asked for the record instead:';
+say '';
+my $rec = Live.new(:handle($*OUT), :!live, :record);
+$rec.record-line('checking the suite', 980, 1652, '27.2s', 't/10-cli.rakutest');
+$rec.record-line('checking the suite', 1652, 1652, '51.3s', 'all files');
+
+# -------------------------------------------------------------- the machine
+rule 'AUTOMATING: the same two outcomes, for a program';
+say q:to/END/;
+One envelope, one schema, success and failure alike.  No colour, no mark,
+no prose outside 'words', and the exit code belongs to the outcome.
+END
+
+part 'structured success: 321 --json b1ll "wrap the status rows"   (exit 0)';
+say '';
+say result-json(result-document(
+    command => 'b1ll',
+    outcome => 'done',
+    dataSchema => 'run.v1',
+    data => %(
+        runId    => '01M5Y4X5ETGV2YPW3C6F4T2XE2',
+        agent    => %( id => '321.do/b1ll', version => '0.1.0', signed => False ),
+        changed  => ['lib/Do321/Screen.rakumod', 't/21-screen.rakutest'],
+        checked  => %( what => 'the project suite', tests => 1652, seconds => 51 ),
+        cost     => %( usd => 0.31, turns => 3, attempts => 1, basis => 'harness' ),
+        receipt  => '/home/nige/.321/runs/01M5Y4X5ETGV2YPW3C6F4T2XE2/receipt.json',
+        committed => False,
+    ),
+    words => ['done — the rows fold at the terminal width, clamped 40 to 100'],
+    next => [ Step.new(advice => 'read it', command => 'git diff') ],
+));
+
+part 'structured failure: 321 --json b1ll "…"   (exit 5, nothing ran)';
+say '';
+say result-json(result-document(
+    command => 'b1ll',
+    outcome => 'denied',
+    dataSchema => 'trust.v1',
+    data => %(
+        agent  => '321.do/b1ll',
+        pinned => 'sha256:be4cfffeb67dfe42d628f7587eed0f153333de6694b6512334342ab08ddc66b6',
+        actual => 'sha256:fa04f4d3e6bf0aa6cc118118c4f93aaa156b2e41dd5256cf9878abf471b152e4',
+        path   => '/home/s3/agents.321.do/packages/321.do/b1ll',
+    ),
+    error => Error.new(
+        code => 'package_moved',
+        message => 'the package content does not match the digest pinned in the trust file',
+        detail => 'identity.byline added (1 field)',
+    ),
+    words => ['denied — the package moved since you pinned it, so nothing ran'],
+    next => [ Step.new(advice => 'see what moved, then pin it if it is yours', command => '321 trust diff b1ll') ],
+));
+
+part 'and the shell form of the same two, one record per line';
+say '';
+say "done\t01M5Y4X5ETGV2YPW3C6F4T2XE2\t321.do/b1ll\tthe rows fold at the terminal width\t/home/nige/.321/runs/01M5Y4X5ETGV2YPW3C6F4T2XE2/receipt.json";
+say '';
+say '  and the failure, on standard error, with exit 5:';
+say '';
+say "321 b1ll: the package content does not match the digest pinned in the trust file (package_moved)";
+say '';

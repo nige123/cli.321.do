@@ -42,6 +42,25 @@ my @checks = $controller.match(/ "['" ('check' | 'verify') "'" <-[\]]>* ']' | "'
 ok @asked.elems >= 2 && @checks.elems >= 3, 'the calls 321 can make to iz4 are found in the source';
 for @asked -> $a { like $a, / "'discover', '--json'" | "'context', '--json'" /, "a direct call is discover or context: $a" }
 for @checks -> $a { like $a, / "'check', 'action', '--json'" | "'check', 'change', '--worktree', '--json'" | "'verify', '--worktree', '--json'" /, "a check is one of the documented three: $a" }
+# One further invocation is authorised, narrowly, and only this one: a
+# change check told to run no checks ('--/checks'), whose answer is read
+# for nothing but evidence.gate.candidate - the tree the working
+# directory is at.  A turn is then measured from the tree it began at
+# instead of from HEAD, so a tree that was already dirty is not laid at
+# the turn's door.  Verified 2026-10-27 against iz4 0.30.4: it writes
+# nothing (tree, index, refs, hooks and git config, iz4.gate among them,
+# byte-identical before and after, on a clean tree and a dirty one), and
+# it answers exit 4, unassessed, because nothing was checked.  It is
+# therefore never a verdict: it is only ever read through tree-of.
+if $controller.contains('method baseline') {
+    like $controller, / 'method baseline' .*? "['check', 'change', '--worktree', '--json', '--/checks']" /,
+        'the baseline read is the authorised invocation, argument for argument';
+    like $controller, / 'method baseline' .*? 'tree-of(' /,
+        'and its answer is read only for the candidate tree, never used as a verdict';
+}
+else {
+    skip 'the baseline read is not in this tree', 2;
+}
 # 321 holds none of iz4's policy: it never reads an IZ4's words, and never runs iz4's own gate, approval or older hook.
 for $lib.dir.grep(*.extension eq 'rakumod').sort -> $f {
     my $src = $f.slurp;
@@ -68,7 +87,9 @@ for $lib.dir.grep(*.extension eq 'rakumod').sort -> $f {
     c('iz4', 'remove', '--workspace', $ws.Str, :%env);
     my @calls = $log.lines.grep(*.trim.chars);
     ok @calls.elems > 10, "iz4 was asked {@calls.elems} times across the cycle";
-    my @allowed = 'discover --json', 'context --json', 'check action --json', 'check change --worktree --json', 'verify --worktree --json';
+    my @allowed = 'discover --json', 'context --json', 'check action --json', 'check change --worktree --json',
+                  'check change --worktree --json --/checks',   # the baseline read, above: writes nothing, never a verdict
+                  'verify --worktree --json';
     my @other = @calls.map({ .subst(/ ' --summary=' \S+ /, '') }).unique.grep({ $_ ne any(@allowed) });
     is @other.join(' | '), '', 'and never anything but discover, context, check action, check change and verify';
 }

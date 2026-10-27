@@ -1,0 +1,214 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# The presentation contract: properties that must hold of every screen the
+# program can draw, checked against the real fixtures the snapshot review
+# is made from, so a screen cannot pass review and fail here.
+#
+# What these tests can and cannot show: they settle the objective
+# properties - width, character set, colour, registers, truthfulness of a
+# bar - and they say nothing about whether a screen feels good.  That is
+# read, by a person, from tools/snapshot-screens.
+use v6.d;
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321::Screen;
+use Do321::Result;
+use Do321ScreenFixtures;
+
+my @fixtures = fixtures();
+ok @fixtures.elems >= 9, "there are {@fixtures.elems} screens to check";
+
+# ------------------------------------------------------------------ the title
+subtest 'nothing is said above the title, and the title is the brand and the command' => {
+    for @fixtures -> $f {
+        my ($moment, $screen) = |$f.value;
+        my @l = screen-lines($screen, :width(80), :!colour, :utf8);
+        like @l[0], / ^ '❮▣❯ 321' [ ' ' \S | $ ] /, "{$f.key}: opens with the lockup and the command words";
+        my @plain = screen-lines($screen, :width(80), :!colour, :!utf8);
+        like @plain[0], / ^ '<#> 321' [ ' ' \S | $ ] /, "{$f.key}: and with its plain twin in a C locale";
+    }
+}
+
+# ------------------------------------------------------------------ the width
+subtest 'a screen fits the width it was given, at any width, with no word broken' => {
+    # Two kinds of line are allowed past the edge, and only these two: a
+    # command, because a person has to be able to copy it whole, and a
+    # line whose longest single word would not fit anyway - a path, a
+    # digest, a URL.  Breaking either would do more harm than wrapping.
+    my sub excused(Str $line, Int $w, $screen --> Bool) {
+        return True if $screen.next.map(*.command).grep({ $_ ne '' && $line.contains($_) });
+        return True if $screen.then && $screen.then.command ne '' && $line.contains($screen.then.command);
+        so $line.words.grep({ .chars > $w - 14 });
+    }
+    for 40, 56, 72, 80, 100 -> $w {
+        for @fixtures -> $f {
+            my ($moment, $screen) = |$f.value;
+            my @l = screen-lines($screen, :width($w), :!colour, :utf8);
+            my @over = @l.grep(*.chars > $w).grep({ !excused($_, $w, $screen) });
+            is @over.elems, 0, "{$f.key} at $w: every line fits, bar a command or an unbreakable word" or diag @over.join("\n");
+        }
+    }
+    # a word is never cut: every word on a folded line is a word of the text
+    my $long = 'a' x 50 ~ ' and then some more words to push this over the edge of a narrow window';
+    my @l = fold($long, 40);
+    is @l.grep(*.chars > 40).elems, 1, 'only a word longer than the width can exceed it';
+    is @l.join(' ').words.join(' '), $long.words.join(' '), 'and folding loses no word';
+}
+
+# ----------------------------------------------------------- the two switches
+subtest 'colour and character set are separate switches' => {
+    my ($moment, $screen) = |@fixtures.first({ .key eq 'done' }).value;
+    my $ink  = screen-lines($screen, :width(80), :colour, :utf8).join("\n");
+    my $none = screen-lines($screen, :width(80), :!colour, :utf8).join("\n");
+    my $ascii-ink  = screen-lines($screen, :width(80), :colour, :!utf8).join("\n");
+    my $ascii-none = screen-lines($screen, :width(80), :!colour, :!utf8).join("\n");
+
+    ok $ink.contains("\e["), 'with colour: there is ink';
+    nok $none.contains("\e["), 'without colour: not one escape byte';
+    ok $ascii-ink.contains("\e["), 'a C locale keeps the colour';
+    nok $ascii-none.contains("\e["), 'and NO_COLOR in a C locale has neither';
+
+    ok $ink.contains('❮▣❯') && $none.contains('❮▣❯'), 'NO_COLOR keeps the marks';
+    ok $ascii-ink.contains('<#>') && $ascii-none.contains('<#>'), 'a C locale takes the plain twins';
+    nok $ascii-none.contains('✓'), 'and no UTF-8 mark of ours survives it';
+
+    # the words are the same whatever the switches say
+    my sub words-of(Str $s) { $s.subst(/ \e '[' <-[m]>* 'm' /, '', :g).lines.map(*.trim).grep(* ne '').join(' ') }
+    is words-of($ink), words-of($none), 'the words are identical with the ink and without it';
+}
+
+# ------------------------------------------------- identity against operation
+subtest 'an agent looks the same whatever happened; a state carries all the colour' => {
+    my $base = %( title => 'b1ll: do the thing', byline => B1LL );
+    my @drawn = <done blocked failed>.map(-> $state {
+        screen-lines(Screen.new(|$base, blocks => [ Verdict.new(:$state, sentence => 'a sentence') ]),
+                     :width(80), :colour, :utf8);
+    });
+    is @drawn[0][1], @drawn[1][1], 'B1LL reads the same on a blocked run as on a done one';
+    is @drawn[1][1], @drawn[2][1], 'and the same again on a failure';
+
+    for @drawn -> @l {
+        nok @l[1].contains("\e[32m") || @l[1].contains("\e[31m") || @l[1].contains("\e[33m"),
+            'the byline takes no state colour';
+        nok @l[1] ~~ / '✓' | '✗' | '?' /, 'and no state mark';
+    }
+    my @verdicts = @drawn.map({ .[3] // .[2] });
+    ok @verdicts[0].contains('✓') && @verdicts[0].contains('done'), 'done is a tick and the word';
+    ok @verdicts[1].contains('?') && @verdicts[1].contains('blocked'), 'blocked is a question and the word';
+    ok @verdicts[2].contains('✗') && @verdicts[2].contains('failed'), 'failed is a cross and the word';
+    for @verdicts -> $v { nok $v.contains('⬢'), 'and no verdict wears an agent mark' }
+
+    # every state reads without colour: the mark and the word both say it
+    for <done no change blocked waiting failed denied stopped> -> $w { }
+    for ('done', 'no change', 'blocked', 'waiting', 'not checked', 'failed', 'denied', 'stopped') -> $state {
+        my @l = screen-lines(Screen.new(title => 'x', blocks => [ Verdict.new(:$state) ]), :width(40), :!colour, :utf8);
+        like @l[2], / ^ <[✓·?✗]> ' ' /, "$state opens with one of the four marks, without colour";
+        ok @l[2].contains($state), "and says the word '$state'";
+    }
+}
+
+subtest 'where both registers appear in one row, each keeps to its own column' => {
+    # A history table legitimately carries a crew member and an outcome on
+    # the same row.  What must not happen is the two borrowing each
+    # other's register: the agent must take no state colour, and the
+    # state's colour must reach nothing but the state.
+    my ($moment, $screen) = |@fixtures.first({ .key eq 'history' }).value;
+    my @l = screen-lines($screen, :width(100), :colour, :utf8);
+    my @rows = @l.grep({ $_ ~~ / <[⬢⬣⬡◉◍⬤⯁⬠]> / });
+    is @rows.elems, 4, 'four runs in the table';
+    for @rows -> $row {
+        # every coloured span in the row, as (colour code, the text it covers)
+        my @spans = ($row ~~ m:g/ \e '[' $<code>=[<-[m]>+] 'm' $<text>=[<-[\e]>*] \e '[0m' /)
+                    .map({ (~.<code>, ~.<text>) });
+        ok @spans.elems >= 1, 'something in the row is coloured';
+        for @spans -> ($code, $text) {
+            ok $text ~~ / ^ <[✓✗?·]> ' ' /, "only a state is coloured, not '{$text.trim}'";
+            ok $code eq any('32', '31', '33', '2'), 'and in a state colour';
+        }
+        nok @spans.grep({ .[1] ~~ / <[⬢⬣⬡◉◍⬤⯁⬠]> / }), 'no agent mark is inside a coloured span';
+    }
+}
+
+# ------------------------------------------------------------ what a model said
+subtest 'an agent\'s own words are attributed, and never in a labelled row' => {
+    my ($moment, $screen) = |@fixtures.first({ .key eq 'work-said' }).value;
+    my @l = screen-lines($screen, :width(80), :!colour, :utf8);
+    my $i = @l.first({ .contains('⬢ B1LL') && !.starts-with('    ⬢') }, :k);
+    ok $i.defined, 'the words are opened by the mark and the name';
+    ok @l[$i + 1].starts-with('    '), 'and set in under them';
+    for @l.grep({ $_ ~~ / ^ \w+ ':' / }) -> $row {
+        nok $row.contains('nailed down'), 'nothing a model wrote appears on a labelled row';
+    }
+}
+
+# -------------------------------------------------------------------- progress
+subtest 'progress is honest' => {
+    dies-ok { bar-line('x', 0, 0, Duration.new(1)) }, 'a bar refuses a total of zero: there is no share to draw';
+    dies-ok { spin-line('  ', 0, Duration.new(1)) }, 'a spinner refuses to turn without the name of a stage';
+
+    my $b = bar-line('checking the suite', 980, 1652, Duration.new(27.2), :detail('t/10-cli.rakutest'), :width(80), :!colour, :utf8);
+    ok $b.contains('980/1652'), 'the bar says the real count';
+    ok $b.contains('27.2s'), 'and how long it has taken';
+    ok $b.chars <= 80, 'and fits';
+    nok $b.contains('%'), 'and invents no percentage';
+
+    is bar-line('x', 0, 10, Duration.new(0), :width(60), :!colour, :utf8).comb('█').elems, 0, 'nothing done, nothing filled';
+    is bar-line('x', 10, 10, Duration.new(0), :width(60), :!colour, :utf8).comb('░').elems, 0, 'all done, nothing empty';
+    ok bar-line('x', 5, 10, Duration.new(0), :width(60), :!colour, :!utf8).contains('######......'), 'and the plain twins carry the same share';
+
+    my $s = spin-line('reading Look.rakumod', 3, Duration.new(13.1), :hint('/stop'), :width(80), :!colour, :utf8);
+    ok $s.contains('reading Look.rakumod'), 'the spinner names the stage it is in';
+    ok $s.contains('13.1s'), 'and how long it has been there';
+
+    # into a pipe: nothing, unless a tool asked for the record
+    my $to = class { has @.said; method say($l) { @!said.push($l) }; method print($l) { @!said.push($l) }; method flush() { } }.new;
+    my $quiet = Live.new(:handle($to), :!live, :!record);
+    $quiet.show('anything');
+    $quiet.record-line('a', 1);
+    is $to.said.elems, 0, 'a pipe is given no progress at all';
+    my $rec = Live.new(:handle($to), :!live, :record);
+    $rec.record-line('checking the suite', 980, 1652);
+    is $to.said[0], "checking the suite\t980\t1652", 'and the record, where one was asked for, is tab-separated';
+    nok $to.said[0].contains("\e"), 'with no control code in it';
+}
+
+# ------------------------------------------------------------- the next step
+subtest 'a screen that needs something says so, as a command' => {
+    for @fixtures -> $f {
+        my ($moment, $screen) = |$f.value;
+        next unless $screen.exit != 0;
+        ok $screen.next.elems >= 1, "{$f.key}: a screen that did not simply succeed offers a next step";
+        ok $screen.next[0].command.starts-with('321 ') || $screen.next[0].command.starts-with('git '),
+            "{$f.key}: and it is a command that can be typed: {$screen.next[0].command}";
+    }
+}
+
+# --------------------------------------------------------- the machine form
+subtest 'the envelope is one shape, on success and on failure' => {
+    my %ok = result-document(command => 'b1ll', outcome => 'done', dataSchema => 'run.v1',
+                             data => %( runId => 'x' ), words => ['done — a sentence'],
+                             next => [ Step.new(advice => 'read it', command => 'git diff') ]);
+    is %ok<schema>, '321-result.v1', 'a named schema';
+    is %ok<outcome>, 'done', 'the outcome in a word';
+    is %ok<exit>, 0, 'and the exit code that belongs to it';
+    is %ok<error>, Nil, 'no error on a success';
+
+    my %bad = result-document(command => 'b1ll', outcome => 'denied', dataSchema => 'trust.v1',
+                              data => %( agent => '321.do/b1ll' ),
+                              error => Error.new(code => 'package_moved', message => 'the content does not match the pin'));
+    is %bad<schema>, '321-result.v1', 'the same schema on a failure';
+    is %bad<exit>, 5, 'the exit code of a denial';
+    is %bad<error><code>, 'package_moved', 'and a code a caller can switch on';
+
+    for %ok, %bad -> %d {
+        my $json = result-json(%d);
+        nok $json.contains("\e"), 'no colour in a document';
+        nok $json.contains('❮▣❯'), 'and no title';
+        nok $json.contains('✓') || $json.contains('⬢'), 'and no mark';
+    }
+    dies-ok { result-document(command => 'x', outcome => 'finished') }, 'an outcome outside the six is refused';
+    dies-ok { Error.new(code => 'something_new', message => 'x') }, 'an error code outside the list is refused';
+    is OUTCOMES.elems, 6, 'the six outcomes a run can end on';
+    is-deeply [OUTCOMES.map({ exit-for($_) })], [0, 0, 2, 5, 4, 3], 'each with one exit code, and no two outcomes sharing a meaning';
+}
+
+done-testing;
