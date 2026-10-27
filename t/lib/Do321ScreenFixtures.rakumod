@@ -31,8 +31,32 @@ sub fixtures(--> List) is export {
                 Row.new(label => 'agents:',  value => 'none yet'),
             ]),
         ],
-        next => [ Step.new(advice => 'try the reader that comes with 321; it only reads', command => '321 try') ],
+        next => [ Step.new(advice => 'try the reader that comes with 321: it only reads, and its receipt says what it cost', command => '321 try') ],
         then => Step.new(advice => 'pin an agent of your own', command => '321 help trust'),
+    )),
+
+    # The first action a newcomer takes.  It must be safe, it must be
+    # whole - a real run, a real receipt - and it must not pretend to be
+    # free: it asks a model.  So the screen says what it is about to do
+    # before it does it, and what it cost after.
+    'try' => ('the first thing a newcomer runs, and the first receipt they own', Screen.new(
+        title => 'try',
+        byline => PROMPT,
+        blocks => [
+            Note.new(text => 'It reads the files it can see here, answers one question about them in text, and changes nothing. It asks a model to do that, so it costs: the receipt will say exactly what.'),
+            Rows.new(rows => [
+                Row.new(label => 'workspace:', value => '/home/s3/web.321.do (git) — read only'),
+                Row.new(label => 'granted:',   value => 'repo.read, and nothing else: no shell, no network, no writing'),
+            ]),
+            Said.new(mark => '◍', who => 'Prompt', text => 'This is the public website for 321, a Perl and Mojolicious site rendered on the server. It explains what 321 is for, profiles the agents, and links to the documentation and releases.'),
+            Verdict.new(state => 'no change', sentence => 'it answered from the files here and changed nothing'),
+            Rows.new(rows => [
+                Row.new(label => 'cost:',    value => '$0.31, 2 turns, 1 attempt, as the harness reported'),
+                Row.new(label => 'receipt:', value => '~/.321/runs/01M5Y6QK8WVD3ZPT1XHN4JCR7B/receipt.json'),
+            ]),
+        ],
+        next => [ Step.new(advice => 'ask it something of your own', command => '321 prompt <request…>') ],
+        then => Step.new(advice => 'pin an agent of your own, and meet the crew', command => '321 help trust'),
     )),
 
     'completion' => ('someone pressing TAB to find a command', Screen.new(
