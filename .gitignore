@@ -3,3 +3,6 @@
 
 # Per-host secrets (gobin signing key, etc.) — never commit (public repo)
 /conf/secrets.conf
+
+# Private working notes (agent task prompts): kept locally, not published
+/docs/*-prompt.md

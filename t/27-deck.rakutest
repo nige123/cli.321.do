@@ -24,7 +24,7 @@ sub make-run(Str $agent, Str $request, @events, Bool :$alive = True, Str :$recei
     my $r = run-dir(new-ulid(), $home);
     private-dir($r.dir);
     private-dir($r.inbox);
-    write-atomic($r.run-file, encode-json({ schema => SCHEMA-RUN, runId => $r.id, request => $request, workspace => '/home/s3/axs.do',
+    write-atomic($r.run-file, encode-json({ schema => SCHEMA-RUN, runId => $r.id, request => $request, workspace => '/work/shop',
         agent => { name => $agent.lc, displayName => $agent, byline => 'builds, and brings the proof' },
         launchedAt => DateTime.now.utc.earlier(:minutes(12)).Str }));
     write-atomic($r.host-file, encode-json({ pid => my-pid(), startTicks => $alive ?? %me<start> !! 1, bootId => boot-id() }));
@@ -36,8 +36,8 @@ sub make-run(Str $agent, Str $request, @events, Bool :$alive = True, Str :$recei
     $r;
 }
 
-my $a = make-run('B1ll', 'add passkey sign-in to axs', [
-    ['host', 'host_started', { request => 'add passkey sign-in to axs' }],
+my $a = make-run('Bea', 'add passkey sign-in to the shop', [
+    ['host', 'host_started', { request => 'add passkey sign-in to the shop' }],
     ['run', 'attempt_started', { attempt => 1 }],
     ['run', 'tool_call', { tool => 'Bash', target => 'prove t/30-auth.t' }],
     ['run', 'progress', { text => 'Two tests fail on the challenge encoding. Fixing that now.' }],
@@ -45,9 +45,9 @@ my $a = make-run('B1ll', 'add passkey sign-in to axs', [
     ['run', 'directive_received', { directiveId => 'D1', kind => 'steer' }],
     ['run', 'progress', { instruction => 'use base64url, not base64', directiveId => 'D1' }],
 ]);
-my $b = make-run('B1ll', 'fix flaky t/19-status', [['host', 'host_started', { request => 'fix flaky t/19-status' }], ['run', 'attempt_started', { attempt => 1 }]]);
-my $c = make-run('1da', 'plan 123.web live', [['host', 'host_started', { request => 'plan 123.web live' }],], :!alive);
-my $d = make-run('1da', 'status 123.web live', [['host', 'host_started', { request => 'status 123.web live' }],
+my $b = make-run('Bea', 'fix flaky t/19-status', [['host', 'host_started', { request => 'fix flaky t/19-status' }], ['run', 'attempt_started', { attempt => 1 }]]);
+my $c = make-run('Ada', 'plan the release', [['host', 'host_started', { request => 'plan the release' }],], :!alive);
+my $d = make-run('Ada', 'status the release', [['host', 'host_started', { request => 'status the release' }],
     ['host', 'receipt', { status => 'completed', summary => 'the work is done' }]], :receipt<completed>);
 
 my $m = Model.new(:$home);
@@ -61,13 +61,13 @@ subtest 'the deck at 120x36' => {
     ok @l[0].contains('2 active'), 'the active runs are counted';
     ok @l[0].contains('1 needs a look'), 'a lost run needs a look';
     ok $t.contains("▶ {$a.short}"), 'the selected run has the marker';
-    ok $t.contains('add passkey sign-in to axs'), 'the mission is the request';
+    ok $t.contains('add passkey sign-in to the shop'), 'the mission is the request';
     ok $t.contains('running a tool') || $t.contains('writing'), 'a running run says what it is doing';
     ok $t.lines.first(*.contains($c.short)).contains('lost'), 'a run whose host is not that process is lost, never running';
     ok $t.lines.first(*.contains($d.short)).contains('done'), 'a run with a receipt says how it ended';
-    ok $t.contains('B1ll, builds, and brings the proof'), 'the byline names who is answering';
+    ok $t.contains('Bea, builds, and brings the proof'), 'the byline names who is answering';
     ok $t.contains('use base64url, not base64') && $t.contains('✓ taken'), 'the steer is shown taken';
-    ok $t.contains("to B1LL {$a.short} ›"), 'the input line says who it goes to';
+    ok $t.contains("to BEA {$a.short} ›"), 'the input line says who it goes to';
     ok @l[*-1].contains('Enter send') && @l[*-1].contains('Esc navigate'), 'the footer teaches the keys';
     nok $t.contains('stuck'), 'nothing is called stuck';
 }
@@ -217,7 +217,7 @@ subtest 'decoding keys' => {
 
 subtest 'widths' => {
     is text-width('漢字'), 4, 'wide characters take two columns';
-    is fit('add passkey sign-in to axs', 10), 'add passk…', 'cut with an ellipsis';
+    is fit('add passkey sign-in to the shop', 10), 'add passk…', 'cut with an ellipsis';
     is text-width(pad('漢字abc', 6)), 6, 'pad counts columns, not characters';
 }
 
