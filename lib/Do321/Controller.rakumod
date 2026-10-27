@@ -48,6 +48,10 @@ class Verdict is export {
 
     #| Whether work must not simply continue past this answer.
     method stops(--> Bool) { $!result eq RESULT-BLOCK || $!result eq RESULT-NEEDS-HUMAN }
+    #| Whether the controller looked for the report that changed files owe
+    #| and found it: its 'report' part passed.  A turn that changed nothing
+    #| owes none, and the part is then not checked.
+    method report-in(--> Bool) { so @!parts.grep({ .<part> eq 'report' && .<result> eq RESULT-PASS }) }
     method ran(--> Bool) { $!result ne RESULT-UNAVAILABLE }
     #| The answer as a small record for a receipt.
     method record(--> Hash) {
@@ -237,8 +241,28 @@ class IZ4 does Controller is export {
     method check-change(Str $workspace --> Verdict) {
         self!check(POINT-CHANGE, $workspace, ['check', 'change', '--worktree', '--json']);
     }
+    #| The working directory's tree now, as iz4 names it (evidence.gate.
+    #| candidate of a change check that runs no tests), or '' when iz4 does
+    #| not say.  The post_run control stores it to measure the next turn
+    #| from here rather than from HEAD, so a tree that was already dirty
+    #| when a turn began is not laid at the turn's door.
+    method baseline(Str $workspace --> Str) {
+        my $bin = self.binary;
+        return '' if $bin eq '';
+        my @args = ['check', 'change', '--worktree', '--json', '--/checks'];
+        my ($code, $out, $err, $why) = run-in($workspace, [$bin, |@args], :seconds(controller-timeout(POINT-CHANGE)));
+        return '' if $why ne '';
+        # whatever the result and exit code (an iz4 may call a check that
+        # checked nothing unassessed), the document is read for the tree
+        # alone: this is never a verdict
+        my $doc = try parse-json($out);
+        tree-of(Verdict.new(:point(POINT-CHANGE), :evidence($doc)));
+    }
+    #| %run<summary> is the agent's last words; %run<base> the tree the
+    #| turn began from (--base=TREE), when one is known.
     method verify(Str $workspace, %run --> Verdict) {
         my @args = 'verify', '--worktree', '--json';
+        @args.push('--base=' ~ %run<base>) if (%run<base> // '') ne '';
         my $file;
         if %run<summary>:exists {
             $file = $*TMPDIR.add("321-summary-{$*PID}-{(^1_000_000).pick}.txt");
@@ -264,6 +288,15 @@ class IZ4 does Controller is export {
             if $v.ran && $code != result-exit($v.result);
         $v;
     }
+}
+
+#| The tree a check measured as its candidate, from iz4's own document
+#| (evidence.gate.candidate), or '' when it gave none.
+sub tree-of(Verdict $v --> Str) is export {
+    my $doc = $v.evidence;
+    return '' unless $doc ~~ Associative;
+    my $tree = (($doc<evidence> // {})<gate> // {})<candidate> // '';
+    $tree ~~ Str && $tree ~~ / ^ <[0..9a..f]> ** 40 $ / ?? $tree !! '';
 }
 
 #| How iz4 identifies an invariant in one of its documents, as it gave

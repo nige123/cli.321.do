@@ -19,11 +19,13 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     my $ws = iz4-workspace();
     my ($rc, $out, $err) = c('harness', 'detect', '--workspace', $ws.Str);
     is $rc, 0, 'harness detect' or diag $err;
-    like $out, /^^ 'claude_code' \s+ 'detected'/, 'Claude Code is detected';
-    like $out, /'enforces:' .* 'filesystem_guard'/, 'with what it enforces';
-    like $out, /'cannot:' .* 'network_guard'/, 'and what it cannot do';
+    like $out, /^^ \s* 'claude_code' \s+ 'detected'/, 'Claude Code is detected';
     ok $out.contains('.claude/settings.json (none yet)'), 'and that this project has no wiring yet';
-    ok !$out.lines.grep(/^ ['procedure' | 'fake'] \s/), 'adapters that are not harnesses are not listed';
+    ok !$out.lines.grep(/^ \s* ['procedure' | 'fake'] \s/), 'adapters that are not harnesses are not listed';
+    unlike $out, /'enforces:'/, 'the controls stay one step away';
+    ($rc, $out, $err) = c('harness', 'detect', '--workspace', $ws.Str, '--verbose');
+    like $out, /'enforces:' .* 'filesystem_guard'/, '--verbose says what it enforces';
+    like $out, /'cannot:' .* 'network_guard'/, 'and what it cannot do';
 
     ($rc, $out, $err) = c('harness', 'detect', '--workspace', $ws.Str, '--json');
     my %d = parse-json($out);
@@ -120,7 +122,7 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     like $out, /^^ 'Filesystem guard' \s+ 'no' $$/, 'there is no write guard';
     ok $out.contains('Filesystem guard is not available in fake'), 'and the warning says so';
     ($rc, $out, $err) = c('harness', 'detect', :env(%weak));
-    like $out, /^^ 'fake' \s+ 'detected'/, 'a stand-in harness with controls is listed as one';
+    like $out, /^^ \s* 'fake' \s+ 'detected'/, 'a stand-in harness with controls is listed as one';
 }
 
 # ---- the glue: 321 hook ---------------------------------------------------------------
@@ -167,16 +169,67 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     my $said = temp-dir().add('said.txt');
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ), STUB_VERIFY => 'block', STUB_SUMMARY_OUT => $said.Str);
     ok $rc == 2 && $err.contains('verify block'), 'a turn that ends without passing is refused, so the agent says what is outstanding';
+    ok $err.starts-with('IZ4: verify block') && $err.lines.elems == 1, 'the refusal is iz4\'s one line, named as iz4\'s, with nothing appended' or diag $err;
     is $said.slurp, 'All done, no report.', 'iz4 was given the last thing the assistant said, as plain text';
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, stop_hook_active => True ), STUB_VERIFY => 'block');
     is $rc, 0, 'asked a second time in the same turn, the glue lets it end: an agent is never trapped';
-    is hook('post_run', %( transcript_path => $t.Str ))[0], 0, 'a turn that verifies ends normally';
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ));
+    is $rc, 0, 'a turn that verifies ends normally';
+    # everything held and the report the changed files owed is in: a line to the person, under iz4's mark
+    ok parse-json($out)<systemMessage> ~~ / ^ ['◈' | '*'] ' IZ4: verify pass' $ / && $err eq '', 'a clean turn end is said, in iz4\'s words' or diag "$out $err";
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ), STUB_REPORT => 'not_checked');
+    ok $rc == 0 && $out eq '' && $err eq '', 'a turn that owed no report ends in silence' or diag "$out $err";
 
     # the log: how a run proves its hooks fired
     my @lines = $log.lines.map({ parse-json($_) });
-    is @lines.elems, 9, 'every call was logged';
+    is @lines.elems, 10, 'every call was logged';
     ok @lines.grep({ .<control> eq 'filesystem_guard' && .<result> eq 'block' && .<controller> eq 'iz4' && .<harness> eq 'claude_code' }), 'with controller, harness, control and result';
     ok @lines.grep({ .<control> eq 'post_run' && .<point> eq 'verify' }) && @lines.grep({ .<control> eq 'authoritative_context' && .<point> eq 'context' }), 'and the point each answered';
+
+    # a turn that used no tool able to change files owes nothing: iz4 is not asked
+    my $calls = temp-dir().add('calls.log');
+    my $quiet = temp-dir().add('quiet.jsonl');
+    $quiet.spurt($t.slurp
+           ~ encode-json(%( type => 'user', message => %( content => 'and now a question' ) )) ~ "\n"
+           ~ encode-json(%( type => 'assistant', message => %( content => [ %( type => 'tool_use', name => 'Read' ), %( type => 'tool_use', name => 'Grep' ) ] ) )) ~ "\n"
+           ~ encode-json(%( type => 'user', toolUseResult => %( ok => True ), message => %( content => [ %( type => 'tool_result', content => 'x' ), ] ) )) ~ "\n"
+           ~ encode-json(%( type => 'assistant', message => %( content => [ %( type => 'text', text => 'Here is the answer.' ), ] ) )) ~ "\n");
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $quiet.Str ), STUB_VERIFY => 'block', STUB_LOG => $calls.Str);
+    ok $rc == 0 && $out eq '' && $err eq '', 'a turn of reading and answering ends in silence even when verify would block' or diag "$out $err";
+    ok !$calls.e || !$calls.lines.grep(*.starts-with('verify')), 'and iz4 verify was not run' or diag $calls.slurp;
+    ok parse-json($log.lines.tail)<reason>.contains('not asked'), 'the log says it was not asked, not that it passed a check' or diag $log.lines.tail;
+    # the earlier turn's Write still counts when it is the turn ending
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ), STUB_VERIFY => 'block', STUB_LOG => $calls.Str);
+    ok $rc == 2 && $calls.lines.grep(*.starts-with('verify')), 'a turn that wrote is verified' or diag $calls.slurp;
+    # a delegated agent, or a tool 321 has never heard of, may have written: asked
+    my $delegated = temp-dir().add('delegated.jsonl');
+    $delegated.spurt(encode-json(%( type => 'user', message => %( content => 'go' ) )) ~ "\n"
+           ~ encode-json(%( type => 'assistant', message => %( content => [ %( type => 'tool_use', name => 'Agent' ), ] ) )) ~ "\n");
+    $calls.unlink;
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $delegated.Str ), STUB_LOG => $calls.Str);
+    ok $calls.lines.grep(*.starts-with('verify')), 'an unknown or delegating tool counts as able to change files' or diag $calls.slurp;
+    $calls.unlink;
+    ($rc, $out, $err) = hook('post_run', %( ), STUB_LOG => $calls.Str);
+    ok $calls.lines.grep(*.starts-with('verify')), 'no transcript: asked' or diag $calls.slurp;
+
+    # the baseline: a turn is measured from the tree it began with, not from HEAD
+    my $tree0 = 'a' x 40; my $tree1 = 'b' x 40;
+    my %sess = session_id => 'sess-1';
+    $calls.unlink;
+    ($rc, $out, $err) = hook('authoritative_context', %( hook_event_name => 'SessionStart', |%sess ), STUB_TREE => $tree0, STUB_LOG => $calls.Str);
+    ok $rc == 0 && $calls.lines.grep(*.starts-with('check change --worktree --json --/checks')), 'at session start the tree is read without running any check' or diag $calls.slurp;
+    $calls.unlink;
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, |%sess ), STUB_VERIFY => 'block', STUB_TREE => $tree1, STUB_LOG => $calls.Str);
+    ok $rc == 2 && $calls.lines.grep({ $_ eq "verify --worktree --json --base=$tree0 " || .starts-with("verify --worktree --json --base=$tree0 --summary=") }), 'verify measures from the session\'s baseline' or diag $calls.slurp;
+    $calls.unlink;
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, |%sess ), STUB_TREE => $tree1, STUB_LOG => $calls.Str);
+    ok $rc == 0 && $calls.lines.grep(*.contains("--base=$tree0")), 'refused, the baseline stayed where it was: the same changes are measured again' or diag $calls.slurp;
+    $calls.unlink;
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, |%sess ), STUB_TREE => $tree1, STUB_LOG => $calls.Str);
+    ok $rc == 0 && $calls.lines.grep(*.contains("--base=$tree1")), 'allowed to end, the next turn is measured from where this one left the tree' or diag $calls.slurp;
+    $calls.unlink;
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, session_id => 'sess-2' ), STUB_LOG => $calls.Str);
+    ok $calls.lines.grep({ .starts-with('verify') && !.contains('--base=') }), 'a session without a baseline measures from HEAD, as before' or diag $calls.slurp;
 
     # nothing governs: stay out of the way
     my $bare = iz4-workspace(:!iz4);

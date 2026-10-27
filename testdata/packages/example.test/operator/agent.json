@@ -10,6 +10,7 @@
   "provenance": { "source": "cli.321.do/testdata", "builtBy": "fixture" },
   "identity": {
     "role": "an unbranded deployment operator used to test the dp tool binding",
+    "byline": "operates the engine on your order",
     "personality": "plain and literal",
     "tone": "brief",
     "decisionStyle": "asks rather than guesses; every operation is a deterministic procedure"

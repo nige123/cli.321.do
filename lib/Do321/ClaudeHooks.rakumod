@@ -20,6 +20,7 @@ unit module Do321::ClaudeHooks;
 use Do321::JSON;
 use Do321::Protocol;
 use Do321::Controller;
+use Do321::Look;
 
 constant CLAUDE-HARNESS  is export = 'claude_code';
 constant CLAUDE-SETTINGS is export = '.claude/settings.json';
@@ -165,6 +166,42 @@ sub claude-run-settings(Str $self, %by-controller --> Str) is export {
     %hooks ?? encode-json(%( hooks => %hooks )) !! '';
 }
 
+#| The tools a turn may use without changing anything.  Any other tool
+#| (Edit, Write, Bash, an agent it delegated to, one 321 has never heard
+#| of) counts as able to change files: the answer errs towards asking.
+my constant @READ-ONLY-TOOLS = <Read Grep Glob LS WebSearch WebFetch TodoWrite AskUserQuestion ToolSearch
+                                ReadNotifications ListAgents SendMessage>;
+
+#| Whether the turn that is ending (the records since the person's last
+#| prompt) used any tool that can change files.  No transcript, or one
+#| that cannot be read, is taken as yes: the controller is then asked.
+sub claude-turn-may-have-changed(Str $path --> Bool) is export {
+    return True unless $path ne '' && $path.IO.f;
+    my @turn;
+    for $path.IO.lines -> $line {
+        my $rec = try parse-json($line);
+        next unless $rec ~~ Associative;
+        my $type = ($rec<type> // '').Str;
+        # the person's own prompt starts a turn; a tool result is also
+        # typed 'user' and does not
+        if $type eq 'user' && !$rec<toolUseResult> && !$rec<isMeta> {
+            my $content = ($rec<message> // {})<content> // $rec<content>;
+            my $is-prompt = $content ~~ Str
+                || ($content ~~ Positional && !@$content.grep({ $_ ~~ Associative && ($_<type> // '') eq 'tool_result' }));
+            if $is-prompt { @turn = (); next }
+        }
+        @turn.push($rec) if $type eq 'assistant';
+    }
+    for @turn -> $rec {
+        my $content = ($rec<message> // {})<content> // $rec<content>;
+        next unless $content ~~ Positional;
+        for @$content.grep({ $_ ~~ Associative && ($_<type> // '') eq 'tool_use' }) -> $use {
+            return True unless is-in(($use<name> // '').Str, @READ-ONLY-TOOLS);
+        }
+    }
+    False;
+}
+
 #| The last thing the assistant said, from a Claude Code transcript (JSON
 #| lines): the text a controller needs to look for a report in.
 sub claude-last-words(Str $path --> Str) is export {
@@ -284,8 +321,15 @@ sub claude-answer(Str $control, Verdict $v, Bool :$headless = False, Str :$stren
         }
     }
     if ($event // '') eq 'Stop' {
-        return (2, '', "$why\n") if $v.stops;
+        # A refusal is the controller's one line, named as its own, and
+        # nothing appended: the harness shows it to the agent as it stands.
+        # (A proposal already opens with the controller's name.)
+        return (2, '', ($v.proposal ne '' ?? $why !! "$who: $why") ~ "\n") if $v.stops;
         return (0, claude-system-message("321: $who warns: {$v.reason}"), '') if $v.result eq RESULT-WARN;
+        # Everything held and the report the changed files owed is in: that
+        # is worth a line to the person.  A turn that changed nothing owed
+        # nothing and stays quiet.
+        return (0, claude-system-message("{utf8-terminal() ?? '◈' !! '*'} $who: {$v.reason}"), '') if $v.report-in;
         return (0, '', '');
     }
     # After the fact nothing can be stopped; what was found is still shown.

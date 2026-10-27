@@ -37,6 +37,7 @@
       "type": "object", "additionalProperties": false, "required": ["role"],
       "properties": {
         "role": { "type": "string", "minLength": 1 },
+        "byline": { "type": "string", "minLength": 1, "maxLength": 48 },
         "personality": { "type": "string" },
         "tone": { "type": "string" },
         "decisionStyle": { "type": "string" }

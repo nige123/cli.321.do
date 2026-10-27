@@ -42,7 +42,7 @@ define 'Publisher', (domain => 'str', url => 'str?');
 define 'Owner', (legalName => 'str?', url => 'str?');
 define 'Licence', (spdx => 'str?', url => 'str?');
 define 'Provenance', (source => 'str?', builtAt => 'str?', builtBy => 'str?');
-define 'Identity', (role => 'str', personality => 'str?', tone => 'str?', decisionStyle => 'str?');
+define 'Identity', (role => 'str', byline => 'str?', personality => 'str?', tone => 'str?', decisionStyle => 'str?');
 define 'Procedure', (name => 'str', matches => 'obj:ProcedureMatch', requires => 'strs?', steps => 'list:ProcedureStep');
 define 'ProcedureMatch', (objectiveRegex => 'str?',);
 define 'ProcedureStep', (

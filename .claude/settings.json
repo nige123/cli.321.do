@@ -4,18 +4,27 @@
       {
         "hooks": [
           {
-            "command": "iz4 hook pre-edit",
+            "command": "321 hook claude_code iz4 filesystem_guard",
             "type": "command"
           }
         ],
         "matcher": "Edit|Write|MultiEdit|NotebookEdit"
+      },
+      {
+        "hooks": [
+          {
+            "command": "321 hook claude_code iz4 shell_guard",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
       }
     ],
     "SessionStart": [
       {
         "hooks": [
           {
-            "command": "iz4 hook session-start",
+            "command": "321 hook claude_code iz4 authoritative_context",
             "type": "command"
           }
         ],
@@ -26,7 +35,7 @@
       {
         "hooks": [
           {
-            "command": "iz4 hook stop",
+            "command": "321 hook claude_code iz4 post_run",
             "type": "command"
           }
         ]

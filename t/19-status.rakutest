@@ -96,7 +96,8 @@ constant SCREEN-LINES = 24;
     my ($rc, $out) = cli($home, $tp, '--non-interactive', 'op', 'status', :env(%( DP_BIN => '' )));
     is $rc, EXIT-FAILED, 'an unbound engine fails';
     ($rc, $out) = cli($home, $tp, 'status', :env(%bound));
-    ok $out.contains('FAILED') && $out.contains('op') && $out.contains('status'), 'the failed run is listed with its agent and request' or diag $out;
+    ok $out.contains('failed') && $out.contains('op status'), 'the failed run is listed with its agent and request' or diag $out;
+    ok !$out.contains('All clear'), 'nothing is celebrated while a run failed';
     ok $out.contains('the last run failed') && $out ~~ / \n \h+ '321 op status' \n /, 'the next step is to fix the cause and ask again' or diag $out;
     like $out, / ^^ 'agents:' \s+ '1 configured (op)' /, 'the alias is shown' or diag $out;
     ok $out.contains('a receipt says what ran and what changed, never that the work is right'), 'and what a receipt is not';
@@ -106,16 +107,18 @@ constant SCREEN-LINES = 24;
     ($rc, $out) = cli($home, $tp, 'op', 'status', :env(%bound));
     is $rc, 0, 'status by alias completes';
     ($rc, $out) = cli($home, $tp, 'status', :env(%bound));
-    ok $out.lines.grep(*.contains('COMPLETED')).elems == 1 && $out.lines.grep(*.contains('FAILED')).elems == 1, 'both runs are listed' or diag $out;
+    ok $out.lines.grep(/^ '  ' .* \s 'completed' $/).elems == 1 && $out.lines.grep(/^ '  ' .* \s 'failed' $/).elems == 1, 'both runs are listed' or diag $out;
     ok !$out.contains('the last run failed') && $out ~~ / \n \h+ '321 op <request...>' \n /, 'an older failure that later runs moved past is not news' or diag $out;
-    ok $out.lines.first(*.contains('COMPLETED')) ~~ /^ \s+ 'just now' \s/, 'a run just made says so in a person\'s words' or diag $out;
+    ok $out.lines.first(/^ '  ' .* \s 'completed' $/) ~~ /^ \s+ 'just now' \s/, 'a run just made says so in a person\'s words' or diag $out;
+    ($rc, $out) = cli($home, $tp, 'status', '--brief', :env(%bound));
+    ok $out.lines.elems == 2 && $out.lines[0] ~~ / ^ \d\d\d\d '-' .* "\top\tcompleted\tstatus\t" $ / && !$out.contains('next:'), '--brief is one tab-separated record per run, newest first' or diag $out;
 
     # a run waiting on an answer wins over everything newer
     ($rc, $out) = cli($home, $tp, '--non-interactive', 'op', 'plan', 'live', :env(%bound));
     is $rc, EXIT-BLOCKED, 'an ambiguous plan blocks';
     ($rc, $out) = cli($home, $tp, 'op', 'status', :env(%bound));
     ($rc, $out) = cli($home, $tp, 'status', :env(%bound));
-    ok $out.contains('BLOCKED') && $out.contains('Which service'), 'the blocked run shows its question' or diag $out;
+    ok $out.contains('blocked   Which service'), 'the blocked run shows its question' or diag $out;
     ok $out.contains('a run is waiting on an answer') && $out ~~ / \n \h+ '321 op plan live <answer>' \n /, 'and the next step is to answer it' or diag $out;
     ok $out.lines.elems <= SCREEN-LINES, "still one screen ({$out.lines.elems} lines)";
 

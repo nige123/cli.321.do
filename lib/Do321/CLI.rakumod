@@ -113,6 +113,26 @@ class Global {
     has @.grant is rw;
     has Bool $.non-interactive is rw = False;
     has Bool $.json-out is rw = False;
+    #| --brief: one record per line for a tool, no title, no next step.
+    has Bool $.brief is rw = False;
+    #| --verbose: the whole transcript of a run (trust, grants, every
+    #| event, every tool call); the default screen is the short one.
+    has Bool $.verbose is rw = False;
+}
+
+#| The two switches a pipeline reaches for, taken from wherever they
+#| stand around a reserved command (321 --brief status, 321 status
+#| --brief): --plain is the pipe form on a terminal, --brief one record
+#| per line.  After an agent's name every word is the request, so they
+#| are never taken from there.
+sub take-pipe-flags(Global $g, @args --> List) {
+    my @rest;
+    for @args -> $a {
+        if $a eq '--brief'    { $g.brief = True }
+        elsif $a eq '--plain' { %*ENV<DO_321_COLOR> = '0' }
+        else { @rest.push($a) }
+    }
+    @rest;
 }
 
 sub parse-global(@args --> List) {
@@ -143,6 +163,9 @@ sub parse-global(@args --> List) {
             when '--grant'           { $g.grant.push(need()) }
             when '--non-interactive' { $g.non-interactive = True }
             when '--json'            { $g.json-out = True }
+            when '--brief'           { $g.brief = True }
+            when '--verbose'         { $g.verbose = True }
+            when '--plain'           { %*ENV<DO_321_COLOR> = '0' }
             default { X::Do321::Usage.new(message => "unknown option $name").throw }
         }
         $i++;
@@ -183,6 +206,15 @@ sub cli-main(Env $env is copy --> Int) is export {
     $env = Env.new(:stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :args($env.args), :trust-path($g.trust-path),
         :home($env.home), :adapters($env.adapters), :interactive($env.interactive), :signals($env.signals)) if $g.trust-path ne '';
     unless @rest { $env.stdout.print(help-index(help-ctx($env))); return EXIT-USAGE }
+    $g.brief = True if brief-on();
+    @rest = (@rest[0], |take-pipe-flags($g, @rest[1 .. *])) if is-in(@rest[0], RESERVED);
+    dress(False) if $g.brief;
+    # the two machine forms are exclusive: a document, or a record per line
+    if $g.brief && ($g.json-out || is-in('--json', @rest)) {
+        $env.stderr.say('321: --json and --brief are two forms; ask for one');
+        $env.stderr.say(next-text('one record per line, or the document', '321 help brief'));
+        return EXIT-USAGE;
+    }
     # '321 status --help' is '321 help status'
     return cmd-help($env, [@rest[0]]) if is-in(@rest[0], RESERVED) && @rest.grep('--help' | '-h');
     given @rest[0] {
@@ -190,9 +222,10 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'version' | '--version' { $env.stdout.say("321 {VERSION}"); return 0 }
         when 'run'      { return cmd-run($env, $g, @rest[1 .. *]) }
         when 'agents'   { return cmd-agents($env, $g, @rest[1 .. *]) }
-        when 'packages' { return cmd-packages($env, @rest[1 .. *]) }
-        when 'trust'    { return cmd-trust($env, @rest[1 .. *]) }
-        when 'doctor'   { return cmd-doctor($env, @rest[1 .. *]) }
+        when 'whois'    { return cmd-whois($env, $g, @rest[1 .. *]) }
+        when 'packages' { return cmd-packages($env, $g, @rest[1 .. *]) }
+        when 'trust'    { return cmd-trust($env, $g, @rest[1 .. *]) }
+        when 'doctor'   { return cmd-doctor($env, $g, @rest[1 .. *]) }
         when 'status'   { return cmd-status($env, $g, @rest[1 .. *]) }
         when 'key'      { return cmd-key($env, $g, @rest[1 .. *]) }
         when 'receipt'  { return cmd-receipt($env, $g, @rest[1 .. *]) }
@@ -238,27 +271,39 @@ sub cmd-key(Env $env, Global $g, @args --> Int) {
             my %pub = try new-key($home);
             if $! { $env.stderr.say("321 key: {$!.message}"); return EXIT-FAILED }
             if $g.json-out { $env.stdout.say(encode-json(%pub)); return 0 }
-            $env.stdout.say("key {%pub<keyId>} made at {key-path($home)}; receipts from this 321 are signed with it from now on.");
-            $env.stdout.say("public key: {%pub<publicKey>}");
-            $env.stdout.say(next-text('pin the public key where receipts are checked', '321 key'));
+            if $g.brief { $env.stdout.say(brief-line(%pub<keyId>, %pub<publicKey>, key-path($home))); return 0 }
+            my $w = $env.stdout;
+            $w.say(header('key new', "{%pub<keyId>} made"));
+            $w.say('');
+            $w.say($_) for flat row-lines('key:', key-path($home).Str), row-lines('public key:', %pub<publicKey>.Str);
+            $w.say('');
+            $w.say('Receipts from this 321 are signed with it from now on. A signature says a receipt is as it was issued; it never says the work is right.');
+            $w.say('');
+            $w.say(next-text('pin the public key where receipts are checked; this shows it again', '321 key'));
             0;
         }
         when 'show' {
             my $k = try load-key($home);
             if $! { $env.stderr.say("321 key: {$!.message}"); return EXIT-FAILED }
+            my $w = $env.stdout;
             without $k {
-                if $g.json-out { $env.stdout.say(encode-json(%())); return 0 }
-                $env.stdout.say("No signing key at {key-path($home)}: receipts from this 321 are unsigned.");
-                $env.stdout.say(next-text('make one', '321 key new'));
+                if $g.json-out { $w.say(encode-json(%())); return 0 }
+                return 0 if $g.brief;
+                $w.say(header('key', 'none yet'));
+                $w.say('');
+                $w.say($_) for flat row-lines('key:', "none at {key-path($home)}"), row-lines('receipts:', 'unsigned until there is one');
+                $w.say('');
+                $w.say(next-text('make one', '321 key new'));
                 return 0;
             }
             my %pub = public-part(%$k);
-            if $g.json-out { $env.stdout.say(encode-json(%pub)); return 0 }
-            $env.stdout.say(header('key', "{%pub<keyId>} at {key-path($home)}"));
-            $env.stdout.say('');
-            $env.stdout.say("public key: {%pub<publicKey>}");
-            $env.stdout.say('');
-            $env.stdout.say('Receipts from this 321 are signed with it. A signature says a receipt is as it was issued; it never says the work is right.');
+            if $g.json-out { $w.say(encode-json(%pub)); return 0 }
+            if $g.brief { $w.say(brief-line(%pub<keyId>, %pub<publicKey>, key-path($home))); return 0 }
+            $w.say(header('key', %pub<keyId>.Str));
+            $w.say('');
+            $w.say($_) for flat row-lines('key:', key-path($home).Str), row-lines('public key:', %pub<publicKey>.Str), row-lines('receipts:', 'signed with it');
+            $w.say('');
+            $w.say('A signature says a receipt is as it was issued; it never says the work is right.');
             0;
         }
         default { usage-error($env, 'key', "there is no 'key $sub'") }
@@ -285,16 +330,35 @@ sub cmd-receipt(Env $env, Global $g, @args --> Int) {
     }
     without $file { return usage-error($env, 'receipt', 'which file?') }
     my $r = try parse-json($file.IO.slurp);
-    if $! || $r !~~ Associative { $env.stderr.say("321 receipt verify: {$file} is not a receipt: {$!.message // 'not a JSON object'}"); return EXIT-FAILED }
+    if $! || $r !~~ Associative {
+        $env.stderr.say("321 receipt verify: {$file} is not a receipt: {$!.message // 'not a JSON object'}");
+        $env.stderr.say(next-text('the last runs are listed, each with its receipt, under', '321 status'));
+        return EXIT-FAILED;
+    }
     without $key {
         my $k = try load-key(home-of($env));
         $key = $k<publicKey> with $k;
     }
-    without $key { $env.stderr.say("321 receipt verify: no key to check against: give --key <base64>, or make this 321's own with '321 key new'"); return EXIT-USAGE }
+    without $key {
+        $env.stderr.say("321 receipt verify: no key to check against: give --key <base64>, or make this 321's own");
+        $env.stderr.say(next-text('make one', '321 key new'));
+        return EXIT-USAGE;
+    }
     my $id = try verify-receipt(%$r, $key);
-    if $! { $env.stderr.say("321 receipt verify: {$file}: {$!.message}"); return EXIT-FAILED }
-    $env.stdout.say("receipt {$r<receiptId>} for package {$r<packageId>}: digest matches its content and the signature verifies under key $id.");
-    $env.stdout.say('That says the receipt is as it was issued and what it records happened; it does not say the work is right.');
+    if $! {
+        $env.stderr.say("321 receipt verify: {$file}: {$!.message}");
+        $env.stderr.say(next-text('check it against the key it was signed with', "321 receipt verify $file --key B64"));
+        return EXIT-FAILED;
+    }
+    if $g.brief { $env.stdout.say(brief-line('verified', $r<receiptId>, $r<packageId>, $id)); return 0 }
+    my $w = $env.stdout;
+    $w.say(header('receipt verify', $file));
+    $w.say('');
+    $w.say("{glyph('yes')} verified: the digest matches the content and the signature holds under key $id");
+    $w.say('');
+    $w.say($_) for flat row-lines('receipt:', $r<receiptId>.Str), row-lines('package:', $r<packageId>.Str), row-lines('key:', $id.Str);
+    $w.say('');
+    $w.say('That says the receipt is as it was issued; it never says the work is right.');
     0;
 }
 
@@ -352,6 +416,15 @@ sub when-text(Str $iso, DateTime :$now = DateTime.now --> Str) is export {
 
 sub trim-to(Str $s, Int $n --> Str) { $s.chars <= $n ?? $s !! $s.substr(0, $n - 1) ~ '…' }
 
+#| Who a person is addressing, in a few words after the agent's name: the
+#| package's own byline (identity.byline, written to be remembered), or
+#| failing that the first clause of its role.
+sub agent-byline(%m --> Str) {
+    my $b = (%m<identity><byline> // '').trim;
+    return $b if $b ne '';
+    trim-to((%m<identity><role> // '').split(/ <[:;,.]> /, 2)[0].trim, 40);
+}
+
 #| `321 status`: what is going on with this 321, on one screen: the
 #| runtime, the workspace and its IZ4, the agents, the deploy binding,
 #| receipt signing, the last runs, and the next step the newest run that
@@ -361,7 +434,7 @@ sub trim-to(Str $s, Int $n --> Str) { $s.chars <= $n ?? $s !! $s.substr(0, $n - 
 sub cmd-status(Env $env, Global $g, @args --> Int) {
     my $want = 5;
     if @args && @args[0] eq '--runs' { $want = (@args[1] // '5').Int max 1 }
-    elsif @args && @args[0] ne '--json' { return usage-error($env, 'status', "it takes --runs N and --json, not '{@args[0]}'") }
+    elsif @args && @args[0] ne '--json' { return usage-error($env, 'status', "it takes --runs N, --json and --brief, not '{@args[0]}'") }
     my %ctx = help-ctx($env);
     my $home = home-of($env);
     my ($workspace, $kind) = resolve-workspace($g.workspace);
@@ -407,6 +480,12 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
         )));
         return 0;
     }
+    # one run per line, newest first, for a tool: when (ISO 8601), agent,
+    # status, what was asked, what it waits on
+    if $g.brief {
+        $env.stdout.say(brief-line(.<startedAt>, .<agent>, .<status>, .<objective>, .<blockedOn>)) for @runs;
+        return 0;
+    }
 
     my $w = $env.stdout;
     $w.say(header('status'));
@@ -422,10 +501,14 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
         ~ '; execute ' ~ (%ctx<dp-execute> ne '' ?? "enabled for {%ctx<dp-execute>}" !! 'not enabled here (DP_EXECUTE unset)'));
     row('receipts:', $signing);
     $w.say('');
+    # three columns: how long ago, what was asked as it was typed, and
+    # how it ended; a question it waits on follows its line
+    my $done = @runs.grep({ .<status> eq 'completed' | 'no_change' }).elems;
     if @runs {
-        row('last runs:', $total > @runs ?? "{@runs.elems} of $total (321 status --runs N for more)" !! "{@runs.elems} of $total");
+        row('last runs:', ($total > @runs ?? "{@runs.elems} of $total, " !! "{@runs.elems} of $total, ")
+            ~ "$done completed" ~ ($total > @runs ?? ' (321 status --runs N for more)' !! ''));
         for @runs -> %r {
-            my $line = sprintf('  %-13s %-14s %-30s %s', when-text(%r<startedAt>), trim-to(%r<agent>, 14), trim-to(%r<objective>, 30), %r<status>.uc);
+            my $line = sprintf('  %-13s %-44s %s', when-text(%r<startedAt>), trim-to("{%r<agent>} {%r<objective>}", 44), last-word(%r<status>));
             $line ~= '   ' ~ trim-to(%r<blockedOn>, 40) if %r<blockedOn> ne '';
             $w.say($line);
         }
@@ -446,6 +529,12 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
         elsif !@agents { next-text('no agent is configured yet; set one up', '321 help trust') }
         elsif !@runs { next-text('make a first run', "321 $first status") }
         else { next-text('ask the next thing', "321 $first <request...>") });
+    # a clean state is said last, plainly, and only when it is so: every
+    # run shown ended completed and nothing waits on the person
+    if @runs && $done == @runs && !$blocked && !$running && !$failed {
+        $w.say('');
+        $w.say(all-well('clear', "the last {many-of(@runs.elems, 'run')} completed and nothing is waiting on you."));
+    }
     0;
 }
 
@@ -512,6 +601,14 @@ sub load-agent-named($cfg, Global $g, Str $name --> List) is export {
 #| words, shown as the claim it is - a profile is not evidence of
 #| anything, and what a run may actually do is this intersected with the
 #| caller's grants and local policy (authority-is-intersection.cli.321.do).
+#| `321 whois <agent>`: an introduction to one agent, for a person about
+#| to address it.  The same screen answers `321 agents <agent>`.
+sub cmd-whois(Env $env, Global $g, @args --> Int) {
+    return usage-error($env, 'whois', @args ?? "it takes one agent's name, not '{@args.join(' ')}'" !! 'say which agent; 321 agents lists them')
+        unless @args == 1 && !@args[0].starts-with('-');
+    cmd-agent-profile($env, $g, @args[0]);
+}
+
 sub cmd-agent-profile(Env $env, Global $g, Str $name --> Int) {
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
@@ -525,7 +622,11 @@ sub cmd-agent-profile(Env $env, Global $g, Str $name --> Int) {
     }
     my %m = $agent.manifest;
     my $w = $env.stdout;
-    my sub row(Str $k, Str $v) { $w.say($_) for row-lines($k, $v) }
+    if $g.brief {
+        $w.say(brief-line(%m<id>, %m<version>, $agent.level, agent-byline(%m), %m<identity><role>));
+        return 0;
+    }
+    my sub row(Str $k, Str $v) { $w.say($_) for flat row-lines($k, $v) }
     # a skill and what it is for, in a column of its own so a long name
     # never pushes the words it explains out of line
     my sub note(Str $n, Str $t) {
@@ -533,13 +634,16 @@ sub cmd-agent-profile(Env $env, Global $g, Str $name --> Int) {
         $w.say(sprintf('  %-14s %s', $n, @l[0] // ''));
         $w.say((' ' x 17) ~ $_) for @l[1 .. *];
     }
-    $w.say(header('agents', %m<displayName>));
+    $w.say(header('whois', "{%m<displayName>}, {agent-byline(%m)}"));
     $w.say(subtitle("{%m<id>} {%m<version>}", $agent.level));
     $w.say('');
-    # each line the package's own field, under its own label: joining two
-    # of them into a sentence would be writing words the publisher did not
-    row('for:', %m<identity><role>);
-    for ('manner:', 'personality'), ('tone:', 'tone'), ('decides:', 'decisionStyle') -> ($label, $field) {
+    # The introduction: its reason for being, its personality, and its ways
+    # of working (how it speaks, how it decides), then its skills and what
+    # it may do.  Each line is the package's own field under its own label:
+    # joining two of them into a sentence would be writing words the
+    # publisher did not.
+    row('is for:', %m<identity><role>);
+    for ('personality:', 'personality'), ('speaks:', 'tone'), ('decides:', 'decisionStyle') -> ($label, $field) {
         my $v = (%m<identity>{$field} // '').trim;
         row($label, $v) if $v ne '';
     }
@@ -572,6 +676,10 @@ sub cmd-agents(Env $env, Global $g, @args --> Int) {
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
     my @list = $cfg.configured;
+    if $g.brief {
+        $env.stdout.say(brief-line(.id.Str, .level, ($_.pin.defined ?? .pin<version> !! ''), .alias)) for @list;
+        return 0;
+    }
     unless @list {
         $env.stdout.print(calm("No agents are configured in {$cfg.path}",
             'Add a pinned publisher package or a local package there, or run an unsigned local package by path with --package-dir DIR.',
@@ -610,6 +718,7 @@ sub builtin-packages(--> Hash) {
               "licence": { "spdx": "Apache-2.0" },
               "identity": {
                 "role": "a reader that answers one question about the files it can see, in text, and changes nothing",
+                "byline": "the plain-spoken page reader",
                 "tone": "direct"
               },
               "prompts": ["prompts/identity.md"],
@@ -667,34 +776,62 @@ sub materialise-builtin(Str $name, IO::Path $home --> IO::Path) is export {
     $dir;
 }
 
-sub cmd-packages(Env $env, @args --> Int) {
+sub cmd-packages(Env $env, Global $g, @args --> Int) {
     return usage-error($env, 'packages', @args ?? "'packages {@args.join(' ')}' needs more" !! 'say what to do') if @args < 2;
+    my $w = $env.stdout;
     given @args[0] {
         when 'builtin' {
             my $dir = try materialise-builtin(@args[1], home-of($env));
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-USAGE }
             my ($m, $d) = try validate-package($dir);
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
-            $env.stdout.say($dir.Str);
-            $env.stdout.say(next-text('run it by path, no trust file needed', "321 --package-dir $dir {@args[1]} <request...>"));
+            # The path is the result, and a tool (iz4's launcher among them)
+            # reads this command's standard output as nothing but the path.
+            # Into a pipe that is all it gets; the screen is for a terminal.
+            if $g.brief || !pretty-on() { $w.say($dir.Str); return 0 }
+            $w.say(header('packages builtin', @args[1]));
+            $w.say('');
+            $w.say($_) for flat row-lines('path:', $dir.Str), row-lines('package:', "{$m<id>} {$m<version>}");
+            $w.say('');
+            $w.say(next-text('run it by path, no trust file needed', "321 --package-dir $dir {@args[1]} <request...>"));
             return 0;
         }
         when 'validate' {
             my ($m, $d) = try validate-package(@args[1].IO);
-            if $! { $env.stdout.say("INVALID: {$!.message}"); $env.stdout.say(next-text('fix what it names, then validate again', "321 packages validate {@args[1]}")); return EXIT-FAILED }
-            $env.stdout.say("OK {$m<id>} {$m<version>} $d");
-            $env.stdout.say(next-text('pin it in the trust file so it can be asked by name', '321 help trust'));
+            if $! {
+                # in pipeline mode a failure is one line on standard error and the exit code
+                if $g.brief { $env.stderr.say("321 packages validate: {@args[1]}: {$!.message}"); return EXIT-FAILED }
+                $w.say(header('packages validate', @args[1]));
+                $w.say('');
+                $w.say("{glyph('no')} invalid: {$!.message}");
+                $w.say('');
+                $w.say(next-text('fix what it names, then validate again', "321 packages validate {@args[1]}"));
+                return EXIT-FAILED;
+            }
+            if $g.brief { $w.say(brief-line('valid', $m<id>, $m<version>, $d)); return 0 }
+            $w.say(header('packages validate', @args[1]));
+            $w.say('');
+            $w.say("{glyph('yes')} valid: {$m<id>} {$m<version>}");
+            $w.say('');
+            $w.say($_) for flat row-lines('digest:', $d.Str);
+            $w.say('');
+            $w.say(next-text('pin it in the trust file so it can be asked by name', '321 help trust'));
             return 0;
         }
         when 'digest' {
             my ($d, $entries) = try compute(@args[1].IO);
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
-            if @args > 2 && @args[2] eq '--write' {
+            my $write = @args > 2 && @args[2] eq '--write';
+            if $write {
                 try write-digest-file(@args[1].IO, $d);
                 if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
             }
-            $env.stdout.say("$d ({@$entries.elems} files)");
-            $env.stdout.say(@args > 2 && @args[2] eq '--write'
+            if $g.brief { $w.say(brief-line($d, @$entries.elems, @args[1])); return 0 }
+            $w.say(header('packages digest', @args[1]));
+            $w.say('');
+            $w.say($_) for flat row-lines('digest:', $d.Str), row-lines('files:', many-of(@$entries.elems, 'file') ~ ($write ?? '; written to DIGEST' !! ''));
+            $w.say('');
+            $w.say($write
                 ?? next-text('validate the package', "321 packages validate {@args[1]}")
                 !! next-text('write it into the package as its DIGEST file', "321 packages digest {@args[1]} --write"));
             return 0;
@@ -726,12 +863,23 @@ sub cmd-packages(Env $env, @args --> Int) {
     usage-error($env, 'packages', "there is no 'packages {@args[0]}'");
 }
 
-sub cmd-trust(Env $env, @args --> Int) {
+sub cmd-trust(Env $env, Global $g, @args --> Int) {
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
     my $sub = @args ?? @args[0] !! 'show';
     given $sub {
         when 'show' {
+            if $g.brief {
+                for $cfg.publishers.keys.sort -> $d {
+                    my %p = $cfg.publishers{$d};
+                    for (%p<packages> // {}).keys.sort -> $n {
+                        my %pin = %p<packages>{$n};
+                        $env.stdout.say(brief-line("$d/$n", %pin<version>, (%pin<trust> eq '' ?? LEVEL-VERIFIED !! %pin<trust>), %pin<path>));
+                    }
+                }
+                $env.stdout.say(brief-line("local/$_", '', 'local', $cfg.local{$_}<path>)) for $cfg.local.keys.sort;
+                return 0;
+            }
             $env.stdout.say(header('trust show', $cfg.path.Str));
             $env.stdout.say('');
             for $cfg.publishers.keys.sort -> $d {
@@ -751,26 +899,64 @@ sub cmd-trust(Env $env, @args --> Int) {
             return 0;
         }
         when 'check' {
-            $env.stdout.say(header('trust check', $cfg.path.Str));
-            $env.stdout.say('');
-            my @failed;
+            my $w = $env.stdout;
+            my @rows; my @failed;
             for $cfg.configured -> $r {
                 my $l = try load-resolved($r);
-                if $! { $env.stdout.say("{glyph('no')} {$r.id}: {$!.message}"); @failed.push($r.id.Str); next }
-                $env.stdout.say("{glyph('yes')} {$r.id} ({$r.level})");
+                if $! { @rows.push([ 'failed', $r.id.Str, $r.level, $!.message ]); @failed.push($r.id.Str); next }
+                @rows.push([ 'loads', $r.id.Str, $r.level, 'as pinned' ]);
             }
-            $env.stdout.say('');
-            $env.stdout.print(@failed
-                ?? say-next(@failed.map({ "fix the pin for $_ in {$cfg.path}; the digest or path is what usually moved" }), :then('321 trust check'))
-                !! next-text('see them as a list', '321 agents') ~ "\n");
-            return @failed ?? EXIT-FAILED !! 0;
+            if $g.brief { $w.say(brief-line(|$_)) for @rows; return @failed ?? EXIT-FAILED !! 0 }
+            $w.say(header('trust check', $cfg.path.Str));
+            $w.say('');
+            # each row says in words what its mark means, so no legend is needed
+            my $wide = @rows.map({ .[1].chars }).max // 10;
+            for @rows -> @r {
+                $w.say(sprintf('%s %-*s  %-12s %s', (@r[0] eq 'loads' ?? glyph('yes') !! glyph('no')), $wide, @r[1], @r[2], @r[0] eq 'loads' ?? 'loads as pinned' !! "did not load: {@r[3]}"));
+            }
+            $w.say('');
+            if @failed {
+                $w.print(say-next(@failed.map({ "fix the pin for $_ in {$cfg.path}; the digest or path is what usually moved" }), :then('321 trust check')));
+                return EXIT-FAILED;
+            }
+            $w.say(next-text('see them as a list', '321 agents'));
+            $w.say('');
+            $w.say(all-well('loaded', "{@rows.elems} of {many-of(@rows.elems, 'agent')} named here load as pinned.")) if @rows;
+            return 0;
         }
     }
     usage-error($env, 'trust', "there is no 'trust $sub'");
 }
 
-sub cmd-doctor(Env $env, @args --> Int) {
+#| The standing policy in words, never as a document: what stands
+#| approved, by whom, and whether any limit is set.
+sub policy-text(%policy --> Str) {
+    my @parts;
+    for @(%policy<standingApprovals> // []) -> %sa {
+        @parts.push("{%sa<action>} to {@(%sa<targets> // []).join(', ')} stands approved by {%sa<approvedBy>}");
+    }
+    @parts.push('no standing approvals') unless @parts;
+    # a zero or an empty value is no limit, as the Limits shape reads it
+    my @limits = (%policy<limits> // {}).pairs.grep({ .value.defined && .value ne '' && .value ne '0' }).sort(*.key);
+    @parts.push(@limits ?? "limits: {@limits.map({ "{.key} {.value}" }).join(', ')}" !! 'no limits set');
+    my @adapters = (%policy<adapters> // {}).keys.sort;
+    @parts.push("adapter settings for {@adapters.join(', ')}") if @adapters;
+    @parts.join('; ');
+}
+
+#| What an adapter is, in a few words, beside what it can do.
+sub adapter-note(Str $name --> Str) {
+    given $name {
+        when 'procedure' { 'runs a package procedure; no model' }
+        when 'fake'      { 'a stand-in for tests' }
+        default          { '' }
+    }
+}
+
+sub cmd-doctor(Env $env, Global $g, @args --> Int) {
     my $json = is-in('--json', @args);
+    my $verbose = is-in('--verbose', @args);
+    for @args.grep({ $_ ne '--json' | '--verbose' }) -> $a { return usage-error($env, 'doctor', "it takes --verbose, --json and --brief, not '$a'") }
     if $json {
         my $cfg = try trust-of($env);
         my %trust = $! ?? %( error => $!.message ) !! %( path => $cfg.path, exists => $cfg.path.IO.e, packages => $cfg.configured.elems, policy => $cfg.policy );
@@ -793,50 +979,105 @@ sub cmd-doctor(Env $env, @args --> Int) {
         $env.stdout.say(encode-json-pretty(%d));
         return $! ?? EXIT-FAILED !! 0;
     }
-    $env.stdout.say(header('doctor', 'what this machine can run and enforce'));
-    $env.stdout.say('');
-    $env.stdout.say('adapters and what each actually enforces:');
+    # The screen: one row per adapter, one per tool, then trust and
+    # policy in words.  What each adapter enforces, feature by feature and
+    # control by control, is --verbose.
+    my @adapters;
     for $env.adapters.all -> $a {
         my $det = $a.detect;
-        my $state = $det.available ?? 'available ' ~ $det.version !! 'unavailable: ' ~ $det.reason;
-        $env.stdout.say(sprintf('  %-12s %s', $a.name, $state));
         my %enf = $a.enforcement;
         my @yes = features().grep({ enforces(%enf, $_) });
-        my @no = features().grep({ !enforces(%enf, $_) });
-        $env.stdout.say("      enforces:     {@yes.join(', ')}");
-        $env.stdout.say("      not enforced: {@no.join(', ')}") if @no;
-        if $a.controls.elems > 0 {
-            my %c = $a.controls;
-            my @ce = controls().grep({ control-strength(%c, $_) eq STRENGTH-ENFORCES });
-            my @ca = controls().grep({ control-strength(%c, $_) eq STRENGTH-ADVISES });
-            my @cn = controls().grep({ control-strength(%c, $_) eq STRENGTH-NONE });
-            $env.stdout.say('      controls a controller can be driven from:');
-            $env.stdout.say("        enforces: {@ce.join(', ') || 'nothing'}");
-            $env.stdout.say("        advises:  {@ca.join(', ')}") if @ca;
-            $env.stdout.say("        cannot:   {@cn.join(', ')}") if @cn;
-        }
+        my @no  = features().grep({ !enforces(%enf, $_) });
+        my %c = $a.controls;
+        my @ce = controls().grep({ control-strength(%c, $_) eq STRENGTH-ENFORCES });
+        my @ca = controls().grep({ control-strength(%c, $_) eq STRENGTH-ADVISES });
+        my @cn = controls().grep({ control-strength(%c, $_) eq STRENGTH-NONE });
+        my $what = "enforces {@yes.elems} of {features().elems} features"
+                 ~ ($a.controls.elems > 0 ?? ", {@ce.elems} of {controls().elems} controls" !! '')
+                 ~ (adapter-note($a.name) ne '' ?? "; {adapter-note($a.name)}" !! '');
+        @adapters.push(%( name => $a.name, available => $det.available,
+            where => ($det.available ?? ($det.version eq 'built-in' ?? 'built in' !! $det.version) !! "not here: {$det.reason}"),
+            what => $what, yes => @yes, no => @no, ce => @ce, ca => @ca, cn => @cn, harness => ($a.controls.elems > 0) ));
     }
+    my @tools;
     with $env.adapters.get('procedure') -> $p {
         if $p ~~ ProcedureAdapter {
-            $env.stdout.say('tools bound to procedures (by explicit path):');
-            my @b = $p.bindings;
-            $env.stdout.say('  none') unless @b;
-            $env.stdout.say('  ' ~ $_) for @b;
+            for registry-names($p.tools) -> $name {
+                my $t = $p.tools{$name};
+                my ($where, $what) = 'bound', '';
+                if $t ~~ DP {
+                    $where = $t.bound ?? $t.bin !! 'not bound';
+                    $what = !$t.bound ?? 'set DP_BIN to the engine\'s explicit entry point'
+                        !! $t.exec ~~ EngineExecutor ?? "execute enabled on {$t.exec.allowed-targets.join(', ')} (DP_EXECUTE)"
+                        !! 'execute not enabled here (DP_EXECUTE unset)';
+                }
+                @tools.push(%( name => $name, where => $where, what => $what, ops => $t.ops.map({ "{.name} ({.capability})" }).List ));
+            }
         }
     }
     my %probe = IZ4.new.probe;
-    $env.stdout.say(%probe<drivable>
-        ?? "iz4: {%probe<binary>} ({%probe<tool>}; drivable: it is applied to model-driven runs in a workspace that keeps an IZ4)"
-        !! %probe<binary> ne ''
-            ?? "iz4: {%probe<binary>} is installed but cannot be driven: {%probe<reason>}. An IZ4 in a workspace is reported, not applied."
-            !! 'iz4: not on PATH (an IZ4 in a workspace is reported on the receipt, not applied)');
+    @tools.push(%( name => 'iz4',
+        where => (%probe<binary> ne '' ?? %probe<binary> !! 'not on PATH'),
+        what  => (%probe<drivable> ?? "{%probe<tool>.subst(/^ 'iz4/' /, '')}, drivable: applied to model-driven runs in a workspace that keeps an IZ4"
+               !! %probe<binary> ne '' ?? "cannot be driven: {%probe<reason>}; an IZ4 here is reported, not applied"
+               !! 'an IZ4 in a workspace is reported on the receipt, not applied'),
+        ops => () ));
     my $cfg = try trust-of($env);
-    if $! { $env.stdout.say("trust: {$!.message}"); return EXIT-FAILED }
-    if $cfg.path.IO.e { $env.stdout.say("trust: {$cfg.path}, {$cfg.configured.elems} configured package(s)") }
-    else { $env.stdout.say("trust: no file at {$cfg.path} (only --package-dir packages can run)") }
-    $env.stdout.say("policy: {to-wire('Policy', $cfg.policy)}");
-    $env.stdout.say('');
-    $env.stdout.say($cfg.configured.elems ?? next-text('see who you can ask', '321 agents') !! next-text('configure an agent', '321 help trust'));
+    my $trust-err = $! ?? $!.message !! '';
+
+    if $g.brief {
+        my $w = $env.stdout;
+        $w.say(brief-line('adapter', .<name>, (.<available> ?? 'available' !! 'unavailable'), .<where>, .<what>)) for @adapters;
+        $w.say(brief-line('tool', .<name>, .<where>, .<what>)) for @tools;
+        $w.say($trust-err ne '' ?? brief-line('trust', '', $trust-err) !! brief-line('trust', $cfg.path.Str, $cfg.configured.elems));
+        return $trust-err ne '' ?? EXIT-FAILED !! 0;
+    }
+
+    my $w = $env.stdout;
+    $w.say(header('doctor'));
+    $w.say(subtitle(VERSION, $*KERNEL.hostname.Str));
+    $w.say('');
+    my $here = @adapters.grep(*<available>).elems;
+    my $wide = (@adapters.map(*<name>.chars), @tools.map(*<name>.chars)).flat.max // 10;
+    $w.say($_) for flat row-lines('adapters:', "$here of {@adapters.elems} here; a harness runs a model, the rest run without one");
+    for @adapters -> %a {
+        $w.say(sprintf('  %-*s  %-22s %s', $wide, %a<name>, %a<where>, %a<what>));
+        if $verbose {
+            $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'enforces:', %a<yes>.join(', ') || 'nothing'));
+            $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'not enforced:', %a<no>.join(', '))) if %a<no>;
+            if %a<harness> {
+                $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'controls:', %a<ce>.join(', ') || 'nothing'));
+                $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'advises:', %a<ca>.join(', '))) if %a<ca>;
+                $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'cannot:', %a<cn>.join(', '))) if %a<cn>;
+            }
+        }
+    }
+    $w.say('');
+    $w.say($_) for flat row-lines('tools:', 'bound by explicit path, never found by guessing');
+    my $path-wide = @tools.map(*<where>.chars).max // 10;
+    for @tools -> %t {
+        $w.say(sprintf('  %-*s  %-*s   %s', $wide, %t<name>, $path-wide, %t<where>, %t<what>).trim-trailing);
+        $w.say(sprintf('  %-*s    %-13s %s', $wide, '', 'operations:', %t<ops>.join(', '))) if $verbose && %t<ops>;
+    }
+    $w.say('');
+    if $trust-err ne '' {
+        $w.say($_) for flat row-lines('trust:', $trust-err);
+        $w.say('');
+        $w.say(next-text('mend the trust file, then look again', '321 doctor'));
+        return EXIT-FAILED;
+    }
+    $w.say($_) for flat row-lines('trust:', $cfg.path.IO.e
+        ?? "{$cfg.path}, {many-of($cfg.configured.elems, 'agent')} configured"
+        !! "no file at {$cfg.path}; only --package-dir packages can run");
+    $w.say($_) for flat row-lines('policy:', policy-text($cfg.policy // {}));
+    $w.say('');
+    $w.say($cfg.configured.elems ?? next-text('see who you can ask', '321 agents') !! next-text('configure an agent', '321 help trust'));
+    $w.say(next-text('what each adapter enforces, feature by feature', '321 doctor --verbose').subst(/^ 'next:'/, 'then:')) unless $verbose;
+    my @harness-here = @adapters.grep({ .<harness> && .<available> });
+    if @harness-here && %probe<drivable> && $cfg.configured.elems {
+        $w.say('');
+        $w.say(all-well('here', "{@harness-here.map(*<name>).join(', ')} to run a model, iz4 to hold it to an IZ4, and {many-of($cfg.configured.elems, 'agent')} to ask."));
+    }
     0;
 }
 
@@ -881,7 +1122,7 @@ sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
 
 sub cmd-harness(Env $env, Global $g, @args --> Int) {
     return usage-error($env, 'harness detect', @args ?? "there is no 'harness {@args[0]}'" !! 'say what to do') if !@args || @args[0] ne 'detect';
-    my ($workspace, $, $json) = try parse-harness-options($env, $g, @args[1 .. *], 'harness detect');
+    my ($workspace, $, $json, $, $verbose) = try parse-harness-options($env, $g, @args[1 .. *], 'harness detect');
     if $! { return usage-error($env, 'harness detect', $!.message) }
     my @records;
     for harness-adapters($env) -> $a {
@@ -899,19 +1140,36 @@ sub cmd-harness(Env $env, Global $g, @args --> Int) {
         $env.stdout.say(encode-json-pretty(%( schema => 'harness-detect.v1', workspace => $workspace.IO.absolute, harnesses => @records )));
         return 0;
     }
-    $env.stdout.say(header('harness detect', $workspace.IO.absolute.Str));
-    $env.stdout.say('');
-    for @records -> %r {
-        $env.stdout.say(sprintf('%-14s %s', %r<harness>, %r<detected> ?? "detected {%r<version>}" !! "not detected ({%r<reason>})"));
-        $env.stdout.say("    project wiring: {%r<wiring>}" ~ (%r<configured> ?? '' !! ' (none yet)')) if %r<wiring> ne '';
-        my @yes = controls().grep({ %r<controls>{$_} eq STRENGTH-ENFORCES });
-        my @adv = controls().grep({ %r<controls>{$_} eq STRENGTH-ADVISES });
-        my @no  = controls().grep({ %r<controls>{$_} eq STRENGTH-NONE });
-        $env.stdout.say("    enforces: {@yes.join(', ') || 'nothing'}");
-        $env.stdout.say("    advises:  {@adv.join(', ')}") if @adv;
-        $env.stdout.say("    cannot:   {@no.join(', ')}") if @no;
+    my $w = $env.stdout;
+    if $g.brief {
+        $w.say(brief-line(.<harness>, (.<detected> ?? 'detected' !! 'not detected'), .<version>, .<wiring>, (.<configured> ?? 'wired' !! 'not wired'))) for @records;
+        return 0;
     }
-    $env.stdout.say('no harness with controls is known to this 321') unless @records;
+    $w.say(header('harness detect', $workspace.IO.absolute.Str));
+    $w.say('');
+    # one row per harness: whether it is here, and whether this project
+    # is wired into it; the controls it offers are --verbose
+    my $wide = @records.map({ .<harness>.chars }).max // 10;
+    for @records -> %r {
+        my $wiring = %r<wiring> eq '' ?? '' !! %r<configured> ?? "wired at {%r<wiring>}" !! "{%r<wiring>} (none yet)";
+        $w.say(sprintf('  %-*s  %-22s %s', $wide, %r<harness>, (%r<detected> ?? "detected {%r<version>}" !! 'not detected'), $wiring).trim-trailing);
+        $w.say(sprintf('  %-*s  %s', $wide, '', %r<reason>)) if !%r<detected> && %r<reason> ne '';
+        if $verbose {
+            my @yes = controls().grep({ %r<controls>{$_} eq STRENGTH-ENFORCES });
+            my @adv = controls().grep({ %r<controls>{$_} eq STRENGTH-ADVISES });
+            my @no  = controls().grep({ %r<controls>{$_} eq STRENGTH-NONE });
+            $w.say(sprintf('  %-*s    %-10s %s', $wide, '', 'enforces:', @yes.join(', ') || 'nothing'));
+            $w.say(sprintf('  %-*s    %-10s %s', $wide, '', 'advises:', @adv.join(', '))) if @adv;
+            $w.say(sprintf('  %-*s    %-10s %s', $wide, '', 'cannot:', @no.join(', '))) if @no;
+        }
+    }
+    $w.say('  no harness with controls is known to this 321') unless @records;
+    $w.say('');
+    my @here = @records.grep(*<detected>);
+    $w.say(@here
+        ?? next-text('see what the IZ4 here is held by, harness by harness', '321 iz4 status')
+        !! next-text('install a harness 321 knows, then look again', '321 harness detect'));
+    $w.say(next-text('the controls each harness offers a controller', '321 harness detect --verbose').subst(/^ 'next:'/, 'then:')) unless $verbose;
     0;
 }
 
@@ -949,6 +1207,9 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
     if $json {
         $env.stdout.say(encode-json-pretty(%( schema => 'enforcement-report.v1', workspace => $ws.absolute, controller => $name, harnesses => [ |@statuses ] )));
     }
+    elsif $g.brief {
+        $env.stdout.say(brief-line(.<harness>, (.<action> // $sub), (.<headline> // '').lc, verdict($_))) for @statuses;
+    }
     else {
         # One verdict per harness.  The detail, control by control, is
         # --verbose; what the levels mean is 321 help enforcement.
@@ -975,7 +1236,7 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
         elsif @weak && $sub ne 'remove' { $w.say(next-text('wire it as strongly as the harness allows', "321 $name install")) }
         elsif $sub eq 'remove' { $w.say(next-text('wire it again when wanted', "321 $name install")) }
         else {
-            $w.say("All wired: {$name.uc} is guarded in {@live.map(*<harness>).join(', ')}. That is what is wired, not what happened: a run's receipt records the checks that ran.");
+            $w.say(all-well('wired', "{$name.uc} is guarded in {@live.map(*<harness>).join(', ')}. That is what is wired, not what happened: a run's receipt records the checks that ran."));
         }
     }
     @statuses.grep({ (.<action> // '') eq 'failed' }) ?? EXIT-FAILED !! 0;
@@ -1028,9 +1289,26 @@ sub cmd-hook(Env $env, @args --> Int) {
             ($code, $out, $err) = $adapter.answer($control, $v, :$headless, :strength(STRENGTH-ADVISES), :controller($name));
         }
         else { $v = Verdict.new(:point(POINT-CONTEXT), :result(RESULT-PASS), :reason('the context was delivered')); $out = $text }
+        # The session starts here: the tree as it stands is the baseline
+        # the first turn is measured from.  Dirt already in the tree is
+        # not that turn's doing.
+        store-baseline($env, $harness, $adapter.session-key(%native), $workspace, $controller.baseline($workspace));
     }
     elsif $control eq CTRL-POST-RUN {
-        $v = $controller.verify($workspace, %( summary => $adapter.final-words(%native) ));
+        my $session = $adapter.session-key(%native);
+        if !$adapter.turn-wrote(%native) {
+            # Nothing this turn could have changed a file: there is nothing
+            # to verify and no report owed.  Said so in the log, not asked.
+            $v = Verdict.new(:point(POINT-VERIFY), :result(RESULT-PASS), :reason('not asked: this turn used no tool that can change files'));
+        }
+        else {
+            my $base = read-baseline($env, $harness, $session, $workspace);
+            $v = $controller.verify($workspace, %( summary => $adapter.final-words(%native), base => $base ));
+            # A turn allowed to end moves the baseline to where it left the
+            # tree; a refused one keeps it, so the same changes are measured
+            # when the agent tries again.
+            store-baseline($env, $harness, $session, $workspace, tree-of($v)) if $v.ran && !$v.stops;
+        }
         answer();
     }
     else {
@@ -1059,6 +1337,33 @@ sub cmd-hook(Env $env, @args --> Int) {
     $env.stdout.print($out) if $out ne '';
     $env.stderr.print($err) if $err ne '';
     $code;
+}
+
+#| Where a session's baseline lives: the tree the current turn began
+#| from, under ~/.321/sessions/<harness>/<session>.json with the workspace
+#| it belongs to.  No session name, no baseline: verify measures from HEAD
+#| as it always did.
+sub baseline-file(Env $env, Str $harness, Str $session --> IO::Path) {
+    return IO::Path if $session eq '';
+    home-of($env).add('sessions').add($harness).add("$session.json");
+}
+sub read-baseline(Env $env, Str $harness, Str $session, Str $workspace --> Str) {
+    my $f = baseline-file($env, $harness, $session);
+    return '' without $f;
+    return '' unless $f.f;
+    my $doc = try parse-json($f.slurp);
+    return '' unless $doc ~~ Associative && ($doc<workspace> // '') eq $workspace.IO.absolute;
+    my $tree = ($doc<tree> // '').Str;
+    $tree ~~ / ^ <[0..9a..f]> ** 40 $ / ?? $tree !! '';
+}
+sub store-baseline(Env $env, Str $harness, Str $session, Str $workspace, Str $tree) {
+    return if $tree eq '';
+    my $f = baseline-file($env, $harness, $session);
+    return without $f;
+    try {
+        mkdir-p($f.parent);
+        $f.spurt(encode-json(%( workspace => $workspace.IO.absolute.Str, tree => $tree, at => now-stamp() )) ~ "\n");
+    }
 }
 
 sub hook-log(Str $controller, Str $harness, Str $control, Verdict $v) {
@@ -1185,8 +1490,9 @@ sub operator-plan(Env $env, Global $g, Config $cfg, Loaded $agent, Str $plan-req
 
 #| When this is an interactive operator `go`, plan read-only and, if a
 #| concrete plan comes back, mint an operator approval bound to it and
-#| attach it (granting deploy.invoke within local policy).  Returns a
-#| one-line note to show the person, or Str when nothing was assumed.
+#| attach it (granting deploy.invoke within local policy).  Returns the
+#| approval: row of the run header, or Str when nothing was assumed; it
+#| never prints, so the title stays the first line a person reads.
 sub assume-operator-approval(Env $env, Global $g, Config $cfg, Loaded $agent, %wp, Str $request --> Str) {
     my $plan-request = is-operator-deploy-go($env, $g, $agent, $request);
     return Str without $plan-request;
@@ -1200,13 +1506,13 @@ sub assume-operator-approval(Env $env, Global $g, Config $cfg, Loaded $agent, %w
         $by = %*ENV<USER> // '';
         my $host = (try qx{hostname}.trim) // '';
         $by ~= "@$host" if $host ne '';
-        ($kind, $how) = 'operator', 'operator approval assumed (you typed the command)';
+        ($kind, $how) = 'operator', 'assumed, you typed the command';
     }
     else {
         my $sa = standing-approval-for($cfg, $proposal<service> // '', $proposal<target> // '');
         return Str without $sa;
         $by = "{$sa<approvedBy>} (standing approval in local policy)";
-        ($kind, $how) = 'standing', "standing approval in local policy (approved by {$sa<approvedBy>})";
+        ($kind, $how) = 'standing', "standing, in local policy (approved by {$sa<approvedBy>})";
     }
     %wp<approval> = mint-operator-approval($proposal, $by, :$kind);
     %wp<capabilities><granted>.push(CAP-DEPLOY-INVOKE) unless is-in(CAP-DEPLOY-INVOKE, %wp<capabilities><granted>);
@@ -1215,7 +1521,7 @@ sub assume-operator-approval(Env $env, Global $g, Config $cfg, Loaded $agent, %w
         return Str;
     }
     my $sha = ($proposal<revision> // {})<sha>; $sha = '' unless $sha ~~ Str;
-    "$how: deploy {$proposal<service>} to {$proposal<target>} at {short-sha($sha)} — execution proceeds only where DP_EXECUTE enables it";
+    "$how: deploy {$proposal<service>} to {$proposal<target>} at {short-sha($sha)}; executes only where DP_EXECUTE enables it";
 }
 
 #| The first standing approval in local policy that covers service@target
@@ -1367,18 +1673,31 @@ sub render-event($w, %e --> Bool) {
     $wrote;
 }
 
+#| An event's words for a pipeline record: what render-event would say,
+#| without its mark or indent, on one line; empty for an event it does
+#| not say.
+my class Collector { has @.lines; method say($s) { @!lines.push($s.Str) } }
+sub brief-event-text(%e --> Str) {
+    my $c = Collector.new;
+    render-event($c, %e);
+    $c.lines.join(' ').subst(/ ^ \h* ['·' | '-' | '»' | '>'] \h+ /, '').trim;
+}
+
 #| What the run came to, in chunks a person can take in: the last word
 #| with its mark and one line of summary; what it needs or what stopped
 #| it, indented beneath; the conditions; then the rows a person comes back
-#| for (changed, tool, proposal, cost, receipt); then the next step.  The
-#| words are the receipt's own; nothing here says the work is right.
-sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefix = '', Str :$workspace = '', Bool :$lead = True) {
-    my sub row(Str $k, Str $v) { $w.say($_) for row-lines($k, $v) }
+#| for (changed, proposal, cost when a model was used, receipt); then the
+#| next step.  The tool calls and a cost of none are --verbose.  The words
+#| are the receipt's own; nothing here says the work is right.
+sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefix = '', Str :$workspace = '', Bool :$lead = True, Bool :$verbose = False) {
+    my sub row(Str $k, Str $v) { $w.say($_) for flat row-lines($k, $v) }
     my $status = %r<status>;
     my $summary = %r<summary> // '';
     $summary .= subst(/ ^ 'denied: ' /, '') if $status eq STATUS-DENIED;
+    # that no --done was given is not news; the receipt keeps the phrase
+    $summary .= subst(' (no conditions were declared)', '');
     $w.say('') if $lead;
-    $w.say("{status-glyph($status)} {$status.uc}: $summary");
+    $w.say("{status-glyph($status)} {last-word($status)}: $summary");
     my sub detail(Str $line) { my @w = wrap-at($line, 72); $w.say("  {@w[0]}"); $w.say("    $_") for @w[1..*] }
     if $status eq STATUS-FAILED || $status eq STATUS-DENIED {
         detail($_) for @(%r<evidence><errors> // []);
@@ -1392,6 +1711,7 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
     my @files = @(%r<evidence><filesChanged> // []);
     row('changed:', @files.join(', ')) if @files;
     for @(%r<evidence><toolCalls> // []) -> %c {
+        last unless $verbose;
         my $state = %c<unavailable> ne '' ?? 'not performed' !! (%c<ok> ?? 'ok' !! "exit {%c<exitCode>}");
         row('tool:', (%c<tool>, %c<op>, |@(%c<argv> // []), "($state)").grep(* ne '').join(' '));
     }
@@ -1409,7 +1729,7 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
     my $attempts = @(%r<attempts>).elems;
     my $spent = sprintf('$%.2f, ', %r<cost><usd>) ~ many-of(%r<cost><turns>.Int, 'turn') ~ ', ' ~ many-of($attempts, 'attempt');
     given %r<cost><basis> {
-        when COST-NONE { row('cost:', 'none (no model was used)') }
+        when COST-NONE { row('cost:', 'none (no model was used)') if $verbose }
         when COST-HARNESS { row('cost:', "$spent, as the harness reported") }
         when COST-UNREPORTED { row('cost:', "unknown (a harness ran and reported none), {many-of($attempts, 'attempt')}") }
         when '' { row('cost:', "$spent; no basis was recorded, so this is unknown, not free") }
@@ -1417,8 +1737,10 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
     }
     row('receipt:', $run-dir.add('receipt.json').Str);
     $w.say('');
-    $w.say(next-after-run(%r, :$invocation, :$prefix, :$workspace, :dp-bound((%*ENV<DP_BIN> // '') ne ''), :dp-execute((%*ENV<DP_EXECUTE> // '').Str)))
-        if $invocation ne '';
+    return if $invocation eq '';
+    $w.say(next-after-run(%r, :$invocation, :$prefix, :$workspace, :dp-bound((%*ENV<DP_BIN> // '') ne ''), :dp-execute((%*ENV<DP_EXECUTE> // '').Str)));
+    # the whole transcript is one step away, and the screen says where
+    $w.say("then:  {$invocation.subst(/ ^ '321 ' /, '321 --verbose ')}   (every event and tool call)") unless $verbose;
 }
 
 #| `321 <agent> <request…>`: build a WorkPackage under local policy and
@@ -1461,7 +1783,8 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
 
     # The CLI invocation is itself the human approval: for an interactive
     # operator `go`, plan first and attach an approval bound to that plan.
-    with assume-operator-approval($env, $g, $cfg, $agent, %wp, $request) -> $note { $env.stderr.say("321: $note") }
+    # What was assumed is a row of the header below, never a line above it.
+    my $approval-row = assume-operator-approval($env, $g, $cfg, $agent, %wp, $request);
 
     my $home = home-of($env);
     my $run-dir = $home.add('runs').add(%wp<packageId>);
@@ -1470,28 +1793,36 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     my $raw-package = to-wire('WorkPackage', %wp);
     try $run-dir.add('work-package.json').spurt($raw-package ~ "\n");
 
-    # The header a person reads before anything happens: who was asked,
-    # what, on whose trust, where, with what authority, and how to steer.
+    # The header a person reads before anything happens.  By default it is
+    # the title and the byline, and the rows that are theirs to know about:
+    # where the agent may edit and what was approved in their name.  The
+    # trust label, the warnings, the grants and how to steer are --verbose.
     # It goes to standard error so a pipe on standard output gets the run
     # alone; on a terminal it is dressed like every other 321 screen.
     my @grants = @(%wp<capabilities><granted>);
     # The title, then a byline: a page says who wrote it, a run says who is
     # answering.  The identity is the publisher's domain and the agent's name;
     # the version stands beside it and is never part of it
-    # (identity-outlives-the-model.cli.321.do).
+    # (identity-outlives-the-model.cli.321.do).  One word says whether the
+    # package is signed; the rest of the trust story is --verbose.
     my $version = (%wp<agent><version> // '').Str;
     my @header = header($name, $request.subst(/\s+/, ' ', :g).trim),
-                 byline($agent.manifest<displayName>, $agent.id ~ ($version ne '' ?? " $version" !! '')),
-                 '';
-    my sub row(Str $k, Str $v) { @header.append(row-lines($k, $v)) }
-    row('trust:', $agent.label);
-    row('note:', $_) for $agent.warnings;
+                 byline("{$agent.manifest<displayName>}, {agent-byline($agent.manifest)}", $agent.id ~ ($version ne '' ?? " $version" !! '') ~ ($agent.verified ?? ', signed' !! ', unsigned'));
+    my @rows;
+    my sub row(Str $k, Str $v) { @rows.append(row-lines($k, $v)) }
+    if $g.verbose {
+        row('trust:', $agent.label);
+        row('note:', $_) for $agent.warnings;
+    }
     row('workspace:', "$workspace (git); you commit, the agent only edits") if $kind eq 'git';
-    row('grants:', @grants ?? @grants.join(', ') !! 'none');
+    row('grants:', @grants ?? @grants.join(', ') !! 'none') if $g.verbose;
+    row('approval:', $approval-row) if $approval-row.defined;
     my $steering = $env.interactive && !$g.non-interactive;
-    row('steer:', 'type to steer; /pause, /resume, /stop; Ctrl-C stops') if $steering;
+    row('steer:', 'type to steer; /pause, /resume, /stop; Ctrl-C stops') if $steering && $g.verbose;
+    @header.append('', |@rows) if @rows;    # the rows are their own chunk, when there are any
     my $text = @header.join("\n") ~ "\n\n";
-    $env.stderr.print(pretty-on-err() ?? "\n" ~ pretty($text, :on) !! $text);
+    # in pipeline mode there is no screen to open: the records are the run
+    $env.stderr.print(pretty-on-err() ?? "\n" ~ pretty($text, :on) !! $text) unless $g.brief;
     air-begun();
 
     my $ctx = Cancel.new;
@@ -1507,21 +1838,38 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     }
     my $out = $env.stdout;
     my $shown = 0;
+    my $live = False;
+    # What a person sees while it runs: on a terminal, one live line under
+    # the header, rewritten per event and wiped before the verdict; with
+    # --verbose (or DO_321_PROGRESS=1 in a pipe) one line per event, kept;
+    # into a pipe otherwise, nothing until the verdict.
     my $sink = $g.json-out
         ?? SinkFunc.new(:f(-> %e { $out.say(to-wire('RunEvent', %e)) }))
-        !! SinkFunc.new(:f(-> %e { $shown += render-event($out, %e) ?? 1 !! 0 }));
+        !! $g.brief
+            ?? SinkFunc.new(:f(-> %e { $out.say(brief-line(%e<kind>, brief-event-text(%e))) }))
+            !! $g.verbose || progress-on()
+                ?? SinkFunc.new(:f(-> %e { $shown += render-event($out, %e) ?? 1 !! 0 }))
+                !! pretty-on()
+                    ?? SinkFunc.new(:f(-> %e { my $t = brief-event-text(%e); if $t ne '' { live-line($out, "  {glyph('dot')} $t"); $live = True } }))
+                    !! SinkFunc.new(:f(-> % {}));
     my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$sink, :history-dir($run-dir.Str),
         :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8'))));
     $ctx.cancel;
+    wipe-live($out) if $live;
     %receipt = sign-receipt-if-keyed(%receipt, home-of($env));
     try $run-dir.add('receipt.json').spurt(to-pretty('RunReceipt', %receipt) ~ "\n");
     with %receipt<evidence><proposal> { try $run-dir.add('proposal.json').spurt(to-pretty('DeploymentProposal', $_) ~ "\n") }
     if $g.json-out { $out.say(to-wire('RunReceipt', %receipt)) }
+    # the receipt's record, last: the verdict word first, then what a caller
+    # comes back for
+    elsif $g.brief {
+        $out.say(brief-line(%receipt<status>, %wp<packageId>, %receipt<summary> // '', $run-dir.add('receipt.json').Str, %receipt<blockedOn> // ''));
+    }
     else {
         my $prefix = '321 ' ~ ($g.package-dir ne '' ?? "--package-dir {$g.package-dir} " !! '') ~ $name;
         my $invocation = $prefix ~ ' ' ~ ($request.contains("\n") ?? '-' !! $request);
         # the block opens with air only when a run's lines came before it
-        render-receipt($out, %receipt, $run-dir, :$invocation, :$prefix, :$workspace, :lead($shown > 0));
+        render-receipt($out, %receipt, $run-dir, :$invocation, :$prefix, :$workspace, :lead($shown > 0), :verbose($g.verbose));
     }
     exit-for(%receipt<status>);
 }

@@ -50,7 +50,7 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
 {
     my ($rc, $out, $err, $home) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, '--done', 'a note exists', 'helper', 'note:', 'remember', 'the', 'milk; rm -rf /');
     is $rc, 0, 'exit 0' or diag "$out\n$err";
-    ok $out.contains('COMPLETED') && $out.contains('✓ 1.'), 'the transcript' or diag $out;
+    ok $out.contains('✓ completed:') && $out.contains('✓ 1.'), 'the transcript' or diag $out;
     my @runs = $home.add('runs').dir;
     is @runs.elems, 1, 'one run directory';
     my %wp = load('WorkPackage', parse-json(@runs[0].add('work-package.json').slurp));
@@ -74,9 +74,10 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
 # ---- alias resolution through the trust file -------------------------------------
 {
     my $tp = dev-trust();
-    my ($rc, $out, $err) = cli($tp, 'helper', 'note: via alias');
+    my ($rc, $out, $err) = cli($tp, '--verbose', 'helper', 'note: via alias');
     is $rc, 0, 'an alias runs' or diag "$out\n$err";
-    ok $err.contains('administrator-pinned'), 'the trust label is shown';
+    ok $err.contains('administrator-pinned'), 'the trust label is shown under --verbose';
+    ok $err.lines[1].ends-with(', unsigned'), 'and the byline says unsigned either way' or diag $err;
     ($rc, $out, $err) = cli($tp, 'example.test/helper', 'note: via canonical id');
     is $rc, 0, 'a canonical id runs' or diag $err;
     ($rc, $out, $err) = cli($tp, 'stranger', 'note: x');
@@ -112,17 +113,26 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     my ($rc, $out) = cli($tp, 'agents');
     ok $rc == 0 && $out.contains('example.test/helper') && $out.contains('development') && $out.contains('alias helper'), 'agents' or diag $out;
     ($rc, $out) = cli($tp, 'packages', 'validate', fixture('example.test/helper').Str);
-    ok $rc == 0 && $out.starts-with('OK example.test/helper 1.2.0 sha256:'), 'packages validate' or diag $out;
+    ok $rc == 0 && $out.contains('✓ valid: example.test/helper 1.2.0') && $out.contains('digest:       sha256:'), 'packages validate' or diag $out;
+    ($rc, $out) = cli($tp, 'packages', 'validate', fixture('example.test/helper').Str, '--brief');
+    ok $rc == 0 && $out.starts-with("valid\texample.test/helper\t1.2.0\tsha256:"), 'packages validate --brief is one record' or diag $out;
+    # a tool (iz4's launcher) reads this command's output as the path and nothing else
+    ($rc, $out) = cli($tp, 'packages', 'builtin', 'prompt');
+    ok $rc == 0 && $out.lines.elems == 1 && $out.trim.IO.d && $out.trim.IO.add('agent.json').f, 'packages builtin prints the path alone into a pipe' or diag $out;
+    ($rc, $out) = cli($tp, 'packages', 'builtin', 'prompt', :env({ DO_321_COLOR => '1' }));
+    ok $rc == 0 && $out.subst(/ "\e[" <[0..9;]>+ 'm' /, '', :g).contains("321 packages builtin: prompt\n\npath:"), 'and a screen on a terminal' or diag $out;
     ($rc, $out) = cli($tp, 'packages', 'digest', fixture('local/helper').Str);
-    ok $rc == 0 && $out.starts-with('sha256:') && $out.contains('files)'), 'packages digest';
+    ok $rc == 0 && $out.contains('digest:       sha256:') && $out.contains('files:        3 files'), 'packages digest' or diag $out;
     ($rc, $out) = cli($tp, 'packages', 'show', 'helper');
     ok $rc == 0 && $out.contains('administrator-pinned') && $out.contains('procedures:'), 'packages show' or diag $out;
     ($rc, $out) = cli($tp, 'trust', 'check');
-    ok $rc == 0 && $out.contains('✓ example.test/helper'), 'trust check' or diag $out;
+    ok $rc == 0 && $out.contains('✓ example.test/helper') && $out.contains('loads as pinned') && $out.contains('All loaded: 1 of 1 agent'), 'trust check' or diag $out;
     ($rc, $out) = cli($tp, 'trust', 'show');
     ok $rc == 0 && $out.contains('alias helper -> example.test/helper'), 'trust show';
     ($rc, $out) = cli($tp, 'doctor');
-    ok $rc == 0 && $out.contains('fake') && $out.contains('enforces:'), 'doctor' or diag $out;
+    ok $rc == 0 && $out.contains('fake') && $out.contains('enforces 12 of 12 features'), 'doctor' or diag $out;
+    ($rc, $out) = cli($tp, 'doctor', '--verbose');
+    ok $rc == 0 && $out.contains('enforces:     tool_allowlist'), 'doctor --verbose lists the features' or diag $out;
     # trust check verifies a signed pin (the Go runtime's listing lost the keys and never could)
     my $signed = copy-fixture('example.test/helper');
     my ($pub, $priv) = generate-key();
@@ -132,7 +142,7 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
         keys => [ %( keyId => key-id($pub), publicKey => encode-public-key($pub) ), ],
         packages => { helper => { path => $signed.Str, version => '1.2.0', digest => $d } } } } });
     ($rc, $out) = cli($verified, 'trust', 'check');
-    ok $rc == 0 && $out.contains('✓ example.test/helper (verified)'), 'trust check verifies a signed pin' or diag $out;
+    ok $rc == 0 && $out ~~ / '✓ example.test/helper' \s+ 'verified' \s+ 'loads as pinned' /, 'trust check verifies a signed pin' or diag $out;
     my $bad = trust-file({ schema => SCHEMA-TRUST-CONFIG, aliases => { run => 'local/x' } });
     ($rc, $out, my $err) = cli($bad, 'agents');
     ok $rc == EXIT-INTERNAL && $err.contains('reserved'), 'a reserved alias is refused at load';
@@ -146,7 +156,7 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     my %env = DO_321_CLAUDE_BINARY => fake-claude().Str, FAKE_CLAUDE_MODE => 'complete';
     my ($rc, $out, $err) = cli($tp, '--grant', 'shell.run', 'helper', 'build something', :%env);
     ok $rc == EXIT-DENIED && $out.contains('network_deny'), 'a shell without a network grant is denied naming network_deny' or diag "$out\n$err";
-    ($rc, $out, $err) = cli($tp, '--grant', 'shell.run', '--network', 'open', '--adapter', 'claude_code', 'helper', 'build something', :%env);
+    ($rc, $out, $err) = cli($tp, '--verbose', '--grant', 'shell.run', '--network', 'open', '--adapter', 'claude_code', 'helper', 'build something', :%env);
     is $rc, 0, 'an explicit open network grant runs (on the fake harness)' or diag "$out\n$err";
     # the harness's words reach a person once: the run is shown from its events,
     # and the adapter's readable transcript of the same stream is not teed too
@@ -177,9 +187,10 @@ sub operator-env(Bool $bound, *%extra --> List) {
     my ($env, $log) = operator-env(True);
     my ($rc, $out, $err) = cli($tp, 'op', 'status', :env(%$env));
     is $rc, 0, 'status by alias' or diag "$out\n$err";
-    ok $out.contains('COMPLETED') && $out.contains('cost:         none (no model was used)') && $out.contains('alpha.web running'), 'the transcript' or diag $out;
-    ($rc, $out, $err) = cli($tp, 'example.test/operator', 'status', 'alpha.web', 'live', :env(%$env));
-    ok $rc == 0 && $out.contains('tool:         dp status status alpha.web live --json (ok)'), 'status by canonical id' or diag $out;
+    ok $out.contains('✓ completed:') && $out.contains('alpha.web running') && !$out.contains('cost:') && !$out.contains('tool:'), 'the short screen: the verdict, no cost of none, no tool rows' or diag $out;
+    ok $out.contains('then:  321 --verbose op status   (every event and tool call)'), 'and it says where the whole transcript is' or diag $out;
+    ($rc, $out, $err) = cli($tp, '--verbose', 'example.test/operator', 'status', 'alpha.web', 'live', :env(%$env));
+    ok $rc == 0 && $out.contains('tool:         dp status status alpha.web live --json (ok)') && $out.contains('cost:         none (no model was used)') && $out.contains('  · tool dp status') && !$out.contains('then:'), 'status by canonical id, --verbose: tool calls, cost, events' or diag $out;
     is read-lines($log).join('|'), 'status --json|status alpha.web live --json', 'engine invocations';
 }
 
@@ -201,9 +212,9 @@ sub operator-env(Bool $bound, *%extra --> List) {
 {
     my $tp = operator-trust();
     my ($env, $log) = operator-env(True);
-    my ($rc, $out) = cli($tp, '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', 'revision', '0f94b03', :env(%$env));
+    my ($rc, $out) = cli($tp, '--verbose', '--grant', 'deploy.invoke', 'op', 'go', 'alpha.web', 'live', 'revision', '0f94b03', :env(%$env));
     is $rc, EXIT-BLOCKED, 'go is prepared, not executed, even with a grant';
-    for 'BLOCKED', 'execution is unavailable here (DP_EXECUTE is unset)', 'nothing was deployed', 'tool:         dp execute (not performed)', 'proposal:     ' -> $want {
+    for '? blocked:', 'execution is unavailable here (DP_EXECUTE is unset)', 'nothing was deployed', 'tool:         dp execute (not performed)', 'proposal:     ' -> $want {
         ok $out.contains($want), "the transcript carries '$want'" or diag $out;
     }
     ok !$out.lc.contains('deployed successfully'), 'it never reads as deployed';
@@ -217,8 +228,10 @@ sub operator-env(Bool $bound, *%extra --> List) {
     my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live', DO_321_INTERACTIVE => '1');
     my ($rc, $out, $err, $home) = cli($tp, 'op', 'go', 'alpha.web', 'live', :env(%$env));
     is $rc, 0, 'the go completes' or diag "$out\n$err";
-    ok $err.contains('operator approval assumed'), 'the assumed-approval note is on stderr' or diag $err;
-    ok $out.contains('COMPLETED') && $out.contains('Deployed alpha.web successfully'), 'and the transcript says it was deployed' or diag $out;
+    ok $err.contains('approval:     assumed, you typed the command: deploy alpha.web to live'), 'the assumed approval is a row of the run header' or diag $err;
+    ok $err.lines.first(*.chars).contains('321 op: go alpha.web live'), 'and the title is still the first line' or diag $err;
+    ok !$err.contains('321: '), 'nothing is said above or beside the screen' or diag $err;
+    ok $out.contains('✓ completed:') && $out.contains('Deployed alpha.web successfully'), 'and the transcript says it was deployed' or diag $out;
     ok !$out.contains('nothing was deployed'), 'it does not read as prepared-not-executed';
     ok read-lines($log).grep(*.starts-with('go ')), 'the engine\'s go ran';
     my @runs = $home.add('runs').dir;
@@ -245,7 +258,8 @@ sub operator-env(Bool $bound, *%extra --> List) {
     my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live');
     my ($rc, $out, $err, $home) = cli($tp, '--non-interactive', 'op', 'go', 'alpha.web', 'live', :env(%$env));
     is $rc, 0, 'the unattended go completes' or diag "$out\n$err";
-    ok $err.contains('standing approval') && $err.contains('nige'), 'the note names the standing approval and who gave it' or diag $err;
+    ok $err.contains('approval:     standing, in local policy (approved by nige): deploy alpha.web'), 'the header row names the standing approval and who gave it' or diag $err;
+    ok $err.lines.first(*.chars).contains('321 op: go alpha.web live'), 'under the title' or diag $err;
     ok $out.contains('Deployed alpha.web successfully'), 'and it was deployed' or diag $out;
     my @runs = $home.add('runs').dir;
     my %r = load('RunReceipt', parse-json(@runs[0].add('receipt.json').slurp));
@@ -304,7 +318,11 @@ sub operator-env(Bool $bound, *%extra --> List) {
 # doctor lists the tool binding
 {
     my ($rc, $out) = cli(IO::Path, 'doctor', :env({ DP_BIN => '/opt/engine/bin/dp' }));
-    ok $out.contains('dp: /opt/engine/bin/dp; execute unavailable; operations: status (deploy.read), plan (deploy.plan), execute (deploy.invoke)'), 'doctor lists the tool binding' or diag $out;
+    ok $out ~~ / ^^ '  dp' \s+ '/opt/engine/bin/dp   execute not enabled here (DP_EXECUTE unset)' /, 'doctor lists the tool binding as a row' or diag $out;
+    ($rc, $out) = cli(IO::Path, 'doctor', '--verbose', :env({ DP_BIN => '/opt/engine/bin/dp' }));
+    ok $out.contains('operations:   status (deploy.read), plan (deploy.plan), execute (deploy.invoke)'), 'and --verbose its operations' or diag $out;
+    ($rc, $out) = cli(IO::Path, 'doctor', '--brief', :env({ DP_BIN => '/opt/engine/bin/dp' }));
+    ok $out.lines.grep(*.starts-with("tool\tdp\t/opt/engine/bin/dp\t")).elems == 1 && !$out.contains('❮▣❯'), '--brief is one record per line and no title' or diag $out;
 }
 
 done-testing;

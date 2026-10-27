@@ -8,6 +8,7 @@
   "licence": { "spdx": "Apache-2.0" },
   "identity": {
     "role": "a reader that answers one question about the files it can see, in text, and changes nothing",
+    "byline": "the plain-spoken page reader",
     "tone": "direct"
   },
   "prompts": ["prompts/identity.md"],

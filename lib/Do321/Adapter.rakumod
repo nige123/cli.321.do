@@ -122,6 +122,13 @@ role Adapter is export {
     method answer(Str $control, Verdict $v, Bool :$headless = False, Str :$strength = STRENGTH-ENFORCES, Str :$controller = 'the controller' --> List) { (0, '', '') }
     #| The agent's last words, from the harness's own end-of-turn event.
     method final-words(%native --> Str) { '' }
+    #| Whether the turn that is ending used any tool that can change
+    #| files.  A harness that cannot tell says yes, and the controller is
+    #| asked.
+    method turn-wrote(%native --> Bool) { True }
+    #| The harness's own name for the session a hook event belongs to, or
+    #| '' when it gives none; what a per-session baseline is kept under.
+    method session-key(%native --> Str) { '' }
 }
 
 #| One feature the package or its grants make mandatory.
@@ -983,6 +990,8 @@ class ClaudeCode does Adapter is export {
         claude-answer($control, $v, :$headless, :$strength, :$controller)
     }
     method final-words(%native --> Str) { claude-last-words((%native<transcript_path> // '').Str) }
+    method turn-wrote(%native --> Bool) { claude-turn-may-have-changed((%native<transcript_path> // '').Str) }
+    method session-key(%native --> Str) { ((%native<session_id> // '') ~~ Str ?? %native<session_id> // '' !! '').subst(/ <-[A..Za..z0..9._-]> /, '', :g) }
 
     #| The whole invocation, exported so the surface is testable without a
     #| process.

@@ -113,7 +113,7 @@ ok ($doc<iz4><drivable>:exists) && ($doc<iz4><reason>:exists), 'whether iz4 can 
     ok $d<iz4><binary> ne '' && !$d<iz4><drivable> && !$d<iz4><applied>, 'an iz4 that cannot be driven is installed and not applied';
     like $d<iz4><reason>, /'no machine interface'/, 'and doctor says why';
     ($rc, $out, $err) = x321('doctor', :env(%( DO_321_IZ4 => $old, STUB_OLD => '1' )));
-    like $out, /'is installed but cannot be driven'/, 'in text too';
+    like $out, /^^ '  iz4' \s+ \S+ \s+ 'cannot be driven: '/, 'in text too, as a row';
     ($rc, $out, $err) = x321('doctor', '--json', :env(%( DO_321_IZ4 => stub-iz4() )));
     ok parse-json($out)<iz4><drivable>, 'a drivable iz4 is reported as such';
 }

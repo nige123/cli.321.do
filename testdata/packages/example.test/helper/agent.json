@@ -10,6 +10,7 @@
   "provenance": { "source": "cli.321.do/testdata", "builtBy": "fixture" },
   "identity": {
     "role": "a small general helper used in tests",
+    "byline": "handy with the housekeeping",
     "personality": "plain and literal",
     "tone": "brief",
     "decisionStyle": "asks rather than guesses"

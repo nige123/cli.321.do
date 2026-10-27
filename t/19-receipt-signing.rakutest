@@ -51,10 +51,10 @@ ok validate-run-receipt(%bad).list.grep(*.path eq "signature.algorithm"), 'anoth
     my %env = DO_321_HOME => $h.Str;
     my ($rc, $out, $err) = x321('key', :%env);
     is $rc, 0, '321 key with no key exits 0';
-    like $out, /'No signing key' .* '321 key new'/, 'and says receipts are unsigned, with the next step';
+    like $out, /'key: none yet' .* 'unsigned' .* '321 key new'/, 'and says receipts are unsigned, with the next step';
     ($rc, $out, $err) = x321('key', 'new', :%env);
     is $rc, 0, '321 key new exits 0' or diag $err;
-    like $out, /'key ' <xdigit> ** 16 ' made at' .* 'public key: '/, 'and says what it made';
+    like $out, /'321 key new: ' <xdigit> ** 16 ' made' .* ^^ 'public key:' \h+ \S+/, 'and says what it made, as a title and a row';
     ($rc, $out, $err) = x321('key', 'new', :%env);
     is $rc, 4, 'a second 321 key new is refused' or diag $out;
     like $err, /'already exists'/, 'and says why';
@@ -66,7 +66,8 @@ ok validate-run-receipt(%bad).list.grep(*.path eq "signature.algorithm"), 'anoth
     my $f = $h.add('r.json'); $f.spurt(encode-json(sign-receipt(%r, %(load-key($h)))));
     ($rc, $out, $err) = x321('receipt', 'verify', $f.Str, :%env);
     is $rc, 0, '321 receipt verify passes a receipt signed by this home' or diag $err;
-    like $out, /'digest matches its content and the signature verifies under key ' <xdigit> ** 16/, 'and says both things it checked';
+    like $out, /^^ '✓ verified: the digest matches the content and the signature holds under key ' <xdigit> ** 16/, 'and says both things it checked, under its mark';
+    like $out, /^^ 'receipt:' \h+ \S+ \n 'package:' \h+ \S+ \n 'key:' \h+ <xdigit> ** 16/, 'then the rows';
     ($rc, $out, $err) = x321('receipt', 'verify', $f.Str, '--key', %other<publicKey>, :%env);
     is $rc, 4, 'under another key it fails';
     like $err, /'does not name this key' | 'verification failed'/, 'and says so';

@@ -65,19 +65,23 @@ sub topics(--> List) is export {
     (
     t('ask', EVERY-DAY, 'hand an agent the work; the receipt says what happened',
       ['321 <agent> <request...>', '321 <publisher>/<agent> <request...>', '321 <agent> -                      (the request from standard input)'],
-      'The request is plain words. It becomes the objective of a work package and is never handed to a shell. While it runs at a terminal, type to steer, /pause, /resume, /stop; Ctrl-C stops. The options that go before the agent name are under 321 help options.',
+      'The request is plain words. It becomes the objective of a work package and is never handed to a shell. While it runs at a terminal, type to steer, /pause, /resume, /stop; Ctrl-C stops. The screen is the verdict, what changed and the receipt; --verbose before the name shows the trust, grants, every event and tool call. Other options: 321 help options.',
       '321 <agent> note: remember the milk', :shown('<agent> <request...>')),
-    t('agents', EVERY-DAY, 'who you can ask here, and what one of them is for',
+    t('agents', EVERY-DAY, 'who you can ask here',
       ['321 agents', '321 agents <agent>'],
-      'With no name: each configured package with its trust level, version and alias, read from ~/.321/trust.json. With a name: what that agent is for, what each skill it carries says it does, and what the package asks to be allowed and refuses - the package\'s own words, so you can tell why you would ask this one rather than another. 321 help trust says how one is added.',
-      '321 agents <agent>'),
+      'Each configured package with its trust level, version and alias, read from ~/.321/trust.json. With a name it is 321 whois: an introduction to that agent. 321 help trust says how one is added.',
+      '321 agents'),
+    t('whois', EVERY-DAY, 'meet an agent: what it is for, how it works, what it may do',
+      ['321 whois <agent>'],
+      'An introduction in the package\'s own words: what it is for, its personality, how it speaks and how it decides, what each skill it carries says it does, what it asks to be allowed and what it refuses, and the trust it holds here. A run gets only what that, your grants and this machine\'s policy agree on. In a pipe, --brief gives id, version, level, byline and role.',
+      '321 whois <agent>', :shown('whois <agent>')),
     t('status', EVERY-DAY, 'your last runs, and what to do next',
       ['321 status', '321 status --runs N'],
       'One screen: where you are and whether an IZ4 governs it, the agents, the deploy binding, whether receipts are signed, the last runs, and the next step the newest run that needs you is waiting for. A receipt says what ran and what changed, never that the work is right.',
       '321 status'),
     t('receipt', EVERY-DAY, 'what a receipt proves, and how to check one',
       ['321 receipt verify FILE', '321 receipt verify FILE --key B64'],
-      'Every run ends with one marked word: COMPLETED, BLOCKED (it needs your answer), FAILED, DENIED or STOPPED, the reasons beneath; then the files changed, the tools called, the cost with its basis, and the receipt\'s path. verify checks a receipt\'s digest against its content and its signature against a key: this 321\'s own, or --key. A receipt says what ran and what changed; it never says the work is right.',
+      'Every run ends with one marked word: completed, blocked (it needs your answer), failed, denied or stopped, the reasons beneath; then the files changed, the tools called, the cost with its basis, and the receipt\'s path. verify checks a receipt\'s digest against its content and its signature against a key: this 321\'s own, or --key. A receipt says what ran and what changed; it never says the work is right.',
       '321 receipt verify receipt.json', :shown('receipt verify FILE')),
 
     t('iz4 install', HOLD, 'wire the project\'s IZ4 into the harness here',
@@ -95,11 +99,11 @@ sub topics(--> List) is export {
       '321 trust check'),
     t('packages', 'Agents and trust', 'check, digest and read agent packages',
       ['321 packages validate DIR', '321 packages digest DIR [--write]', '321 packages show ID', '321 packages builtin prompt'],
-      'A package is a directory with agent.json, a DIGEST and optionally a SIGNATURE. Loading one never runs anything in it and installs nothing. builtin prompt writes the built-in prompt-only package and prints its path.',
+      'A package is a directory with agent.json, a DIGEST and optionally a SIGNATURE. Loading one never runs anything in it and installs nothing. builtin prompt writes the built-in prompt-only package and prints its path: into a pipe, the path alone.',
       '321 packages validate ./my-package'),
     t('doctor', 'Agents and trust', 'what this machine can run and enforce',
-      ['321 doctor'],
-      'Each adapter 321 knows: whether it is here, what it enforces and what it only advises. Then the tools bound to procedures by explicit path, whether iz4 can be driven, the trust file and the policy.',
+      ['321 doctor', '321 doctor --verbose'],
+      'A row per adapter 321 knows: whether it is here and how much it enforces; then the tools bound to procedures by explicit path, whether iz4 can be driven, the trust file and the policy in words. --verbose lists what each adapter enforces, feature by feature.',
       '321 doctor'),
     t('key', 'Agents and trust', 'this 321\'s receipt-signing key',
       ['321 key', '321 key new'],
@@ -112,8 +116,8 @@ sub topics(--> List) is export {
       '321 <agent> plan app.web live', :shown('<agent> plan|go SERVICE TARGET')),
 
     t('harness detect', 'Harnesses', 'the agent environments 321 knows, and which are here',
-      ['321 harness detect'],
-      'Each harness: whether it is installed, where its project wiring lives, and which controls it can be driven from: what it enforces, what it only advises, what it cannot do.',
+      ['321 harness detect', '321 harness detect --verbose'],
+      'A row per harness: whether it is installed and whether this project is wired into it. --verbose lists the controls it can be driven from: what it enforces, what it only advises, what it cannot do.',
       '321 harness detect'),
     t('iz4 remove', 'Harnesses', 'take out only what 321 installed for IZ4',
       ['321 iz4 remove', '321 iz4 remove --harness NAME'],
@@ -133,8 +137,8 @@ sub topics(--> List) is export {
        '  --workspace DIR        --package-dir DIR      --attach FILE',
        '  --done TEXT            --grant CAP            --adapter NAME',
        '  --placement client|server|either   --network none|provider_only|open',
-       '  --non-interactive      --json                 --trust FILE'],
-      'workspace: where the work happens (default: the enclosing git repository). done: a completion condition, in order. grant: an optional capability within policy. network: the agent\'s own access; a shell grant never implies it.',
+       '  --non-interactive  --trust FILE  --verbose  --json  --brief  --plain'],
+      'workspace: where the work happens. done: a completion condition, in order. grant: a capability in policy. network: the agent\'s own; shell never implies it. verbose: the whole run. json, brief, plain: for pipes.',
       "321 --done 'a note exists' <agent> note: remember the milk"),
     t('version', 'The tool', 'which 321 this is', ['321 version'], '', '321 version'),
     t('help', 'The tool', 'this help',
@@ -149,6 +153,10 @@ sub topics(--> List) is export {
       ['321 hook HARNESS CONTROLLER CONTROL'],
       'Reads the harness\'s native event on standard input, asks the controller, and answers in the harness\'s own terms. 321 iz4 install writes it into a project\'s settings; it is not typed by hand.',
       '321 hook claude_code iz4 filesystem_guard < event.json'),
+    t('brief', MACHINE, 'pipeline mode: one tab-separated record per line',
+      ['321 --brief COMMAND...', 'DO_321_BRIEF=1 321 COMMAND...'],
+      'The result alone, no title, rows or next step; a failure is one line on standard error and the exit code; --json is the other form, not both. Records: status when agent status request waiting-on; agents id level version alias; trust check loads|failed id level why; packages validate valid id version digest; packages builtin and digest the value alone; a run kind text per event, then status package summary receipt waiting-on.',
+      '321 --brief status | cut -f3'),
     )
 }
 
@@ -199,7 +207,7 @@ sub help-more(%ctx = %() --> Str) is export {
     @l.push: '321 help COMMAND    more on one command, with an example';
     @l.push: '321 help machine    the commands a tool calls';
     @l.push: '';
-    @l.push: 'Highlights appear only on a terminal: NO_COLOR or DO_321_COLOR=0 turns them off, DO_321_COLOR=1 keeps them; --json is for tools.';
+    @l.push: 'Highlights appear only on a terminal: NO_COLOR, --plain or DO_321_COLOR=0 turns them off, DO_321_COLOR=1 keeps them; --json and --brief are for tools.';
     @l.push: '';
     own(@l.join("\n") ~ "\n", %ctx);
 }
@@ -208,9 +216,11 @@ sub help-machine(%ctx = %() --> Str) is export {
     my @l = '', "{icon()} 321 help machine: what a work system, a harness or a CI job calls", '';
     @l.push: listing($_, 14, %ctx) for topics().grep({ .group eq MACHINE });
     @l.push: '';
-    @l.push: 'status, doctor, harness detect, iz4 status, hooks and key answer as a';
-    @l.push: 'document with --json; a run with --json prints events as JSON lines,';
-    @l.push: 'then the receipt. Exit codes: 0 completed or no change, 2 blocked,';
+    @l.push: 'Every command answers as a document with --json or, in pipeline mode, as';
+    @l.push: 'one tab-separated record per line (--brief, or DO_321_BRIEF=1 for a';
+    @l.push: 'session; 321 help brief lists the records). A run with --json prints';
+    @l.push: 'events as JSON lines, then the receipt.';
+    @l.push: 'Exit codes: 0 completed or no change, 2 blocked,';
     @l.push: '3 stopped, 4 failed, 5 denied, 64 usage, 65 malformed input, 70 internal.';
     @l.push: '';
     own(@l.join("\n") ~ "\n", %ctx);

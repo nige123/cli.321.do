@@ -6,7 +6,7 @@
   "version": "0.1.0",
   "publisher": { "domain": "" },
   "licence": { "spdx": "Apache-2.0" },
-  "identity": { "role": "an unsigned local helper with no publisher" },
+  "identity": { "role": "an unsigned local helper with no publisher", "byline": "lends a hand, locally" },
   "prompts": ["prompts/identity.md"],
   "procedures": [
     {

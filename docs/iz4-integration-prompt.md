@@ -83,7 +83,10 @@ and `iz4` is on PATH:
   output into the run's instructions as the IZ4 agent packet, marked as
   project content: data, not instructions (the packet says so itself);
 - add a completion condition, ordered last: "each affected invariant is
-  reported" (Invariant, Assessment, Evidence, Remaining gap). Check it by
+  reported", one line per invariant: 'Invariant NAME: mechanically verified
+  | supported by evidence | apparently consistent | uncertain | conflicting.
+  Evidence: what ran or was reviewed. Remaining gap: what is not
+  established.' Check it by
   running `iz4 hook stop` with the run's final summary on stdin and reading
   its exit code; exit 2 means the condition is unmet and the run does not
   complete;

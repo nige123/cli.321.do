@@ -14,17 +14,18 @@ Ask an agent in plain words and read the receipt. One screen says where
 you stand:
 
 ```text
-❮▣❯ 321 status: 0.4.3 on throo
+❮▣❯ 321 status
+    0.4.4 · throo
 
-here:         /home/s3/cli.321.do (git), IZ4 aware in claude_code
+here:         /home/s3/cli.321.do (git), IZ4 guarded in claude_code
 agents:       2 configured (1da, b1ll); trust: ~/.321/trust.json
 deploy:       dp bound (/home/s3/deploy.321.do/bin/dp); execute enabled for dev,live
 receipts:     signed with key 3f2a9c1e5b7d0f46
 
-last runs:    3 of 915 (321 status --runs N for more)
-  5 mins ago    1da            go iz4.web live                COMPLETED
-  2 hours ago   1da            go gongoozled.web live         COMPLETED
-  yesterday     1da            plan 123.api live              BLOCKED   Which revision?
+last runs:    3 of 915, 2 completed (321 status --runs N for more)
+  5 mins ago    1da go iz4.web live                          completed
+  2 hours ago   1da go gongoozled.web live                   completed
+  yesterday     1da plan 123.api live                        blocked   Which revision?
   a receipt says what ran and what changed, never that the work is right
 
 next:  a run is waiting on an answer: Which revision?
@@ -34,7 +35,13 @@ next:  a run is waiting on an answer: Which revision?
 `321 help` is the first screen, `321 help COMMAND` one command with an
 example, `321 help more` the rest, `321 help machine` what a tool calls
 (`321 run` over NDJSON). On a terminal the words are dressed and given air;
-into a pipe they are exactly the words. More at [321.do](https://321.do).
+into a pipe they are exactly the words. `--plain` is the pipe form on a
+terminal. Pipeline mode is `--brief`, or `DO_321_BRIEF=1` for a session: one
+tab-separated record per line and nothing else, a failure one line on
+standard error with the exit code (`321 help brief` lists the records);
+`--json` is the named document, and a program reads one of those two, never
+the screen. When every run shown completed and nothing waits on you, the
+screen says so last. More at [321.do](https://321.do).
 
 Standalone use needs no account, database or network service. When a work
 system delegates a package, that system remains the owner of the work: the
@@ -177,7 +184,7 @@ ships here: signing is the publisher's own step with its own key handling.
 Loading never executes anything in a package and never follows a reference
 outside the package root.
 
-`321 agents` lists the packages configured here; `321 agents <name>` reads
+`321 agents` lists the packages configured here; `321 whois <name>` (or `321 agents <name>`) reads
 one of them out for a person choosing between them: what it is for, what
 each skill it carries says it does, and what it asks to be allowed and
 refuses outright. Every word of that is the package's own, so it says why
@@ -338,7 +345,8 @@ match its pattern is refused before anything runs.
   new proposal and a renewed approval.
 - **Who approves a standalone `321 <agent> go`.** A person typing it at a
   terminal is the approval: the runner plans first, mints an `operator/`
-  approval bound to that plan and grants `deploy.invoke`. Unattended (no
+  approval bound to that plan and grants `deploy.invoke`; the run header
+  says so in an `approval:` row under the title. Unattended (no
   terminal, or `--non-interactive`, as when an agent session in another
   repository deploys its work), nothing is assumed: the go is approved only
   by a **standing approval** the administrator wrote into local policy,
@@ -353,7 +361,8 @@ match its pattern is refused before anything runs.
   ```
 
   The approval it mints carries a `standing/` ref and names the approver
-  ("nige (standing approval in local policy)"), and it is bound to the exact
+  ("nige (standing approval in local policy)"), the header's `approval:`
+  row says it was standing, and it is bound to the exact
   plan like any other. `DP_EXECUTE`, the capability ceiling, the fresh
   re-plan comparison and the engine's own gates, health check and rollback
   all still apply. Without a matching standing approval an unattended go is
@@ -490,13 +499,19 @@ IZ4       knows the applicable invariants, whether an action or a change is
 ### What a harness can do
 
 ```
-$ 321 harness detect
-claude_code    detected 2.1.292 (Claude Code)
-    project wiring: .claude/settings.json (none yet)
-    enforces: pre_action, pre_tool, filesystem_guard, shell_guard, human_approval, post_run
-    advises:  authoritative_context, post_action, post_tool
-    cannot:   network_guard, pre_commit, post_commit
+$ 321 harness detect --verbose
+❮▣❯ 321 harness detect: /home/s3/cli.321.do
+
+  claude_code  detected 2.1.310 (Claude Code) .claude/settings.json (none yet)
+                 enforces:  pre_action, pre_tool, filesystem_guard, shell_guard, human_approval, post_run
+                 advises:   authoritative_context, post_action, post_tool
+                 cannot:    network_guard, pre_commit, post_commit
+
+next:  see what the IZ4 here is held by, harness by harness
+       321 iz4 status
 ```
+
+Without `--verbose` the screen is the rows alone.
 
 Twelve controls are named (`lib/Do321/Protocol.rakumod`). An adapter gives
 each a strength: **enforces** (an answer can stop the thing), **advises**
@@ -657,6 +672,17 @@ first. 321:
 5. puts the finished work to IZ4 (`iz4 verify --worktree`, with the agent's
    own last words), which includes the change check.
 
+At the end of a turn in a hooked session, the same check measures the turn
+from the tree it began with, not from HEAD: the session's start records the
+working tree (`iz4 check change --worktree --/checks`, no tests run) under
+`~/.321/sessions/<harness>/<session>.json`, each turn that is allowed to end
+moves it on, and a refused one keeps it so the same changes are measured
+again. Files that were already dirty when the session began are never laid
+at a turn's door. A turn whose transcript used no tool that can change files
+(only reading, searching, asking) is not put to iz4 at all; the hook log says
+`not asked`. A delegated agent or a tool 321 does not know counts as able to
+change files.
+
 `needs_human` and `block` end the run **blocked**, not completed, with the
 proposal a person must decide on, or the reason, in `blockedOn`. A warning
 goes on `uncertain`. **Only a person approves a change to intent.** The
@@ -713,6 +739,8 @@ enforces. For controllers it adds:
 | `translate-event` | a native hook event as a generic `Action` |
 | `answer` | a `Verdict` as the exit code and output the harness understands |
 | `final-words` | the agent's last words, from the harness's end-of-turn event |
+| `turn-wrote` | whether the ending turn used any tool that can change files; a harness that cannot tell says yes |
+| `session-key` | the harness's own name for the session, under which the turn baseline is kept |
 | `can-register-hooks` | whether hooks can be handed over for a single run |
 
 The minimum is `controls`: an adapter that declares none is reported as

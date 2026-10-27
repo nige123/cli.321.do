@@ -155,28 +155,32 @@ subtest 'inspection commands: a header, air, and what comes next' => {
     ok $rc == 0 && $out.starts-with("{ICON} 321 trust show: ") && $out.contains('321 trust check'), 'trust show' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'trust', 'check');
     ok $rc == 0 && $out.contains('✓ example.test/helper') && $out.contains('321 agents'), 'trust check ticks what loads' or diag $out;
+    ok $out.lines.tail.starts-with('All loaded: '), 'and a clean trust file is said to be, last' or diag $out;
     ($rc, $out) = cli(helper-trust(), 'doctor');
-    ok $rc == 0 && $out.starts-with("{ICON} 321 doctor: ") && has-next($out) && $out.contains('321 agents'), 'doctor' or diag $out;
+    ok $rc == 0 && $out.starts-with("{ICON} 321 doctor\n    ") && has-next($out) && $out.contains('321 agents'), 'doctor' or diag $out;
+    ok $out ~~ / ^^ 'adapters:' / && $out ~~ / ^^ 'tools:' / && $out ~~ / ^^ 'policy:' \h+ 'no standing approvals' / && !$out.contains('{"'), 'in chunks, the policy in words, no document' or diag $out;
     ($rc, $out) = cli(IO::Path, 'packages', 'digest', fixture('local/helper').Str);
     ok $rc == 0 && $out.contains('--write'), 'digest suggests writing it' or diag $out;
     ($rc, $out) = cli(IO::Path, 'packages', 'validate', fixture('local/helper').Str);
-    ok $rc == 0 && $out.contains('OK local/helper') && has-next($out), 'validate ends with a next step' or diag $out;
+    ok $rc == 0 && $out.starts-with("{ICON} 321 packages validate: ") && $out.contains('✓ valid: local/helper') && has-next($out), 'validate has a title, a mark and a next step' or diag $out;
     ($rc, $out) = cli(IO::Path, 'key');
-    ok $rc == 0 && $out.contains('unsigned') && $out.contains('321 key new'), 'key without a key says so' or diag $out;
+    ok $rc == 0 && $out.starts-with("{ICON} 321 key: none yet") && $out.contains('unsigned') && $out.contains('321 key new'), 'key without a key has a title and says so' or diag $out;
     ($rc, $out) = cli(IO::Path, 'harness', 'detect');
-    ok $rc == 0 && $out.starts-with("{ICON} 321 harness detect: "), 'harness detect' or diag $out;
+    ok $rc == 0 && $out.starts-with("{ICON} 321 harness detect: ") && has-next($out), 'harness detect' or diag $out;
 }
 
 # ---- one agent, for a person choosing between them -----------------------------------------------
 subtest 'an agent profile reads as a person weighing one agent, not a field dump' => {
-    my ($rc, $out, $err) = cli(helper-trust(), 'agents', 'helper');
-    is $rc, 0, 'a configured agent has a profile' or diag $err;
-    ok $out.lines[0] ~~ / ^ ['❮▣❯' | '<#>'] ' 321 agents: Helper' $ /, 'the title is who it is' or diag $out;
+    my ($rc, $out, $err) = cli(helper-trust(), 'whois', 'helper');
+    is $rc, 0, 'a configured agent has an introduction' or diag $err;
+    ok $out.lines[0] ~~ / ^ ['❮▣❯' | '<#>'] ' 321 whois: Helper, handy with the housekeeping' $ /, 'the title is who it is, in the words a run will use' or diag $out;
+    is cli(helper-trust(), 'agents', 'helper')[1], $out, '321 agents <name> is the same introduction';
     ok $out.lines[1] ~~ / ^ \h\h\h\h 'example.test/helper 1.2.0 ' \N+ 'development' $ /,
         'the identity, version and trust level sit quietly under it' or diag $out;
     # the publisher's own words, each under a label a person can scan
-    ok $out ~~ / ^^ 'for:' \h+ 'a small general helper used in tests' /, 'what it is for' or diag $out;
-    ok $out ~~ / ^^ 'manner:' \h+ 'plain and literal' $$ / && $out ~~ / ^^ 'tone:' \h+ 'brief' $$ /,
+    ok $out ~~ / ^^ 'is for:' \h+ 'a small general helper used in tests' /, 'its reason for being' or diag $out;
+    ok $out.lines[0].ends-with('whois: Helper, handy with the housekeeping'), 'the title carries the byline a person will see on every run' or diag $out;
+    ok $out ~~ / ^^ 'personality:' \h+ 'plain and literal' $$ / && $out ~~ / ^^ 'speaks:' \h+ 'brief' $$ /,
         'how it works and how it speaks, each the package\'s own field' or diag $out;
     ok $out ~~ / ^^ 'decides:' \h+ 'asks rather than guesses' /, 'how it decides' or diag $out;
     # the skills it carries, in the words of the skill files themselves
@@ -193,6 +197,11 @@ subtest 'an agent profile reads as a person weighing one agent, not a field dump
     ok $out ~~ / ^^ 'trust:' \h+ /, 'the trust label, as the loader words it' or diag $out;
     ok $out.ends-with("next:  ask it; nothing is committed, so you read the change and commit it\n       321 helper <request...>\n"),
         'and the last thing is the command to type' or diag $out;
+    # for a pipe: one record
+    ($rc, $out, $err) = cli(helper-trust(), '--brief', 'whois', 'helper');
+    is $out, "example.test/helper\t1.2.0\tdevelopment\thandy with the housekeeping\ta small general helper used in tests\n", 'whois --brief: id, version, level, byline, role' or diag $out;
+    ($rc, $out, $err) = cli(helper-trust(), 'whois');
+    ok $rc == EXIT-USAGE && $err.contains('321 agents'), 'whois with no name points at the list' or diag $err;
     # a name nobody configured says so and points at the list
     ($rc, $out, $err) = cli(helper-trust(), 'agents', 'nobody');
     ok $rc == EXIT-DENIED && $err.contains('321 agents'), 'an unknown name points at the list' or diag $err;
@@ -203,20 +212,31 @@ subtest 'an agent profile reads as a person weighing one agent, not a field dump
 # ---- the icon is never a verdict ------------------------------------------------------------------
 subtest 'the icon marks a header, never a result' => {
     my ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()));
-    ok $rc == 0 && $out.contains('COMPLETED'), 'a run completes' or diag $out;
+    ok $rc == 0 && $out.contains('completed:'), 'a run completes' or diag $out;
     # the run opens with one header, on standard error, so a pipe on standard
     # output gets the run alone; then the rows a person reads before anything happens
     ok $err.lines[0] eq "{ICON} 321 helper: note: milk", 'the header names the agent and the request' or diag $err;
     is $err.lines.grep(*.contains(ICON)).elems, 1, 'the icon appears once, on the header';
-    ok $err ~~ / ^^ '    by Local Helper ' \N+ 'local/helper' / && $err ~~ / ^^ 'trust:' \h+ 'local package by path, unsigned' / && $err ~~ / ^^ 'grants:' \h+ 'none' /, 'a byline under the title, then the trust and grants rows' or diag $err;
+    ok $err ~~ / ^^ '    by Local Helper, lends a hand, locally ' \N+ 'local/helper' \N+ ', unsigned' $$ / && !$err.contains('trust:') && !$err.contains('grants:'), 'a byline under the title says who is answering, in their own words, and whether it is signed; trust and grants rows are --verbose' or diag $err;
     ok $err.ends-with("\n\n"), 'air after the header';
     nok $out.lines.grep(*.contains(ICON)), 'no line of the run itself carries the icon';
-    ok $out ~~ / ^^ '✓ COMPLETED: ' /, 'the last word carries its mark' or diag $out;
-    ok $out ~~ / ^^ 'cost:' \h+ 'none (no model was used)' / && $out ~~ / ^^ 'receipt:' \h+ \S+ 'receipt.json' \n \n 'next:' /, 'cost and receipt as rows, air before the next step' or diag $out;
-    ok $out.lines.tail ~~ / ^ \h+ '321 --package-dir ' /, 'the last thing printed is the command to type';
+    ok $out ~~ / ^^ '✓ completed: ' /, 'the last word carries its mark, in lower case' or diag $out;
+    ok !$out.contains('cost:') && !$out.contains('  · ') && $out ~~ / ^^ 'receipt:' \h+ \S+ 'receipt.json' \n \n 'next:' /, 'no cost of none and no event lines; the receipt row, air, then the next step' or diag $out;
+    ok $out.lines.tail ~~ / ^ 'then:  321 --verbose --package-dir ' \N+ '(every event and tool call)' $ /, 'the last thing printed says where the whole transcript is' or diag $out;
+    # --verbose: the whole transcript, kept
+    ($rc, $out, $err) = cli(IO::Path, '--verbose', '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()));
+    ok $err ~~ / ^^ 'trust:' \h+ 'local package by path, unsigned' / && $err ~~ / ^^ 'grants:' \h+ 'none' /, '--verbose: the trust and grants rows' or diag $err;
+    ok $out ~~ / ^^ '  · procedure ' / && $out ~~ / ^^ 'cost:' \h+ 'none (no model was used)' / && !$out.contains('then:'), '--verbose: every event as a line, the cost row, nothing further to show' or diag $out;
+    # on a terminal the events are one live line, rewritten and wiped
+    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_COLOR => '1'));
+    my $after-wipe = $out.split("\e[2K").tail;
+    ok $out.contains("\e[2K  · procedure ") && !$after-wipe.contains('  · ') && $after-wipe.contains('✓') && !$out.lines.grep(* ~~ / ^ '  · ' /), 'a live line under the header, wiped before the verdict' or diag $out.raku;
+    # a pipe that wants the record asks for it
+    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_PROGRESS => '1'));
+    ok $out ~~ / ^^ '  · procedure ' / && !$out.contains("\e["), 'DO_321_PROGRESS=1: one line per event, plain' or diag $out;
     # a denial: the mark, the word, and the details once, wrapped under it
     ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_COLOR => '0', LANG => 'C', LC_ALL => 'C', LC_CTYPE => 'C', WT_SESSION => ''));
-    ok $err.lines[0].starts-with("{ICON-PLAIN} 321 helper: ") && $out ~~ / ^^ '+ COMPLETED: ' /, 'plain twins where the locale is not UTF-8' or diag "$err\n$out";
+    ok $err.lines[0].starts-with("{ICON-PLAIN} 321 helper: ") && $out ~~ / ^^ '+ completed: ' /, 'plain twins where the locale is not UTF-8' or diag "$err\n$out";
 }
 
 # ---- after a run: the next step fits the outcome and never overclaims ----------------------------
@@ -244,7 +264,7 @@ subtest 'the icon marks a header, never a result' => {
 
 # ---- pretty: dress for a terminal, nothing for a pipe ----------------------------------------------
 subtest 'pretty dresses output for a terminal only' => {
-    my $plain = "{ICON} 321 status: 0.4.1 on box\n\nhere:         /w (git)\n  321 agents       who\nnext:  do it\n       321 helper status\n  ✓ 1. ok\n  ✗ 2. no\n# a comment\nCOMPLETED: done 01M5C39J4M56M3MJV2RV085841 in claude_code\n";
+    my $plain = "{ICON} 321 status: 0.4.1 on box\n\nhere:         /w (git)\n  321 agents       who\nnext:  do it\n       321 helper status\n  ✓ 1. ok\n  ✗ 2. no\n# a comment\n✓ completed: done 01M5C39J4M56M3MJV2RV085841 in claude_code\nAll clear: the last 2 runs completed.\n";
     is pretty($plain, :!on), $plain, 'off, the text is untouched';
     my $on = pretty($plain, :on);
     like $on, /"\e[" .* '❮▣❯' "\e[0m" "\e[1m" ' 321 status:' "\e[0m"/, 'on, the header is a blue icon and a bold name';
@@ -255,7 +275,8 @@ subtest 'pretty dresses output for a terminal only' => {
     like $on, /"\e[32m" '✓' "\e[0m"/, 'a tick is green';
     like $on, /"\e[31m" '✗' "\e[0m"/, 'a cross is red';
     like $on, /"\e[2m" '# a comment' "\e[0m"/, 'a comment is dimmed';
-    like $on, /"\e[1m" 'COMPLETED' "\e[0m"/, 'the last word of a run is bold';
+    like $on, /"\e[1m" 'completed' "\e[0m"/, 'the last word of a run is bold';
+    like $on, /"\e[1m" 'All clear' "\e[0m"/, 'and so is the line that says everything holds';
     like $on, /"\e[1m" '01M5C39J4M56M3MJV2RV085841' "\e[0m"/, 'a package id is bold';
     like $on, /"\e[1m" 'claude_code' "\e[0m"/, 'a harness name is bold';
     is $on.subst(/ "\e[" <[0..9;]>+ 'm' /, '', :g), $plain, 'strip the colour and every word is as it was';

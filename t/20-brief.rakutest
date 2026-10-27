@@ -1,0 +1,109 @@
+use v6.d;
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+use Do321::Look;
+
+#| Pipeline mode is a contract other programs rely on: --brief, or
+#| DO_321_BRIEF=1 for a session, gives the result alone, one tab-separated
+#| record per line, no title, no colour, no next step; a failure is one line
+#| on standard error and the exit code.  These tests fail the moment a
+#| screen leaks into a record, which is how a caller in another repository
+#| once broke (321-cli skill, rules 31 to 37).
+
+sub trust-file(%cfg --> IO::Path) {
+    my $p = temp-dir().add('trust.json');
+    $p.spurt(to-wire('TrustConfig', load('TrustConfig', %cfg)));
+    $p;
+}
+sub helper-trust(--> IO::Path) {
+    my $dir = fixture('example.test/helper');
+    trust-file({ schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { helper => 'example.test/helper' },
+        policy => { adapters => { preferred => ['fake'] } } });
+}
+my $home = temp-dir();
+my $tp = helper-trust();
+sub cli(*@args, :%env --> List) {
+    my %e = DO_321_HOME => $home.Str, DP_BIN => '', DP_EXECUTE => '', LANG => 'C.UTF-8', |%env;
+    x321('--trust', $tp.Str, |@args, :env(%e), :cwd(temp-dir()));
+}
+
+#| The record contract: nothing of a screen in it.
+sub is-records(Str $out, Str $what) {
+    subtest $what => {
+        ok $out.chars > 0, 'something is said';
+        unlike $out, / '❮▣❯' | '<#>' /, 'no title';
+        unlike $out, / "\e[" /, 'no colour';
+        unlike $out, / ^^ ['next:' | 'then:' | 'All '] /, 'no next step, no celebration';
+        unlike $out, / ^^ \h /, 'no indented row';
+        unlike $out, / ^^ \w+ ':' \h /, 'no labelled row';
+        unlike $out, / \n \n /, 'no air';
+    }
+}
+
+# a run first, so status has something to list
+my ($rc, $out, $err) = cli('--brief', 'helper', 'note:', 'milk');
+is $rc, 0, 'a run in pipeline mode completes' or diag $err;
+is-records($out, 'a run is records');
+is $err, '', 'and opens no screen on standard error';
+ok $out.lines.tail ~~ / ^ 'completed' \t <[0..9 A..Z]> ** 26 \t .* \t \S+ 'receipt.json' \t /, 'the receipt record is last: status, package, summary, receipt, waiting-on' or diag $out;
+ok $out.lines[0] ~~ / ^ \w+ \t /, 'each event is a record of its kind and its words' or diag $out;
+ok $out.lines.grep(*.starts-with("procedure_selected\tprocedure note (no model)")).elems == 1, 'with the words a person would have read' or diag $out;
+
+for ('status',), ('agents',), ('trust', 'show'), ('trust', 'check'), ('doctor',), ('harness', 'detect'), ('iz4', 'status'),
+    ('packages', 'validate', fixture('example.test/helper').Str), ('packages', 'digest', fixture('local/helper').Str), ('packages', 'builtin', 'prompt') -> @cmd {
+    ($rc, $out, $err) = cli('--brief', |@cmd);
+    is $rc, 0, "321 --brief {@cmd.join(' ')} exits 0" or diag $err;
+    is-records($out, "321 --brief {@cmd.join(' ')}");
+    ($rc, my $after) = cli(|@cmd, '--brief');
+    is $after, $out, 'the flag after the command word is the same record';
+    ($rc, my $session) = cli(|@cmd, :env(%( DO_321_BRIEF => '1' )));
+    is $session, $out, 'DO_321_BRIEF=1 is the same record for a whole session';
+    ($rc, my $tty) = cli('--brief', |@cmd, :env(%( DO_321_COLOR => '1' )));
+    is $tty, $out, 'and a terminal gets the same bytes: the record is never dressed';
+}
+
+# the field order of the records a caller reads
+($rc, $out) = cli('--brief', 'status');
+ok $out.lines[0] ~~ / ^ \d\d\d\d '-' \S+ \t 'helper' \t 'completed' \t 'note: milk' \t $ /, 'status: when, agent, status, request, waiting-on' or diag $out;
+($rc, $out) = cli('--brief', 'agents');
+is $out, "example.test/helper\tdevelopment\t1.2.0\thelper\n", 'agents: id, level, version, alias';
+($rc, $out) = cli('--brief', 'trust', 'check');
+is $out, "loads\texample.test/helper\tdevelopment\tas pinned\n", 'trust check: verdict first';
+($rc, $out) = cli('--brief', 'packages', 'validate', fixture('example.test/helper').Str);
+like $out, / ^ "valid\texample.test/helper\t1.2.0\tsha256:" <xdigit>+ \n $ /, 'packages validate: verdict, id, version, digest';
+($rc, $out) = cli('--brief', 'packages', 'builtin', 'prompt');
+ok $out.lines.elems == 1 && $out.trim.IO.d, 'packages builtin: the path alone';
+($rc, $out) = cli('packages', 'builtin', 'prompt');
+ok $out.lines.elems == 1 && $out.trim.IO.d, 'and the same into a pipe without the flag: it is a seam';
+($rc, $out) = cli('--brief', 'key');
+is $out, '', 'key with no key: no record, nothing else';
+
+# failure: one line on standard error, nothing on standard output, the exit code
+($rc, $out, $err) = cli('--brief', 'packages', 'validate', temp-dir().Str);
+is $rc, EXIT-FAILED, 'an invalid package fails';
+is $out, '', 'with nothing on standard output';
+ok $err.lines.elems == 1 && $err.starts-with('321 packages validate: '), 'and one line on standard error' or diag $err;
+
+# the two machine forms are exclusive
+($rc, $out, $err) = cli('--brief', '--json', 'status');
+is $rc, EXIT-USAGE, '--json and --brief together is a usage error';
+like $err, / '--json and --brief' /, 'and says so';
+($rc, $out, $err) = cli('status', '--brief', '--json');
+is $rc, EXIT-USAGE, 'in either position';
+
+# the help names the mode and lists the records
+($rc, $out) = cli('help', 'brief');
+ok $rc == 0 && $out.contains('DO_321_BRIEF=1') && $out.contains('packages builtin and digest the value alone') && $out.lines.elems <= 16, 'help brief fits one screen and names the seam' or diag $out;
+($rc, $out) = cli('help', 'machine');
+like $out, / 'DO_321_BRIEF' .* '321 help brief' /, 'help machine points at it';
+
+done-testing;

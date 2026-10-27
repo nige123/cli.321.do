@@ -104,9 +104,14 @@ my sub emphasise(Str $s --> Str) {
       .subst(/ <!after <[\w / . \-]>> (@HARNESSES) <!before <[\w \-]>> /, { "{BOLD}{$0}{OFF}" }, :g)
 }
 
+#| The words a run ends on, and the ones a check ends on: said in lower
+#| case like every other word here, bold after their mark so the eye
+#| lands on them.  Nothing shouts.
+my constant @LAST-WORDS = <completed no_change blocked failed denied stopped valid invalid verified>;
+
 #| After a mark: a run's last word in bold, the rest as it is.
 my sub verdict(Str $s --> Str) {
-    $s ~~ / ^ (\h) ('COMPLETED' | 'NO_CHANGE' | 'BLOCKED' | 'FAILED' | 'DENIED' | 'STOPPED') (':' .*)? $ /
+    $s ~~ / ^ (\h) (@LAST-WORDS | 'no change') (':' .*)? $ /
         ?? "{$0}{BOLD}{$1}{OFF}{emphasise(~($2 // ''))}"
         !! emphasise($s)
 }
@@ -137,9 +142,9 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
         elsif $l ~~ / ^ (\h*) ('✓' | '+') (\h .*) $ / { $l = "{$0}{GREEN}{$1}{OFF}{verdict(~$2)}" }
         elsif $l ~~ / ^ (\h*) ('✗' | 'x') (\h .*) $ / { $l = "{$0}{RED}{$1}{OFF}{verdict(~$2)}" }
         elsif $l ~~ / ^ (\h*) '?' (\h .*) $ / { $l = "{$0}{AMBER}?{OFF}{verdict(~$1)}" }
-        elsif $l ~~ / ^ (\h*) ('·' | '-') (\h 'STOPPED' .*) $ / { $l = "{$0}{$1}{verdict(~$2)}" }
-        # a run's last word, and the lines that open a section
-        elsif $l ~~ / ^ ('COMPLETED' | 'NO_CHANGE' | 'BLOCKED' | 'FAILED' | 'DENIED' | 'STOPPED' | 'OK' | 'INVALID' | 'All ' \w+) (':' .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }
+        elsif $l ~~ / ^ (\h*) ('·' | '-') (\h 'stopped' .*) $ / { $l = "{$0}{$1}{verdict(~$2)}" }
+        # the line that says everything holds
+        elsif $l ~~ / ^ ('All ' \w+) (':' .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }
         # a command a person can type, on its own line or heading a column
         elsif $l ~~ / ^ (\h+ [ \S+ '=' \S* \h+ ]* '321' [\h <-[\h]>+]+?) (\h ** 2..* .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }
         # a labelled row: the label in bold
@@ -182,10 +187,33 @@ sub air-on(--> Bool) is export {
     $*OUT.t && (%*ENV<TERM> // '') ne 'dumb';
 }
 
+#| --plain anywhere on the command line is DO_321_COLOR=0 said once: the
+#| pipe form on a terminal.  Read before the air goes in, since the air
+#| is the first thing that looks.
+sub adopt-plain-flag(@args) is export {
+    %*ENV<DO_321_COLOR> = '0' if @args.first('--plain' | '--brief').defined || brief-on();
+}
+
+#| Pipeline mode for a whole session: DO_321_BRIEF=1 is --brief on every
+#| command, so a program that calls 321 sets it once and never meets a
+#| screen.
+sub brief-on(--> Bool) is export { (%*ENV<DO_321_BRIEF> // '') eq '1' }
+
+#| DO_321_PROGRESS=1: a pipe that wants a run's events as lines, one per
+#| event, where a terminal would have shown one live line and wiped it.
+sub progress-on(--> Bool) is export { (%*ENV<DO_321_PROGRESS> // '') eq '1' }
+
+#| One live line under a title while something runs: rewritten in place,
+#| never left on the screen.  wipe-live() clears it before the next thing
+#| is said.
+sub live-line($w, Str $text) is export { $w.print("\r\e[2K" ~ $text); $w.flush }
+sub wipe-live($w) is export { $w.print("\r\e[2K"); $w.flush }
+
 my $air;
 #| Installed once at startup, before anything is written.
 sub install-air() is export {
     adopt-old-names();
+    adopt-plain-flag(@*ARGS);
     return unless air-on();
     $air = Air.new(:inner($*OUT));
     $air.encoding('utf8');
@@ -216,6 +244,20 @@ sub row-lines(Str $label, Str $value --> List) is export {
 
 #| A count that reads like English: one turn, not 1 turns.
 sub many-of(Int $n, Str $word --> Str) is export { "$n $word" ~ ($n == 1 ?? '' !! 's') }
+
+#| A run's last word as a person reads it: the receipt's status, in lower
+#| case, with its underscore gone (no change, not NO_CHANGE).
+sub last-word(Str $status --> Str) is export { $status.lc.subst('_', ' ', :g) }
+
+#| One record per line for a tool (--brief): the fields tab-separated, in
+#| the order given, nothing else on the line.  A tab never appears inside
+#| a field, so cut, awk and sort read it as it is.
+sub brief-line(*@fields --> Str) is export { @fields.map({ .Str.subst(/<[\t\n]>/, ' ', :g) }).join("\t") }
+
+#| The line that closes a clean screen: one warm, true sentence, said
+#| last.  'All' opens it so the dress can find it; what follows is only
+#| what was established.
+sub all-well(Str $word, Str $rest --> Str) is export { "All $word: $rest" }
 
 #| The quiet line under a title: what a person needs only sometimes -
 #| which build this is, which machine - said where it can be found rather
