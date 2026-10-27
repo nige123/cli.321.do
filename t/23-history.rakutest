@@ -1,0 +1,123 @@
+# Copyright Nige Ltd. Author: Nigel Hamilton.
+# The history is where honesty is easiest to break: a tidy total hides an
+# outcome, and a cheerful line congratulates a week in which nothing ran.
+# These tests hold the counting and the screen to what the receipts say.
+use v6.d;
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::History;
+use Do321::Screens;
+use Do321::Screen;
+
+my $now = DateTime.new('2026-10-27T12:00:00Z');
+
+#| A run on disk, as 321 writes one: a receipt, and the work package the
+#| objective comes from.
+sub run-dir(IO::Path $root, Str $id, Str :$status, Str :$agent = '321.do/b1ll', Str :$objective = 'do a thing',
+            Numeric :$usd = 0, Str :$basis = 'none', Int :$hours-ago = 1, Str :$summary = 'a summary') {
+    my $d = $root.add($id);
+    $d.mkdir;
+    my $started = $now.earlier(:hours($hours-ago));
+    $d.add('receipt.json').spurt(encode-json(%(
+        schema => 'run-receipt.v1', runId => $id, status => $status, summary => $summary,
+        startedAt => $started.Str, endedAt => $started.later(:seconds(12)).Str,
+        agent => %( id => $agent, version => '0.1.0' ),
+        cost => %( usd => $usd, turns => 1, basis => $basis ),
+    )));
+    $d.add('work-package.json').spurt(encode-json(%( schema => 'work-package.v1', objective => $objective )));
+    $d;
+}
+
+# ULIDs sort chronologically, and read-runs relies on it: these ids are in
+# the same order as their times.
+my $runs = temp-dir();
+run-dir($runs, '01M0000000000000000000000A', status => 'completed', hours-ago => 400, objective => 'the oldest thing');
+run-dir($runs, '01M0000000000000000000000B', status => 'failed',    hours-ago => 300, objective => 'a thing that broke');
+run-dir($runs, '01M0000000000000000000000C', status => 'completed', hours-ago => 30, usd => 0.25, basis => 'harness', agent => '321.do/1da', objective => 'go app.web live');
+run-dir($runs, '01M0000000000000000000000D', status => 'no_change', hours-ago => 20, usd => 0.5, basis => 'harness', objective => 'read the readme');
+run-dir($runs, '01M0000000000000000000000E', status => 'blocked',   hours-ago => 2, usd => 0, basis => 'unreported', objective => 'deploy without a grant');
+
+subtest 'the receipts are read back newest first, within the window' => {
+    my @r = read-runs($runs, :days(7), :$now);
+    is @r.elems, 3, 'three runs in the last seven days';
+    is @r.map(*.status).join(' '), 'blocked no_change completed', 'newest first';
+    is @r[0].objective, 'deploy without a grant', 'the objective comes from the work package';
+    is @r[0].who, 'b1ll', 'and the crew member is the short name a person types';
+    is @r[2].who, '1da', 'whoever it was';
+    ok @r[0].seconds > 0, 'and how long it took is read, not guessed';
+
+    my @all = read-runs($runs, :days(400), :$now);
+    is @all.elems, 5, 'a wider window reaches further back';
+    my @capped = read-runs($runs, :days(400), :cap(2), :$now);
+    is @capped.elems, 2, 'and a cap stops it reading nine hundred receipts to show ten';
+
+    my @mine = read-runs($runs, :days(400), :agent('1da'), :$now);
+    is @mine.elems, 1, 'one crew member can be asked for by their short name';
+    is @mine[0].agent, '321.do/1da', 'and it is the right one';
+}
+
+subtest 'the counting never adds two outcomes together' => {
+    my %t = tally(read-runs($runs, :days(400), :$now));
+    is %t<runs>, 5, 'five runs';
+    is %t<by><done>, 2, 'two did their work';
+    is %t<by>{'no change'}, 1, 'one changed nothing, counted on its own';
+    is %t<by><failed>, 1, 'one failed';
+    is %t<by><blocked>, 1, 'one waits on a person';
+    is ([+] %t<by>.values), 5, 'and every run is counted exactly once';
+    isnt %t<by><done>, 3, 'a no-change is never rolled into done, which is the bug this replaces';
+}
+
+subtest 'a total is only of what was measured' => {
+    my %t = tally(read-runs($runs, :days(400), :$now));
+    is-approx %t<measured>, 0.75, 'the measured spend is the sum of what a harness reported';
+    is %t<measured-runs>, 2, 'across the two runs that reported';
+    is %t<unreported>, 1, 'the run whose harness reported nothing is counted as unreported';
+    is %t<modelless>, 2, 'and the runs that used no model are counted as that';
+    ok %t<measured> < 1, 'an unreported cost is never added in as a zero, nor as a guess';
+}
+
+subtest 'the screen says what happened and nothing that did not' => {
+    my @r = read-runs($runs, :days(400), :$now);
+    my $s = log-screen(@r, tally(@r), :days(400), :dir('~/.321/runs'));
+    my @l = screen-lines($s, :width(88), :!colour, :utf8);
+    my $text = @l.join("\n");
+
+    ok $text.contains('done:'), 'the outcomes that happened have a row each';
+    ok $text.contains('failed:'), 'including the one nobody wants to read';
+    nok $text.contains('stopped:'), 'and an outcome that did not happen has no row of zeroes';
+    ok $text.contains('$0.75 measured across 2 runs'), 'the spend says what was measured';
+    ok $text.contains('1 reported no cost'), 'and what was not';
+    ok $text.contains('a receipt says what ran and what changed'), 'and the screen never claims the work was right';
+
+    is $s.closer, '', 'nothing is celebrated while a run is waiting or a run failed';
+    is $s.next.elems, 1, 'and the next step is the one waiting on a person';
+    ok $s.next[0].command.starts-with('321 receipt show '), "which is: {$s.next[0].command}";
+}
+
+subtest 'a clean period is said plainly, and an empty one is not congratulated' => {
+    my $clean = temp-dir();
+    run-dir($clean, '01M000000000000000000000CA', status => 'completed', hours-ago => 3);
+    run-dir($clean, '01M000000000000000000000CB', status => 'completed', hours-ago => 4);
+    my @r = read-runs($clean, :days(7), :$now);
+    my $s = log-screen(@r, tally(@r), :days(7));
+    ok $s.closer.starts-with('All clear: 2 runs'), "a clean week is said, last: {$s.closer}";
+    is $s.next.elems, 0, 'and nothing is prescribed, because nothing waits';
+
+    my $empty = temp-dir();
+    my @none = read-runs($empty, :days(7), :$now);
+    my $e = log-screen(@none, tally(@none), :days(7));
+    is $e.closer, '', 'a week in which nothing ran is not an achievement';
+    my @l = screen-lines($e, :width(80), :!colour, :utf8);
+    like @l[0], / ^ '❮▣❯ 321 log' /, 'and the screen still stands up with no runs in it';
+}
+
+subtest 'how long ago, as a person says it' => {
+    is when-text($now.earlier(:seconds(30)), :$now), 'just now', 'under a minute and a half';
+    is when-text($now.earlier(:minutes(11)), :$now), '11 min ago', 'minutes';
+    is when-text($now.earlier(:hours(23)), :$now), '23 hours ago', 'hours';
+    is when-text($now.earlier(:days(3)), :$now), '3 days ago', 'days';
+}
+
+done-testing;

@@ -151,3 +151,26 @@ say '  and the failure, on standard error, with exit 5:';
 say '';
 say "321 b1ll: the package content does not match the digest pinned in the trust file (package_moved)";
 say '';
+
+# ------------------------------------------------- the real history, read back
+rule 'A RETURNING USER: the real receipts on this machine, read back';
+say q:to/END/;
+Not a fixture.  This is lib/Do321/History.rakumod reading ~/.321/runs and
+lib/Do321/Screens.rakumod making the screen from what it found, so the
+counting and the spend are this machine's own.
+END
+{
+    use Do321::History;
+    use Do321::Screens;
+    my %marks = '321.do/b1ll' => '⬢', '321.do/1da' => '⬡', 'local/prompt' => '◍';
+    for 7, 90 -> $days {
+        part "--days $days";
+        say '';
+        my @runs = read-runs(($*HOME // '/'.IO).add('.321/runs'), :$days, :cap(300));
+        my @l = screen-lines(log-screen(@runs, tally(@runs), :$days, :dir('~/.321/runs'), :%marks),
+                             :width(88), :!colour, :utf8);
+        # the table is long on a real machine: the head of it says enough
+        .say for @l.head(18);
+        say '  …' if @l > 18;
+    }
+}
