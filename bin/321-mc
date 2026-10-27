@@ -1,0 +1,14 @@
+#!/usr/bin/env raku
+# 321-mc - Mission Control: runs that outlive the terminal, watched and
+# steered from one screen.  A separate entry until its words join 321's
+# own command registry; the runtime it drives is 321 itself.
+use Do321::Look;
+use Do321::Sys;
+use Do321::RunDir;
+use Do321::Fold;
+use Do321::Host;
+use Do321::Mission;
+
+install-air();
+END settle-air();
+exit mc-main(@*ARGS);

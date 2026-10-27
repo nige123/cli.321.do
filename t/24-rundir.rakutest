@@ -1,0 +1,142 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Sys;
+use Do321::RunDir;
+
+# The run directory: one writer per file, an inbox that believes nothing
+# it cannot check, a log a reader can tail mid-write, and liveness from
+# the kernel rather than from any file's say-so.
+
+sub fresh-run(--> RunDir) {
+    my $home = temp-dir();
+    $home.chmod(0o700);
+    my $r = run-dir(new-ulid(), $home);
+    private-dir(runs-root($home));
+    private-dir($r.dir);
+    private-dir($r.inbox);
+    write-atomic($r.run-file, encode-json({ schema => SCHEMA-RUN, runId => $r.id, launchedAt => DateTime.now.utc.Str }) ~ "\n");
+    $r;
+}
+
+subtest 'run ids are ULIDs and nothing else becomes a path' => {
+    ok valid-run-id(new-ulid()), 'a fresh ULID is a run id';
+    nok valid-run-id('../../etc'), 'a path is not';
+    nok valid-run-id('01M5YT9NXB0C5MCWP5N7VV6KAI'), 'I is not Crockford base32';
+    nok valid-run-id('01m5yt9nxb0c5mcwp5n7vv6ka6'), 'lower case is not a stored id';
+    dies-ok { run-dir('../x') }, 'run-dir refuses a non-id';
+}
+
+subtest 'a directive sent is taken once, in order, and moved out of the inbox' => {
+    my $r = fresh-run();
+    my $a = send-directive($r, 'steer', :text('use base64url'));
+    my $b = send-directive($r, 'hold');
+    my @t = take-inbox($r);
+    is @t.elems, 2, 'both arrive';
+    is @t.map({ .<directive><directiveId> }).List, ($a, $b), 'in the order sent';
+    is @t[0]<directive><text>, 'use base64url', 'with their words';
+    is take-inbox($r).elems, 0, 'and are taken once';
+    ok $r.inbox.add('done').add("{$a}-steer.json").e, 'kept in done/ for audit';
+    dies-ok { send-directive($r, 'approve') }, 'a client cannot even write a kind the inbox does not carry';
+    dies-ok { send-directive($r, 'steer', :text('  ')) }, 'a steer needs words';
+}
+
+subtest 'the inbox refuses what it cannot vouch for' => {
+    my $r = fresh-run();
+    my sub drop(Str $name, %doc, Int :$mode = 0o600) {
+        my $p = $r.inbox.add($name);
+        $p.spurt(encode-json(%doc));
+        $p.chmod($mode);
+    }
+    my $id = new-ulid();
+    my %base = schema => SCHEMA-DIRECTIVE, directiveId => $id, runId => $r.id, kind => 'stop', text => '', sentAt => now-stamp();
+    drop("{$id}-approve.json", %( |%base, kind => 'approve' ));
+    my @t = take-inbox($r);
+    ok @t[0]<refused>.contains("cannot be asked to 'approve'"), 'a forged approval is refused: the inbox carries no authority';
+
+    my $id2 = new-ulid();
+    drop("{$id2}-stop.json", %( |%base, directiveId => $id2, runId => new-ulid() ));
+    ok take-inbox($r)[0]<refused>.contains('addressed to run'), 'a directive for another run is refused';
+
+    my $id3 = new-ulid();
+    drop("{$id3}-stop.json", %( |%base, directiveId => $id3 ), :mode(0o644));
+    ok take-inbox($r)[0]<refused>.contains('others may read'), 'a file others can read is refused';
+
+    my $id4 = new-ulid();
+    my $real = temp-dir().add('elsewhere.json');
+    $real.spurt(encode-json(%( |%base, directiveId => $id4 )));
+    $real.chmod(0o600);
+    symlink($real.Str, $r.inbox.add("{$id4}-stop.json").Str);
+    ok take-inbox($r)[0]<refused>.contains('symlink'), 'a symlink is refused, never followed';
+
+    my $id5 = new-ulid();
+    drop("{$id5}-stop.json", %( |%base, directiveId => new-ulid() ));
+    ok take-inbox($r)[0]<refused>.contains('does not match its file name'), 'an id that disagrees with its file is refused';
+
+    ok $r.inbox.add('rejected').dir.elems == 5, 'every refusal is kept in rejected/';
+    $r.inbox.add('stray.txt').spurt('x');
+    is take-inbox($r).elems, 0, 'a file that is not a directive name is not read at all';
+}
+
+subtest 'the log has one writer and a reader never parses half a line' => {
+    my $r = fresh-run();
+    my $log = EventLog.new(:path($r.events-file));
+    $log.append('host', 'host_started', %( pid => 1 ));
+    $log.append('run', 'progress', %( text => 'working' ));
+    my $tail = EventTail.new(:path($r.events-file));
+    is $tail.poll.map(*<seq>).List, (1, 2), 'the reader sees both, numbered';
+    # a line half written
+    my $h = $r.events-file.open(:a);
+    $h.print('{"seq":3,"kind":"progress","payl');
+    $h.flush;
+    is $tail.poll.elems, 0, 'a line without its newline is not read yet';
+    $h.print("oad\":\{\"text\":\"more\"},\"src\":\"run\",\"at\":\"\"}\n");
+    $h.close;
+    is $tail.poll[0]<payload><text>, 'more', 'and is read whole once it is complete';
+    $log.close;
+    my $again = EventLog.new(:path($r.events-file));
+    is $again.append('host', 'host_ended', {})<seq>, 4, 'a new writer continues the sequence';
+    $again.close;
+    ok ($r.events-file.mode +& 0o077) == 0, 'the log is private';
+}
+
+subtest 'liveness comes from the kernel and the receipt' => {
+    my $r = fresh-run();
+    is liveness($r)<phase>, 'starting', 'just launched, no host yet: starting';
+    my %me = proc-stat(my-pid());
+    write-atomic($r.host-file, encode-json({ pid => my-pid(), startTicks => %me<start>, bootId => boot-id(), sid => %me<sid> }));
+    is liveness($r)<phase>, 'running', 'a host that is that very process: running';
+    write-atomic($r.host-file, encode-json({ pid => my-pid(), startTicks => %me<start> + 1, bootId => boot-id() }));
+    my %l = liveness($r);
+    is %l<phase>, 'lost', 'a pid whose start time differs (reused) is not the host: lost';
+    ok %l<why>.contains('left no receipt'), 'and says why';
+    write-atomic($r.host-file, encode-json({ pid => my-pid(), startTicks => %me<start>, bootId => 'another-boot' }));
+    ok liveness($r)<why>.contains('restarted'), 'a host from another boot is lost at the restart';
+
+    ok record-ended($r, %( summary => 'the host was gone' )), 'a lost run is recorded with its basis';
+    nok record-ended($r, %( summary => 'again' )), 'the first writer wins';
+    is liveness($r)<outcome>, 'lost', 'ended, and how it ended is unknown: lost';
+    is liveness($r)<phase>, 'ended', 'its phase is ended';
+    $r.receipt-file.spurt(encode-json({ status => 'completed', summary => 'done after all' }));
+    $r.receipt-file.chmod(0o600);
+    is liveness($r)<outcome>, 'done', 'a receipt beats ended.json';
+
+    my $r2 = fresh-run();
+    $r2.receipt-file.spurt('{}');
+    nok record-ended($r2, %( summary => 'x' )), 'ended.json is never written beside a receipt';
+}
+
+subtest 'a person names a run by the end of its id' => {
+    my $r = fresh-run();
+    my $home = $r.dir.parent.parent;
+    my ($found, $err) = find-run($r.short, $home);
+    is $found.id, $r.id, 'the last three characters find it';
+    ($found, $err) = find-run('ZZZ', $home);
+    ok $err.contains('no run here ends in ZZZ'), 'an unknown ending says so';
+    ($found, $err) = find-run('../x', $home);
+    ok $err.defined, 'a path is not a run name';
+}
+
+done-testing;

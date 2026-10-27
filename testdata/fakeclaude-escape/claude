@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The fake claude, leaving a background task behind the way Claude Code's
+# auto-backgrounded shells do: a session leader of its own, outside the
+# harness's process group, which a group kill does not reach.  Its pid is
+# written to FAKE_CLAUDE_ESCAPEE so a test can see what became of it.
+if [ "${1:-}" != "--version" ] && [ -n "${FAKE_CLAUDE_ESCAPEE:-}" ]; then
+  setsid sleep 300 </dev/null >/dev/null 2>&1 &
+  echo $! >> "$FAKE_CLAUDE_ESCAPEE"
+fi
+exec "$(dirname "$0")/../fakeclaude/claude" "$@"

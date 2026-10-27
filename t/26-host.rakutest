@@ -1,0 +1,182 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Sys;
+use Do321::RunDir;
+use Do321::Host;
+
+# Runs that outlive the terminal, against the fake harness (no model):
+# three at once, one stopped while the others carry on, what an agent
+# leaves running swept away by identity, forged requests refused, and a
+# host killed outright found lost and cleaned up by force.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+my $trust = $home.add('trust.json');
+my $pkg = fixture('example.test/helper');
+$trust.spurt(encode-json({ schema => SCHEMA-TRUST-CONFIG,
+    publishers => { 'example.test' => { packages => { helper => { path => $pkg.Str, version => '1.2.0', digest => compute($pkg)[0], trust => LEVEL-DEVELOPMENT } } } },
+    aliases => { helper => 'example.test/helper' } }));
+my $escapees = $home.add('escapees');
+my %env = DO_321_HOME => $home.Str, DO_321_TRUST => $trust.Str, FAKE_CLAUDE_MODE => 'hang', FAKE_CLAUDE_ESCAPEE => $escapees.Str,
+    DO_321_CLAUDE_BINARY => repo-root().add('testdata/fakeclaude-escape/claude').Str,
+    DO_321_IZ4 => '/nonexistent/iz4', DP_BIN => '', DP_EXECUTE => '', DO_321_BRIEF => '';
+%*ENV{.key} = .value for %env;
+
+sub mc(*@args --> List) {
+    my @cmd = %*ENV<DO_321_MC_TEST_BIN> ?? (%*ENV<DO_321_MC_TEST_BIN>,)
+        !! ($*EXECUTABLE.Str, '-I', repo-root().add('lib').Str, repo-root().add('bin/321-mc').Str);
+    my $p = run |@cmd, |@args, :out, :err, :cwd($home.Str);
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    ($p.exitcode, $out, $err);
+}
+
+sub wait-for(&cond, Num $secs = 20e0 --> Bool) {
+    my $end = now + $secs;
+    while now < $end { return True if cond(); sleep 0.2 }
+    False;
+}
+
+sub events(RunDir $r --> List) { $r.events-file.e ?? $r.events-file.lines.map({ parse-json($_) }).List !! () }
+
+my @runs;
+END { for @runs -> $r { try force-stop($r) if liveness($r)<phase> ne 'ended' } }
+
+subtest 'three runs start and keep going on their own' => {
+    for 'add passkey sign-in', 'fix the flaky test', 'plan the release' -> $req {
+        my ($rc, $out, $err) = mc('--brief', 'start', 'helper', $req);
+        is $rc, 0, "started: $req" or diag $err;
+        @runs.push(run-dir($out.split("\t")[0]));
+    }
+    ok wait-for({ so @runs.map({ events($_).first(*<kind> eq 'attempt_started') }).all }),
+        'each reached its harness';
+    for @runs -> $r {
+        is liveness($r)<phase>, 'running', "{$r.short} is running";
+        my %h = $r.host;
+        isnt (proc-stat(%h<pid>.Int) // {})<sid>, (proc-stat(my-pid()) // {})<sid>, "{$r.short}'s host is in a session of its own";
+        ok $r.live-file.e, "{$r.short} has its live marker";
+    }
+}
+
+subtest 'one stops; the others carry on' => {
+    ok wait-for({ $escapees.e && $escapees.lines.elems >= 3 }), 'each fake harness left a background task behind';
+    my @left = $escapees.lines.map(*.Int);
+    my ($rc, $out, $err) = mc('stop', @runs[1].short);
+    is $rc, 3, 'stop answers with the stopped exit code' or diag "$out\n$err";
+    ok $out.contains('result:') && $out.contains('stopped'), 'and says it stopped' or diag $out;
+    is @runs[1].receipt<status>, 'stopped', 'the runtime wrote a stopped receipt';
+    my @swept = @(events(@runs[1]).first(*<kind> eq 'swept')<payload><processes> // []);
+    ok @swept.elems >= 1, 'the host swept what the agent left running';
+    ok @left.grep({ !same-process($_, (proc-stat($_) // {})<start> // 0, '') }).elems >= 1, 'and the escaped task is gone';
+    nok @runs[1].live-file.e, 'the live marker is gone once the host is';
+    is liveness(@runs[0])<phase>, 'running', 'the first run is still running';
+    is liveness(@runs[2])<phase>, 'running', 'the third run is still running';
+    ($rc, $out) = mc('--brief', 'stop', @runs[1].short);
+    ok $out.contains('unchanged') && $out.contains('already ended'), 'stopping it again changes nothing, and says so';
+}
+
+subtest 'the inbox carries no authority' => {
+    my $r = @runs[0];
+    my $id = new-ulid();
+    my $f = $r.inbox.add("{$id}-approve.json");
+    $f.spurt(encode-json({ schema => SCHEMA-DIRECTIVE, directiveId => $id, runId => $r.id, kind => 'approve', text => '', sentAt => now-stamp() }));
+    $f.chmod(0o600);
+    ok wait-for({ events($r).first({ .<kind> eq 'directive_refused' && .<payload><directiveId> eq $id }) }), 'a forged approval is refused in the log';
+    my $sid = new-ulid();
+    send-directive($r, 'steer', :text('use base64url'), :id($sid));
+    ok wait-for({ events($r).first({ .<kind> eq 'directive_delivered' && .<payload><directiveId> eq $sid }) }), 'a steer is delivered';
+    send-directive($r, 'steer', :text('use base64url'), :id($sid));
+    ok wait-for({ events($r).first({ .<kind> eq 'directive_duplicate' && .<payload><directiveId> eq $sid }) }), 'the same id again is a duplicate, applied once';
+    ok wait-for({ events($r).first({ .<src> eq 'run' && .<kind> eq 'directive_received' && .<payload><directiveId> eq $sid }) }), 'the runtime received it under its own ordering';
+    is liveness($r)<phase>, 'running', 'the run carries on';
+}
+
+subtest 'a host killed outright: lost, then stopped by force' => {
+    my $r = @runs[2];
+    sleep 2.5;   # a heartbeat, so the host has noted what runs below it
+    my %h = $r.host;
+    my $rt = %h<runtimePid>.Int;
+    # a crash: host and runtime die at once, so nothing writes a receipt
+    send-signal(%h<pid>.Int, SIGKILL);
+    send-signal($rt, SIGKILL);
+    ok wait-for({ liveness($r)<phase> eq 'lost' }, 5e0), 'the run is lost, not running';
+    my ($rc, $out) = mc('--brief', 'stop', $r.short);
+    is $rc, 6, 'a plain stop of a lost run answers with exit 6';
+    ok $out.contains('it is lost'), 'and gives the basis' or diag $out;
+    ($rc, $out) = mc('--brief', 'attach', $r.short);
+    is $rc, 6, 'attach on a lost run answers lost too';
+    ok $out.contains("lost"), 'with the basis' or diag $out;
+    ($rc, $out) = mc('stop', $r.short, '--force');
+    is $rc, 3, 'stop --force stops it' or diag $out;
+    my %e = $r.ended;
+    is %e<outcome>, 'lost', 'ended.json says lost';
+    ok @(%e<basis><signalled>).elems >= 1, 'with what was signalled as its basis';
+    my @tree = @((read-json-file($r.dir.add('tree.json')) // {})<processes> // []);
+    ok @tree.elems >= 2, 'the host had noted what ran below it';
+    ok wait-for({ so @tree.map({ !same-process(.<pid>.Int, .<start>.Int, '') }).all }, 3e0), 'and every one of them is gone, the escaped task included';
+    is liveness($r)<outcome>, 'lost', 'its outcome is lost: it ended, and how is unknown';
+}
+
+subtest 'records for programs, and what the host measures' => {
+    my ($rc, $out) = mc('--brief');
+    is $rc, 0, '--brief alone lists the runs';
+    ok $out.lines.first(*.starts-with(@runs[0].id ~ "\trunning")), 'one record per run, with its phase' or diag $out;
+    ($rc, $out) = mc('--json');
+    ok parse-json($out)<runs>.first(*<runId> eq @runs[0].id), '--json alone is the document of runs';
+    ok wait-for({ (@runs[0].status<usage><processes> // 0) >= 1 }, 5e0), 'status.json counts the processes below the host';
+    ok @runs[0].status<usage><basis>.contains('/proc'), 'and says where the numbers came from';
+}
+
+subtest 'a run started again' => {
+    my ($rc, $out, $err) = mc('restart', @runs[0].short, '--yes');
+    is $rc, 64, 'a running run is not started again' or diag $err;
+    ok $err.contains('stop it first'), 'and the way on is said';
+    ($rc, $out, $err) = mc('restart', @runs[1].short);
+    is $rc, 64, 'in a pipe it never asks';
+    ok $err.contains('own budget') && $err.contains('--yes'), 'the question is the message, with the answer to give' or diag $err;
+    ($rc, $out, $err) = mc('--brief', 'restart', @runs[1].short, '--yes');
+    is $rc, 0, 'with --yes it starts' or diag $err;
+    my $new = run-dir($out.split("\t")[0]);
+    @runs.push($new);
+    isnt $new.id, @runs[1].id, 'as a new run';
+    my %c = $new.run<continues>;
+    is %c<runId>, @runs[1].id, 'which names the run it is again of';
+    ok %c<receiptDigest>.starts-with('sha256:'), 'and the receipt it read, by digest';
+    is @runs[1].receipt<status>, 'stopped', 'the old receipt is unchanged';
+    ok wait-for({ events($new).first({ .<kind> eq 'host_started' && .<payload><continues> eq @runs[1].id }) }), 'the new log says what it continues';
+    ($rc, $out) = mc('stop', $new.short);
+    is $rc, 3, 'and it stops like any other' or diag $out;
+}
+
+subtest 'a log past its cap keeps everything but the words' => {
+    %*ENV<DO_321_BIN> = repo-root().add('testdata/fakeruntime-chatty/321').Str;
+    %*ENV<DO_321_MC_LOG_CAP> = '600';
+    my ($rc, $out, $err) = mc('--brief', 'start', 'helper', 'say a great deal');
+    %*ENV<DO_321_BIN>:delete;
+    %*ENV<DO_321_MC_LOG_CAP>:delete;
+    is $rc, 0, 'started' or diag $err;
+    my $r = run-dir($out.split("\t")[0]);
+    @runs.push($r);
+    ok wait-for({ !$r.live-file.e && $r.receipt-file.e }), 'it ran to its end' or diag "live {$r.live-file.e} receipt {$r.receipt-file.e} " ~ $r.dir.dir.map(*.basename).join(' ') ~ "\n" ~ ($r.log-file.e ?? $r.log-file.slurp !! '');
+    my @e = events($r);
+    is @e.grep(*<kind> eq 'log_truncated').elems, 1, 'the cap is said once';
+    ok @e.grep({ .<kind> eq 'progress' }).elems < 40, 'the words past it are not kept';
+    ok @e.first(*<kind> eq 'tool_call'), 'a tool call past it is';
+    ok @e.first(*<kind> eq 'receipt'), 'and so is the end';
+    is (1..@e.elems).List, @e.map(*<seq>).List, 'the sequence has no gaps';
+}
+
+subtest 'the last one stops cleanly' => {
+    my ($rc, $out) = mc('--json', 'stop', @runs[0].short);
+    is $rc, 3, 'stopped';
+    is parse-json($out)<result>, 'stopped', 'the document says so';
+    my ($rc2, $list) = mc('runs');
+    is $list.lines.grep(*.contains("\trunning\t")).elems, 0, 'nothing is left running';
+}
+
+done-testing;

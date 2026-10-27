@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# A stand-in for `321 run` that talks a lot and then ends: forty lines of
+# the agent's words, a tool call, then a receipt.  For the host's log cap.
+set -u
+receipt=""
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  [ "${args[$i]}" = "--receipt" ] && receipt="${args[$((i+1))]}"
+done
+at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+for i in $(seq 1 40); do
+  printf '{"schema":"run-event.v1","kind":"progress","at":"%s","payload":{"text":"line %d of what the agent had to say"}}\n' "$at" "$i"
+done
+printf '{"schema":"run-event.v1","kind":"tool_call","at":"%s","payload":{"tool":"Bash","target":"true"}}\n' "$at"
+printf '{"status":"completed","summary":"said it all"}\n' > "$receipt"
+printf '{"schema":"run-receipt.v1","status":"completed","summary":"said it all"}\n'

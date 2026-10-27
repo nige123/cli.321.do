@@ -1,0 +1,224 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Sys;
+use Do321::RunDir;
+use Do321::Term;
+use Do321::Deck;
+
+# Mission Control's screen, drawn without a terminal: the model in, the
+# canvas out, at the four sizes the design was drawn at.  The words on it
+# come from the runs' own files; the keys move between levels and only
+# send what the person asked for.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+private-dir(runs-root($home));
+my %me = proc-stat(my-pid());
+
+#| A run directory written as a host would write it.  A living host is
+#| this test process itself, so liveness reads it as running.
+sub make-run(Str $agent, Str $request, @events, Bool :$alive = True, Str :$receipt --> RunDir) {
+    my $r = run-dir(new-ulid(), $home);
+    private-dir($r.dir);
+    private-dir($r.inbox);
+    write-atomic($r.run-file, encode-json({ schema => SCHEMA-RUN, runId => $r.id, request => $request, workspace => '/home/s3/axs.do',
+        agent => { name => $agent.lc, displayName => $agent, byline => 'builds, and brings the proof' },
+        launchedAt => DateTime.now.utc.earlier(:minutes(12)).Str }));
+    write-atomic($r.host-file, encode-json({ pid => my-pid(), startTicks => $alive ?? %me<start> !! 1, bootId => boot-id() }));
+    my $log = EventLog.new(:path($r.events-file));
+    $log.append(.[0], .[1], .[2]) for @events;
+    $log.close;
+    with $receipt { $r.receipt-file.spurt(encode-json(%( status => $_, summary => "the work is done" ))); $r.receipt-file.chmod(0o600) }
+    sleep 0.002;
+    $r;
+}
+
+my $a = make-run('B1ll', 'add passkey sign-in to axs', [
+    ['host', 'host_started', { request => 'add passkey sign-in to axs' }],
+    ['run', 'attempt_started', { attempt => 1 }],
+    ['run', 'tool_call', { tool => 'Bash', target => 'prove t/30-auth.t' }],
+    ['run', 'progress', { text => 'Two tests fail on the challenge encoding. Fixing that now.' }],
+    ['host', 'directive_delivered', { directiveId => 'D1', kind => 'steer', text => 'use base64url, not base64' }],
+    ['run', 'directive_received', { directiveId => 'D1', kind => 'steer' }],
+    ['run', 'progress', { instruction => 'use base64url, not base64', directiveId => 'D1' }],
+]);
+my $b = make-run('B1ll', 'fix flaky t/19-status', [['host', 'host_started', { request => 'fix flaky t/19-status' }], ['run', 'attempt_started', { attempt => 1 }]]);
+my $c = make-run('1da', 'plan 123.web live', [['host', 'host_started', { request => 'plan 123.web live' }],], :!alive);
+my $d = make-run('1da', 'status 123.web live', [['host', 'host_started', { request => 'status 123.web live' }],
+    ['host', 'receipt', { status => 'completed', summary => 'the work is done' }]], :receipt<completed>);
+
+my $m = Model.new(:$home);
+$m.scan;
+$m.sel = $m.crew.first({ .id eq $a.id }, :k);
+
+subtest 'the deck at 120x36' => {
+    my $t = render($m, 36, 120).text;
+    my @l = $t.lines;
+    ok @l[0].starts-with('❮▣❯ 321 MISSION CONTROL'), 'the title is the first line' or diag @l[0];
+    ok @l[0].contains('2 active'), 'the active runs are counted';
+    ok @l[0].contains('1 needs a look'), 'a lost run needs a look';
+    ok $t.contains("▶ {$a.short}"), 'the selected run has the marker';
+    ok $t.contains('add passkey sign-in to axs'), 'the mission is the request';
+    ok $t.contains('running a tool') || $t.contains('writing'), 'a running run says what it is doing';
+    ok $t.lines.first(*.contains($c.short)).contains('lost'), 'a run whose host is not that process is lost, never running';
+    ok $t.lines.first(*.contains($d.short)).contains('done'), 'a run with a receipt says how it ended';
+    ok $t.contains('B1ll, builds, and brings the proof'), 'the byline names who is answering';
+    ok $t.contains('use base64url, not base64') && $t.contains('✓ taken'), 'the steer is shown taken';
+    ok $t.contains("to B1LL {$a.short} ›"), 'the input line says who it goes to';
+    ok @l[*-1].contains('Enter send') && @l[*-1].contains('Esc navigate'), 'the footer teaches the keys';
+    nok $t.contains('stuck'), 'nothing is called stuck';
+}
+
+subtest 'the four sizes' => {
+    for (160, 48), (120, 36), (80, 24) -> ($cols, $rows) {
+        my $cv = render($m, $rows, $cols);
+        ok $cv.line(0).contains('MISSION CONTROL'), "{$cols}x{$rows}: the deck layout";
+        ok (^$rows).map({ text-width($cv.line($_)) }).max <= $cols, "{$cols}x{$rows}: nothing runs off the edge";
+    }
+    my $cv = render($m, 20, 60);
+    ok $cv.line(0).contains("▶{$a.short}"), '60x20: the crew folds into one strip';
+    ok $cv.text.contains('use base64url'), '60x20: the conversation keeps the rest';
+    ok (^20).map({ text-width($cv.line($_)) }).max <= 60, '60x20: nothing runs off the edge';
+}
+
+subtest 'keys: levels, the input line and confirmation' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $b.id }, :k);
+    handle-key($mm, Key.new(:name<char>, :text($_))) for 'try again'.comb;
+    handle-key($mm, Key.new(:name<enter>));
+    my @t = take-inbox($b);
+    is @t[0]<directive><kind>, 'steer', 'Enter sends a steer to the selected run';
+    is @t[0]<directive><text>, 'try again', 'with the words typed';
+    is $mm.input, '', 'and clears the line';
+
+    handle-key($mm, Key.new(:name<esc>));
+    is $mm.mode, 'nav', 'Esc leaves the input line for navigation';
+    handle-key($mm, Key.new(:name<char>, :text<s>));
+    is $mm.mode, 'confirm', 's asks before stopping';
+    ok $mm.confirm[0].contains('keep'), 'and says the others keep running' or diag $mm.confirm[0];
+    handle-key($mm, Key.new(:name<char>, :text<n>));
+    is take-inbox($b).elems, 0, 'any key but y sends nothing';
+    handle-key($mm, Key.new(:name<char>, :text<s>));
+    handle-key($mm, Key.new(:name<char>, :text<y>));
+    is take-inbox($b)[0]<directive><kind>, 'stop', 'y sends the stop';
+
+    $mm.sel = $mm.crew.first({ .id eq $d.id }, :k);
+    $mm.mode = 'input';
+    handle-key($mm, Key.new(:name<char>, :text<x>));
+    handle-key($mm, Key.new(:name<enter>));
+    ok $mm.flash.contains('has ended'), 'a message to an ended run is not sent, and says why';
+    is take-inbox($d).elems, 0, 'nothing reached its inbox';
+
+    $mm.sel = $mm.crew.first({ .id eq $c.id }, :k);
+    ok actions-for($mm).first(*<key> eq 'force'), 'a lost run offers Force stop';
+    nok actions-for($mm).first(*<key> eq 'hold'), 'and not Hold';
+    handle-key($mm, Key.new(:name<ctrl-d>));
+    ok $mm.quit, 'Ctrl-D leaves; the runs keep going';
+}
+
+subtest 'from 150 columns: a rail, the conversation and the evidence' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $a.id }, :k);
+    my $cv = render($mm, 40, 160);
+    my $t = $cv.text;
+    ok $t.contains('EVIDENCE'), 'the evidence pane is there';
+    ok $t.lines.first({ .contains('tools') && .contains('1 call') }), 'with what the log says';
+    ok $t.lines.first({ .contains('host') && .contains("pid {my-pid()}") }), 'and who the host is';
+    ok $t.lines.first({ .starts-with("▶ {$a.short}") }), 'the crew is a rail, the selected run marked';
+    ok $t.contains('Two tests fail on the challenge'), 'the conversation is in the middle';
+    ok (^40).map({ text-width($cv.line($_)) }).max <= 160, 'nothing runs off the edge';
+}
+
+subtest 'filters and what is new' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $a.id }, :k);
+    $mm.mode = 'nav';
+    handle-key($mm, Key.new(:name<char>, :text<v>));
+    is $mm.filter, 'active', 'v shows the active runs';
+    ok $mm.visible.map(*.id).sort eqv ($a.id, $b.id).sort, 'only those';
+    is $mm.selected.id, $a.id, 'the selection stays where it was';
+    ok render($mm, 36, 120).line(0).contains('showing active runs'), 'the title says what is shown';
+    handle-key($mm, Key.new(:name<char>, :text<v>));
+    is $mm.visible.map(*.id).List, ($c.id,), 'then the runs that need you: the lost one';
+    handle-key($mm, Key.new(:name<char>, :text<v>));
+    is $mm.filter, 'all', 'then every run again';
+
+    my $log = EventLog.new(:path($b.events-file));
+    $log.append('run', 'progress', { text => 'Found it: the clock.' });
+    $log.close;
+    .refresh for $mm.crew;
+    ok render($mm, 36, 120).text.lines.first(*.contains($b.short)).contains('1 new'), 'a run that said something since is marked new';
+    $mm.sel = $mm.crew.first({ .id eq $b.id }, :k);
+    render($mm, 36, 120);
+    is $mm.selected.unread, 0, 'and is not, once looked at';
+}
+
+subtest 'find in the conversation' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $a.id }, :k);
+    handle-key($mm, Key.new(:name<char>, :text($_))) for 'draft'.comb;
+    handle-key($mm, Key.new(:name<ctrl-f>));
+    is $mm.mode, 'find', 'Ctrl-F finds';
+    handle-key($mm, Key.new(:name<char>, :text($_))) for 'CHALLENGE'.comb;
+    handle-key($mm, Key.new(:name<enter>));
+    ok $mm.flash.starts-with('match 1 of 1'), 'the match is counted, case aside' or diag $mm.flash;
+    my $cv = render($mm, 36, 120);
+    my $row = (^36).first({ $cv.line($_).contains('Two tests fail') });
+    ok $cv.grid[$row][20][1].contains('sel'), 'the line found is marked';
+    handle-key($mm, Key.new(:name<esc>));
+    is ($mm.mode, $mm.input), ('input', 'draft'), 'Esc gives back what was being typed';
+}
+
+subtest 'what the screen says without evidence' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    my $cr = $mm.crew.first({ .id eq $a.id });
+    write-atomic($a.status-file, encode-json({ heartbeatAt => DateTime.now.utc.earlier(:minutes(1)).Str }));
+    $cr.checked = 0e0;
+    $cr.refresh;
+    ok state-of($cr, 1)[1].starts-with('no heartbeat for'), 'a host that stopped beating is said so';
+    $a.status-file.unlink;
+
+    $mm.sel = $mm.crew.first({ .id eq $b.id }, :k);
+    handle-key($mm, Key.new(:name<char>, :text($_))) for 'look at the clock'.comb;
+    handle-key($mm, Key.new(:name<enter>));
+    my $sel = $mm.selected;
+    ok comms-lines($sel, 100).tail.map(*[0]).join.contains('· sending'), 'a steer is echoed at once';
+    $sel.sent{$sel.sent.keys[0]}[1] -= 10;
+    ok comms-lines($sel, 100).tail.map(*[0]).join.contains('unconfirmed'), 'and called unconfirmed when no answer comes';
+    take-inbox($b);
+
+    $mm.sel = $mm.crew.first({ .id eq $d.id }, :k);
+    ok actions-for($mm).first(*<key> eq 'restart'), 'an ended run can be run again';
+    do-action($mm, 'restart');
+    ok $mm.confirm[0].contains('own budget') && $mm.confirm[0].contains('no approval carries over'), 'after a question that says what that means';
+}
+
+subtest 'decoding keys' => {
+    my ($k, $rest) = decode-keys(Buf.new("\e[A\e[B\e[5~a\r".encode.list));
+    is $k.map(*.Str).join(' '), '<up> <down> <pgup> a <enter>', 'arrows, page keys, a character and Enter';
+    ($k, $rest) = decode-keys(Buf.new("\e[200~line one\nline two\e[201~".encode.list));
+    is $k[0].name, 'paste', 'a paste arrives whole';
+    is $k[0].text, "line one\nline two", 'newlines and all, never run as keys';
+    my $snow = '漢'.encode;
+    ($k, $rest) = decode-keys(Buf.new($snow.subbuf(0, 2).list));
+    is $k.elems, 0, 'half a character waits';
+    is $rest.elems, 2, 'and is kept for the next read';
+    ($k, $rest) = decode-keys(Buf.new(0x04));
+    is $k[0].name, 'ctrl-d', 'control keys have names';
+}
+
+subtest 'widths' => {
+    is text-width('漢字'), 4, 'wide characters take two columns';
+    is fit('add passkey sign-in to axs', 10), 'add passk…', 'cut with an ellipsis';
+    is text-width(pad('漢字abc', 6)), 6, 'pad counts columns, not characters';
+}
+
+done-testing;

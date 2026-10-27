@@ -1,0 +1,90 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::Fold;
+use Do321::RunDir;
+
+# One fold for every reader: the host's status file and every screen read
+# the same log the same way, and never say more than an event said.
+
+sub ev(Int $seq, Str $src, Str $kind, *%payload) { %( :$seq, :$src, :$kind, at => '2026-10-27T09:38:20Z', payload => %payload ) }
+
+my @log =
+    ev(1, 'host', 'host_started', :request('add passkey sign-in'), :pid(7)),
+    ev(2, 'run', 'started'),
+    ev(3, 'run', 'attempt_started', :attempt(1)),
+    ev(4, 'run', 'tool_call', :tool('Bash'), :target('prove t/30-auth.t')),
+    ev(5, 'run', 'progress', :text('Two tests fail on the challenge encoding.')),
+    ev(6, 'host', 'directive_delivered', :directiveId('D1'), :kind('steer'), :text('use base64url'), :seq(1)),
+    ev(7, 'run', 'directive_received', :directiveId('D1'), :kind('steer')),
+    ev(8, 'run', 'cost', :usd(0.25)),
+    ev(9, 'run', 'attempt_started', :attempt(2)),
+    ev(10, 'run', 'progress', :instruction('use base64url'), :directiveId('D1'));
+
+subtest 'a run in progress' => {
+    my $s = fold(@log);
+    is $s.phase, 'running', 'running';
+    is $s.tools, 1, 'one tool call';
+    is $s.attempts, 2, 'two attempts';
+    is $s.cost-text, '$0.25', 'cost as the harness reported it';
+    is $s.lines.first(*.who eq 'agent').text, 'Two tests fail on the challenge encoding.', 'the agent speaks in its own words';
+    my $you = $s.lines.first({ .who eq 'you' && .directive eq 'D1' });
+    ok $you.mark.starts-with('✓ taken'), 'a steer the runtime applied is taken';
+    is $s.lines[0].text, 'add passkey sign-in', 'the request opens the conversation';
+}
+
+subtest 'a steer that has only arrived is not yet taken' => {
+    my $s = fold(@log[^7]);
+    is $s.lines.first({ .who eq 'you' && .directive eq 'D1' }).mark, '· received', 'received, not taken';
+}
+
+subtest 'cost with no report is not zero' => {
+    my $s = fold(@log[^5]);
+    is $s.cost-text, 'none yet', 'nothing reported is not $0.00';
+    my %d = status-doc($s, 'X');
+    is %d<cost><basis>, 'unreported so far', 'the status file carries the basis';
+}
+
+subtest 'hold and stop have lifecycles of their own' => {
+    my @l = |@log,
+        ev(11, 'host', 'directive_delivered', :directiveId('H1'), :kind('hold')),
+        ev(12, 'run', 'paused', :attempt(2));
+    my $s = fold(@l);
+    is $s.phase, 'held', 'paused is held';
+    is $s.controls<H1><state>, 'confirmed', 'the hold is confirmed by the run, not by the request';
+    @l.append: ev(13, 'host', 'directive_delivered', :directiveId('S1'), :kind('stop')),
+               ev(14, 'run', 'stopping', :directiveId('S1'), :reason('going the wrong way'));
+    $s = fold(@l);
+    is $s.phase, 'stopping', 'stopping';
+    is $s.open-control, 'stop in progress', 'the stop is in progress until the run ends';
+    @l.append: ev(15, 'host', 'receipt', :status('stopped'), :summary('stopped: going the wrong way')),
+               ev(16, 'host', 'swept', :processes([{ pid => 99, command => 'sleep 300', signal => 'TERM' },]));
+    $s = fold(@l);
+    is ($s.phase, $s.outcome), ('ended', 'stopped'), 'ended, stopped';
+    is $s.controls<S1><state>, 'confirmed', 'confirmed once the receipt exists';
+    ok $s.lines.first(*.text.contains('stopped 1 process the agent left running')), 'what was swept is said';
+}
+
+subtest 'memory is bounded; the log is not' => {
+    my @many = ev(1, 'host', 'host_started', :request('talk')), |(2..2101).map({ ev($_, 'run', 'progress', :text("line $_")) });
+    my $s = fold(@many);
+    is $s.lines.elems, KEEP-LINES, 'the fold keeps a bounded number of lines';
+    is $s.dropped, 2101 - KEEP-LINES, 'and counts what it let go';
+    is $s.lines.tail.text, 'line 2101', 'the newest are the ones kept';
+}
+
+subtest 'what the host adds' => {
+    my $s = fold([ev(1, 'host', 'host_started', :request('again'), :continues('01OLDRUN')), ev(2, 'run', 'adapter_selected', :adapter('claude-code')),
+                  ev(3, 'host', 'log_truncated', :bytes(64 * 1_048_576))]);
+    ok $s.lines[0].text.contains('01OLDRUN') && $s.lines[0].text.contains('unchanged'), 'a run started again names the run it continues';
+    is $s.harness, 'claude-code', 'the harness is the one the runtime chose';
+    ok $s.lines.first(*.text.contains('64 MB')), 'a capped log says so, with the size';
+}
+
+subtest 'outcome words' => {
+    is outcome-word('completed'), 'done', 'completed reads done';
+    is outcome-word('no_change'), 'no_change', 'no_change keeps the envelope spelling';
+    is outcome-word('stopped'), 'stopped', 'stopped';
+}
+
+done-testing;
