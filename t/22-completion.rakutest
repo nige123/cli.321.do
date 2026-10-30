@@ -46,7 +46,8 @@ $trust.spurt(encode-json(%(
 sub c(*@w) { candidates(@w, :trust($trust)).List }
 
 subtest 'what a shell offers, where the cursor is' => {
-    is c('a').join(' '), 'agents', 'a command by its prefix';
+    is c('ag').join(' '), 'agents', 'a command by its prefix';
+    is c('a').join(' '), 'agents attach', 'or every command it could be';
     ok c('').elems > 10, 'everything, where nothing has been typed';
     ok c('').grep({ $_ eq 'helper' }), 'including the agents a person named';
     ok c('').grep({ $_ eq 'example.test/helper' }), 'and their canonical ids';
@@ -68,7 +69,7 @@ subtest 'what a shell offers, where the cursor is' => {
 
 subtest 'a typo is answered with the nearest command' => {
     is nearest('agnets'), 'agents', 'two letters swapped';
-    is nearest('stat'), 'status', 'a prefix';
+    is nearest('statu'), 'status', 'a prefix';
     is nearest('doctr'), 'doctor', 'a letter missing';
     is nearest('xyzzy'), '', 'and nothing, where nothing is near';
 }

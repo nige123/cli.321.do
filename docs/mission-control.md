@@ -3,24 +3,29 @@
 Runs that outlive the terminal, watched and steered from one screen.
 Processes do the work. Files carry the messages. Mission Control presents the state.
 
-Until its words join `321`'s own command registry, Mission Control is a
-separate entry, `321-mc`, built beside `321`:
-
-    rakupp -I lib --aot --standalone bin/321-mc -o dist/321-mc
+Mission Control is part of `321`: its words are `321`'s own, in the
+registry that help, typo suggestions and shell completion all read.
 
 | Command | What it does |
 |---|---|
-| `321-mc` | opens Mission Control, only when stdin and stdout are terminals, without `--json` or `--brief` or `DO_321_BRIEF=1`, and with `TERM` not `dumb`; with `--brief` or `--json` it lists the runs as records; otherwise prints help and exits 64 |
-| `321-mc start <agent> <request...>` | starts a run that keeps going when the terminal closes |
-| `321-mc attach <run>` | opens Mission Control on one run; in a pipe, prints its phase |
-| `321-mc stop <run>` | asks the run to stop through its inbox and waits for its own evidence |
-| `321-mc stop <run> --force` | stops a run whose host is not answering, by process identity |
-| `321-mc start --harness <name> --isolate <agent> <request...>` | the same, on the harness named, in a worktree of its own |
-| `321-mc restart <run>` | a new run of an ended run's request, with its own id and budget; asks first on a terminal, and takes `--yes` in a pipe; `--harness` runs it on another engine |
-| `321-mc harnesses` | the engines this machine has, whether 321 drives each, and what each can do |
-| `321-mc runs` | one record per run: id, phase, outcome, agent, request |
+| `321 tui`, or `321` alone | opens Mission Control (`321` alone in a pipe prints help, as before), only when stdin and stdout are terminals, without `--json` or `--brief` or `DO_321_BRIEF=1`, and with `TERM` not `dumb`; with `--brief` or `--json` it lists the runs as records instead |
+| `321 start <agent> <request...>` | starts a run that keeps going when the terminal closes |
+| `321 attach <run>` | opens Mission Control on one run; in a pipe, prints its phase |
+| `321 stop <run>` | asks the run to stop through its inbox and waits for its own evidence |
+| `321 stop <run> --force` | stops a run whose host is not answering, by process identity |
+| `321 start --harness <name> --isolate <agent> <request...>` | the same, on the harness named, in a worktree of its own |
+| `321 restart <run>` | a new run of an ended run's request, with its own id and budget; asks first on a terminal, and takes `--yes` in a pipe; `--harness` runs it on another engine |
+| `321 harness can` | the harnesses this machine has, whether 321 drives each, and what each can enforce |
+| `321 tui --brief` | one record per run: id, phase, outcome, agent, harness, request |
 
 A run is named by its id or the last three characters of it.
+
+Each Mission Control session writes `~/.321/logs/tui.log` (yours alone:
+0600 in a 0700 directory; `DO_321_TUI_LOG` names another file): every key
+and what it changed, every line sent, everything the screen said back,
+and any error with its backtrace. A single character being typed is
+logged as `typed`, never itself; a line sent is logged whole. Past 1 MB
+the log starts again, keeping one before as `tui.log.1`.
 
 ## How a run is hosted
 
@@ -181,7 +186,7 @@ steer. It never says the agent obeyed.
 
 - `321 run` ignores SIGTERM once its stdin has closed. When a host is
   killed outright, its runtime and harness keep running until
-  `321-mc stop <run> --force` finds them through `tree.json`.
+  `321 stop <run> --force` finds them through `tree.json`.
 - The streaming Claude adapter is not built yet. It would give live
   steering, a true hold at the tool boundary, and interrupt.
 - macOS has no `/proc`, subreaper or `setpriv`, so this is Linux first.

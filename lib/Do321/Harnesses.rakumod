@@ -75,7 +75,7 @@ sub check-harness(Str $want --> List) is export {
     my $w = $want.lc;
     $w = 'claude_code' if $w eq 'claude' | 'claude-code' | 'claudecode';
     my $known = known-registry().get($w);
-    return (Str, "no harness is called '$want'; 321-mc harnesses lists them") without $known;
+    return (Str, "no harness is called '$want'; 321 harness can lists them") without $known;
     my $d = $known.detect;
     return (Str, "{harness-name($w)} is not available here: {$d.reason}") unless $d.available;
     return (Str, "{harness-name($w)} is installed, and this 321 does not drive it yet") without runtime-registry().get($w);

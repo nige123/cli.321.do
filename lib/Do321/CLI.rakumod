@@ -200,6 +200,36 @@ sub home-of(Env $env --> IO::Path) {
 sub runner-of(Env $env --> Runner) { Runner.new(:adapters($env.adapters)) }
 
 #| Run the CLI and return the exit code.
+#| Mission Control's words go to Mission Control.  The entry that carries
+#| it (bin/321) hands it in: it drives this runtime, so the runtime cannot
+#| name it.  A build without it says so.
+my &MISSION;
+sub hand-runs-to(&mission) is export { &MISSION = &mission }
+
+#| Whether a person at a terminal is asking for a screen: both ends are a
+#| terminal, nothing asked for a record or the plain form, and Mission
+#| Control is in this build.
+sub screen-wanted(Env $env, Global $g --> Bool) {
+    return False without &MISSION;
+    return False if $*DISTRO.is-win;             # no screen there yet: the help instead
+    return False if $g.json-out || $g.brief || brief-on() || is-in('--plain', $env.args);
+    my $term = %*ENV<TERM> // '';
+    return False if $term eq '' || $term eq 'dumb';
+    so $*IN.t && (try $env.stdout.t);
+}
+
+sub cmd-mission(Env $env, Global $g, @words --> Int) {
+    without &MISSION {
+        $env.stderr.say("321: '{@words[0]}' needs Mission Control, and this build has none");
+        return EXIT-USAGE;
+    }
+    # what was said before the word still holds after it
+    my @argv = |($g.trust-path ne '' ?? ('--trust', $g.trust-path) !! ()),
+               |($g.workspace ne '' ?? ('--workspace', $g.workspace) !! ()),
+               |($g.brief ?? ('--brief',) !! ()), |($g.json-out ?? ('--json',) !! ()), |@words;
+    MISSION(@argv);
+}
+
 sub cli-main(Env $env is copy --> Int) is export {
     adopt-old-names();
     $env = Env.new(:stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :args($env.args), :trust-path($env.trust-path),
@@ -218,9 +248,12 @@ sub cli-main(Env $env is copy --> Int) is export {
     my @rest = @$rest;
     $env = Env.new(:stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :args($env.args), :trust-path($g.trust-path),
         :home($env.home), :adapters($env.adapters), :interactive($env.interactive), :signals($env.signals)) if $g.trust-path ne '';
+    # 321 alone at a terminal is Mission Control; anywhere else, the help it always was
+    return cmd-mission($env, $g, ['tui']) if !@rest && screen-wanted($env, $g);
     unless @rest { $env.stdout.print(help-index(help-ctx($env))); return EXIT-USAGE }
     $g.brief = True if brief-on();
-    @rest = (@rest[0], |take-pipe-flags($g, @rest[1 .. *])) if is-in(@rest[0], RESERVED);
+    # a request after 'start', or a steer, is the person's own, word for word
+    @rest = (@rest[0], |take-pipe-flags($g, @rest[1 .. *])) if is-in(@rest[0], RESERVED) && @rest[0] ne 'start' | 'steer';
     dress(False) if $g.brief;
     # the two machine forms are exclusive: a document, or a record per line
     if $g.brief && ($g.json-out || is-in('--json', @rest)) {
@@ -247,6 +280,16 @@ sub cli-main(Env $env is copy --> Int) is export {
         when 'hooks'    { return cmd-hooks($env, $g, @rest[1 .. *]) }
         when 'harness'  { return cmd-harness($env, $g, @rest[1 .. *]) }
         when 'hook'     { return cmd-hook($env, @rest[1 .. *]) }
+        # Runs that outlive the terminal, and the screen that watches them
+        when 'tui'      { return cmd-mission($env, $g, @rest) }
+        when 'start'    { return cmd-mission($env, $g, @rest) }
+        when 'stop'     { return cmd-mission($env, $g, @rest) }
+        when 'attach'   { return cmd-mission($env, $g, @rest) }
+        when 'restart'  { return cmd-mission($env, $g, @rest) }
+        when 'steer'    { return cmd-mission($env, $g, @rest) }
+        when 'hold'     { return cmd-mission($env, $g, @rest) }
+        when 'resume'   { return cmd-mission($env, $g, @rest) }
+        when 'host'     { return cmd-mission($env, $g, @rest) }
         # A controller by name.  Another controller is one more line here.
         when 'iz4'      { return cmd-controller($env, $g, 'iz4', @rest[1 .. *]) }
     }
@@ -498,7 +541,7 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
     # one run per line, newest first, for a tool: when (ISO 8601), agent,
     # status, what was asked, what it waits on
     if $g.brief {
-        $env.stdout.say(brief-line(.<startedAt>, .<agent>, outcome-of(.<status>), .<objective>, .<blockedOn>)) for @runs;
+        $env.stdout.say(brief-line(.<startedAt>, .<agent>, run-word(.<status>), .<objective>, .<blockedOn>)) for @runs;
         return 0;
     }
 
@@ -780,6 +823,7 @@ sub materialise-builtin(Str $name, IO::Path $home --> IO::Path) is export {
     my $dir = $home.add('packages').add($name);
     my $same = $dir.d && %files.kv.map(-> $rel, $text { $dir.add($rel).f && $dir.add($rel).slurp eq $text }).all.so;
     unless $same {
+        mkdir-private($home);
         mkdir-p($dir);
         for %files.kv -> $rel, $text {
             my $f = $dir.add($rel);
@@ -1198,6 +1242,18 @@ sub harness-adapters(Env $env --> List) {
     $env.adapters.all.grep({ .controls.elems > 0 }).List;
 }
 
+#| The harnesses here that a controller is not wired into, so a status can
+#| say the gap rather than leave it out: a harness 321 runs but cannot
+#| hook (Codex), and one it does not know (Gemini).  Each with why.
+sub unwired-harnesses(Env $env --> List) {
+    # a harness that is installed counts, logged in or not: the gap is there either way
+    my @out = $env.adapters.all.grep({ .controls.elems == 0 })
+        .map({ $_ => .detect }).grep({ .value.version ne 'built-in' && !.value.reason.contains('not on PATH') })
+        .map({ %( harness => .key.name, why => 'runs under 321, but nothing checks the turn end: 321 cannot wire hooks into it yet' ) });
+    @out.push(%( harness => 'gemini', why => 'not known to 321: nothing is checked there' )) if on-path('gemini').defined;
+    @out.List;
+}
+
 #| The 321 command a harness should call back.  A project's settings are
 #| shared between machines, so the default is the name on PATH;
 #| DO_321_HOOK_SELF overrides it.
@@ -1231,7 +1287,8 @@ sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
 }
 
 sub cmd-harness(Env $env, Global $g, @args --> Int) {
-    return usage-error($env, 'harness detect', @args ?? "there is no 'harness {@args[0]}'" !! 'say what to do') if !@args || @args[0] ne 'detect';
+    return cmd-mission($env, $g, ['harnesses', |@args[1 .. *]]) if @args && @args[0] eq 'can';
+    return usage-error($env, 'harness detect', @args ?? "there is no 'harness {@args[0]}'" !! 'say what to do: detect or can') if !@args || @args[0] ne 'detect';
     my ($workspace, $, $json, $, $verbose) = try parse-harness-options($env, $g, @args[1 .. *], 'harness detect');
     if $! { return usage-error($env, 'harness detect', $!.message) }
     my @records;
@@ -1315,10 +1372,12 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
         default        { @adapters.map({ enforcement-status($_, $controller, $ws) }) }
     };
     if $json {
-        $env.stdout.say(encode-json-pretty(%( schema => 'enforcement-report.v1', workspace => $ws.absolute, controller => $name, harnesses => [ |@statuses ] )));
+        $env.stdout.say(encode-json-pretty(%( schema => 'enforcement-report.v1', workspace => $ws.absolute, controller => $name, harnesses => [ |@statuses ],
+                                              unwired => [ |(%found ?? unwired-harnesses($env) !! ()) ] )));
     }
     elsif $g.brief {
         $env.stdout.say(brief-line(.<harness>, (.<action> // $sub), (.<headline> // '').lc, verdict($_))) for @statuses;
+        $env.stdout.say(brief-line(.<harness>, 'unwired', '', .<why>)) for (%found ?? unwired-harnesses($env) !! ());
     }
     else {
         # One verdict per harness.  The detail, control by control, is
@@ -1336,6 +1395,8 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
             $w.say(sprintf('  %-*s  ! %s', $wide, '', %s<error>)) if (%s<error> // '') ne '';
             if $verbose { $w.say(''); $w.say($_) for status-lines(%s) }
         }
+        # what is not wired is said, not left out
+        $w.say(sprintf('  %-*s  %s', $wide, .<harness>, .<why>)) for (%found ?? unwired-harnesses($env) !! ());
         $w.say('');
         my @live = @statuses.grep({ .<applies> });
         my @weak = @live.grep({ !.<available> || .<headline> ne 'GUARDED' });
@@ -1359,6 +1420,7 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
 sub cmd-hook(Env $env, @args --> Int) {
     return usage-error($env, 'hook', 'it takes a harness, a controller and a control, and is called by a harness') if @args != 3;
     my ($harness, $name, $control) = @args;
+    return status-line($env) if $control eq STATUS-LINE && $name eq 'iz4';
     my $adapter = $env.adapters.get($harness);
     my $controller = controller-named($name);
     without $adapter { $env.stderr.say("321 hook: no harness \"$harness\""); return EXIT-USAGE }
@@ -1471,6 +1533,7 @@ sub store-baseline(Env $env, Str $harness, Str $session, Str $workspace, Str $tr
     my $f = baseline-file($env, $harness, $session);
     return without $f;
     try {
+        mkdir-private(home-of($env));
         mkdir-p($f.parent);
         $f.spurt(encode-json(%( workspace => $workspace.IO.absolute.Str, tree => $tree, at => now-stamp() )) ~ "\n");
     }
@@ -1489,6 +1552,20 @@ sub hook-log(Str $controller, Str $harness, Str $control, Verdict $v) {
 }
 
 # ----------------------------------------------------------------- hooks
+
+#| The status line: iz4's last word on the workspace Claude Code is in,
+#| as iz4 wrote it, or nothing.  It runs every few seconds and its output
+#| is the line itself, so it never fails loudly.
+sub status-line(Env $env --> Int) {
+    my @lines;
+    loop { my $l = $env.stdin.next; last without $l; @lines.push($l) }
+    my $parsed = try parse-json(@lines.join("\n"));
+    my %in = $parsed ~~ Associative ?? %$parsed !! %();
+    my $ws = (%in<workspace> ~~ Associative ?? %in<workspace><current_dir> !! Nil) // %in<cwd> // $*CWD.Str;
+    my $line = iz4-last-line($ws ~~ Str ?? $ws !! $*CWD.Str);
+    $env.stdout.say($line) if $line ne '';
+    0;
+}
 
 sub cmd-hooks(Env $env, Global $g, @args --> Int) {
     return usage-error($env, 'hooks', 'say what to do') unless @args;

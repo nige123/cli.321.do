@@ -40,7 +40,7 @@ git('commit', '-qm', 'first');
 
 sub mc(*@args --> List) {
     my @cmd = %*ENV<DO_321_MC_TEST_BIN> ?? (%*ENV<DO_321_MC_TEST_BIN>,)
-        !! ($*EXECUTABLE.Str, '-I', repo-root().add('lib').Str, repo-root().add('bin/321-mc').Str);
+        !! ($*EXECUTABLE.Str, '-I', repo-root().add('lib').Str, repo-root().add('bin/321').Str);
     my $p = run |@cmd, |@args, :out, :err, :cwd($home.Str);
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
@@ -63,7 +63,7 @@ my @aside;
 END { for |@runs, |@aside -> $r { try force-stop($r) if liveness($r)<phase> ne 'ended' } }
 
 subtest 'what this machine can run on' => {
-    my ($rc, $out) = mc('--brief', 'harnesses');
+    my ($rc, $out) = mc('--brief', 'harness', 'can');
     is $rc, 0, 'harnesses answers';
     ok $out.lines.first(*.starts-with("claude_code\tready")), 'Claude Code is ready' or diag $out;
     ok $out.lines.first(*.starts-with("codex\tready")), 'and so is Codex' or diag $out;
@@ -134,7 +134,7 @@ subtest 'run again on another harness: a new run, nothing carried over' => {
     is $n.run<isolation><of>, $ws.Str, 'of the same workspace';
     nok $n.package-file.slurp.contains('"approval"'), 'with no approval in its package';
     ok wait-for({ selected($n) eq 'fake' }), 'and the runtime runs it there';
-    my ($rc2, $list) = mc('--brief', 'runs');
+    my ($rc2, $list) = mc('--brief', 'tui');
     ok $list.lines.first({ .starts-with($n.id) && .contains("\tfake\t") }), 'the records name each run\'s harness' or diag $list;
 }
 

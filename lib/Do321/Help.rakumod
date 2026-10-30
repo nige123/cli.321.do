@@ -59,6 +59,9 @@ sub t(Str $name, Str $group, Str $summary, @usage, Str $more = '', Str $example 
 constant EVERY-DAY is export = 'Every day';
 constant HOLD      is export = 'When intent must hold';
 constant MACHINE   is export = 'For tools';
+constant RUNS      = 'Runs that outlive the terminal';
+constant RUNS-MORE = 'Runs';
+constant STEERING  = 'Steering a run';
 
 #| Every command, in the order it is listed.
 sub topics(--> List) is export {
@@ -83,6 +86,41 @@ sub topics(--> List) is export {
       ['321 receipt verify FILE', '321 receipt verify FILE --key B64'],
       'Every run ends with one marked word: completed, blocked (it needs your answer), failed, denied or stopped, the reasons beneath; then the files changed, the tools called, the cost with its basis, and the receipt\'s path. verify checks a receipt\'s digest against its content and its signature against a key: this 321\'s own, or --key. A receipt says what ran and what changed; it never says the work is right.',
       '321 receipt verify receipt.json', :shown('receipt verify FILE')),
+
+    t('tui', RUNS, 'every run on one screen, watched and steered',
+      ['321 tui', '321'],
+      '321 alone at a terminal opens it too; in a pipe, 321 alone prints this help. Mission Control: a row per run with its agent, harness, state and cost, what each has done and said, and a line to steer the one you are on. Runs keep going when you close it. It needs a terminal on both ends; in a pipe, 321 start, 321 stop and --brief do the same work.',
+      '321 tui'),
+    t('start', RUNS-MORE, 'start a run that keeps going when you leave',
+      ['321 start <agent> <request...>', '321 start --harness NAME --isolate <agent> <request...>'],
+      'The run gets an id, a host process of its own and a budget, and goes on after this terminal closes. --harness asks for one harness; the run is refused if that harness cannot enforce what the agent needs. --isolate gives it a git worktree of its own, so two runs can work in one repository; a second writer in a shared workspace is refused. 321 harness can lists the harnesses.',
+      '321 start <agent> tidy the README', :shown('start <agent> <request...>')),
+    t('stop', RUNS-MORE, 'ask a run to stop, and wait for its own word',
+      ['321 stop <run>', '321 stop <run> --force'],
+      'Asks through the run\'s inbox and waits for the run to say it stopped. --force stops a run whose host is not answering, by process identity. A run is named by its id or the last three characters of it.',
+      '321 stop 3by', :shown('stop <run>')),
+
+    t('steer', STEERING, 'say something to a run while it works',
+      ['321 steer <run> <words...>'],
+      'The words go to the run through its inbox, and the result says whether the run took them. On Mission Control, typing on the input line does the same for the run you are on.',
+      '321 steer 3by use the newer file', :shown('steer <run> <words...>')),
+    t('hold', STEERING, 'end its current step now and wait',
+      ['321 hold <run>'],
+      'The run stops at the end of what it is doing and waits; nothing is lost. 321 resume carries it on. On Mission Control it is /hold, or h.',
+      '321 hold 3by', :shown('hold <run>')),
+    t('resume', STEERING, 'carry on a held run where it was',
+      ['321 resume <run>'],
+      'A held run carries on its conversation where it was held. On Mission Control it is /resume, or r.',
+      '321 resume 3by', :shown('resume <run>')),
+
+    t('attach', RUNS-MORE, 'open Mission Control on one run',
+      ['321 attach <run>'],
+      'Mission Control with that run selected. In a pipe it prints the run\'s phase instead.',
+      '321 attach 3by', :shown('attach <run>')),
+    t('restart', RUNS-MORE, "run an ended run's request again, with its own budget",
+      ['321 restart <run>', '321 restart <run> --harness NAME'],
+      'A new run with its own id and budget; the old receipt is unchanged. It asks first on a terminal and takes --yes in a pipe. --harness runs it on another harness.',
+      '321 restart 3by', :shown('restart <run>')),
 
     t('iz4 install', HOLD, 'wire the project\'s IZ4 into the harness here',
       ['321 iz4 install', '321 iz4 install --advisory', '321 iz4 install --harness NAME'],
@@ -123,6 +161,10 @@ sub topics(--> List) is export {
       ['321 harness detect', '321 harness detect --verbose'],
       'A row per harness: whether it is installed and whether this project is wired into it. --verbose lists the controls it can be driven from: what it enforces, what it only advises, what it cannot do.',
       '321 harness detect'),
+    t('harness can', 'Harnesses', 'what each harness can enforce when it runs an agent',
+      ['321 harness can'],
+      'A row per harness 321 can run an agent on: whether it is ready, what it enforces and what it cannot. An agent runs only on a harness that enforces what its package needs.',
+      '321 harness can'),
     t('iz4 remove', 'Harnesses', 'take out only what 321 installed for IZ4',
       ['321 iz4 remove', '321 iz4 remove --harness NAME'],
       'Removes the hooks 321 wrote and nothing else; wiring an earlier iz4 made is left as it is.',
@@ -157,6 +199,10 @@ sub topics(--> List) is export {
       ['321 hook HARNESS CONTROLLER CONTROL'],
       'Reads the harness\'s native event on standard input, asks the controller, and answers in the harness\'s own terms. 321 iz4 install writes it into a project\'s settings; it is not typed by hand.',
       '321 hook claude_code iz4 filesystem_guard < event.json'),
+    t('host', MACHINE, 'the process that keeps one run going',
+      ['321 host DIR'],
+      'What 321 start leaves running: it drives one run in its directory, takes steers and stops from the inbox there, and writes the status Mission Control reads. 321 start and 321 restart start it; a person does not.',
+      '321 start <agent> <request...>', :shown('host DIR')),
     t('completion', MACHINE, 'what your shell offers when you press TAB',
       ['321 completion bash|zsh|fish', '321 completion words -- <typed...>    (a shell calls this)'],
       'Write the line your shell sources: bash in ~/.bashrc, zsh in ~/.zshrc, fish in ~/.config/fish/completions/321.fish. The script holds no list of its own; it asks 321 completion words, which reads the same registry dispatch and help read, so nothing goes stale. Completing starts nothing and asks for no authority.',
@@ -192,13 +238,13 @@ my sub listing(Topic $t, Int $w, %ctx --> Str) { sprintf("  321 %-{$w}s %s", own
 #| few for when intent must hold, and where the rest is.  Nothing more.
 sub help-index(%ctx = %() --> Str) is export {
     my @l = '', text-logo(), '';
-    for EVERY-DAY, HOLD -> $g {
+    for EVERY-DAY, RUNS, HOLD -> $g {
         @l.push: $g;
         @l.push: listing($_, 22, %ctx) for topics().grep({ .group eq $g });
         @l.push: '';
     }
     @l.push: '321 help COMMAND    more on one command, with an example';
-    @l.push: '321 help more       the rest: trust, deploying, harnesses, the tool';
+    @l.push: '321 help more       the rest: runs, trust, deploying, harnesses, the tool';
     @l.push: '';
     own(@l.join("\n") ~ "\n", %ctx);
 }
@@ -206,8 +252,8 @@ sub help-index(%ctx = %() --> Str) is export {
 #| Everything not on the first screen, in small groups.  The commands a
 #| tool calls are left to '321 help machine'.
 sub help-more(%ctx = %() --> Str) is export {
-    my @l = '', "{icon()} 321 help more: trust, deploying, harnesses, the tool", '';
-    for topics().map(*.group).unique.grep({ $_ ne EVERY-DAY && $_ ne HOLD && $_ ne MACHINE }) -> $g {
+    my @l = '', "{icon()} 321 help more: runs, trust, deploying, harnesses, the tool", '';
+    for topics().map(*.group).unique.grep({ $_ ne EVERY-DAY && $_ ne RUNS && $_ ne HOLD && $_ ne MACHINE }) -> $g {
         @l.push: $g;
         @l.push: listing($_, 28, %ctx) for topics().grep({ .group eq $g });
         @l.push: '';

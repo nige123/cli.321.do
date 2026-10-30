@@ -1,0 +1,46 @@
+use Test;
+use lib 't/lib';
+use Do321::RunWords;
+use Do321::Commands;
+
+# One set of words for runs: '321 stop 3by' at the shell and '/stop' on
+# Mission Control's input line are the same word, parsed by the same code.
+
+subtest 'the shell and the screen share every word' => {
+    for run-words().grep(!*.screen-only) -> $w {
+        ok command($w.name).defined, "'{$w.name}' is a 321 command as well as a /word";
+    }
+    is parse-run-words('find', ['x'])<error>, "'find' is for Mission Control's screen", 'a screen word is not a shell command';
+}
+
+subtest 'the run: named at the shell, the one you are on at the screen' => {
+    is parse-run-words('stop', ['3by'])<run>, '3by', 'a run by its last three characters';
+    ok parse-run-words('stop', [])<error>.contains('say which run'), 'the shell always names one';
+    is parse-run-words('stop', [], :screen)<run>, '', 'the screen means the one you are on';
+    ok parse-run-words('attach', [], :screen)<error>.defined, 'except attach, which is for choosing one';
+    ok parse-run-words('stop', <a b>)<error>.contains('one run'), 'one run at a time';
+}
+
+subtest "a word's own options, and only its own" => {
+    ok parse-run-words('stop', <3by --force>)<force>, '--force stops by force';
+    ok parse-run-words('hold', <3by --force>)<error>.contains('not an option of hold'), 'and is not an option of hold';
+    my %r = parse-run-words('restart', <3by --harness codex --yes>);
+    is (%r<run>, %r<harness>, %r<yes>), ('3by', 'codex', True), 'restart takes a harness and a yes';
+    %r = parse-run-words('start', <--harness codex --isolate helper tidy --force the README>);
+    is (%r<agent>, %r<words>, %r<harness>, %r<isolate>), ('helper', 'tidy --force the README', 'codex', True),
+        'options come before the agent; the request is word for word, dashes and all';
+}
+
+subtest 'a line on the screen' => {
+    is parse-run-line('use the newer file')<verb>, 'steer', 'plain words are a steer';
+    is parse-run-line('use the newer file')<words>, 'use the newer file', 'word for word';
+    is parse-run-line('//tmp is full')<words>, '/tmp is full', 'two slashes send one';
+    is parse-run-line('/sto 3by')<verb>, 'stop', 'a word may be cut short where only one fits';
+    ok parse-run-line('/st')<error>.contains('/start or /steer or /stop'), 'and is asked about where several do';
+    ok parse-run-line('/nope')<error>.contains('not a word here'), 'a word it does not know is said so';
+    is parse-run-line('/steer try again')<words>, 'try again', '/steer needs no run on the screen';
+    is parse-run-line('/view needs')<view>, 'needs', '/view takes what to show';
+    ok parse-run-line('/view everything')<error>.defined, 'and only that';
+}
+
+done-testing;

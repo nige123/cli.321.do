@@ -16,11 +16,24 @@ sub c-read(int32, Buf, size_t --> ssize_t) is native is symbol('read') {*}
 sub c-wcwidth(int32 --> int32) is native is symbol('wcwidth') {*}
 sub setlocale(int32, Str --> Str) is native {*}
 
+# What differs between the systems this runs on.  Linux and macOS share
+# the calls but not the numbers: the window-size request, the category
+# meaning "every locale setting", and the size of the terminal settings
+# (60 bytes on Linux, 72 on macOS; the buffer is roomier than either).
+my constant DARWIN = $*KERNEL.name eq 'darwin';
+my constant TIOCGWINSZ = DARWIN ?? 0x40087468 !! 0x5413;
+my constant LC-ALL     = DARWIN ?? 0 !! 6;
+my constant TERMIOS-BYTES = 256;
+
+#| Whether this system has a terminal Mission Control can drive.  Windows
+#| has no termios; its console is not driven yet.
+sub screen-supported(--> Bool) is export { !$*DISTRO.is-win }
+
 my $locale-set = False;
 
 #| Columns a character takes: 2 for wide, 0 for combining, 1 otherwise.
 sub cell-width(Str $c --> Int) is export {
-    unless $locale-set { setlocale(6, ''); $locale-set = True }
+    unless $locale-set { setlocale(LC-ALL, ''); $locale-set = True }
     my $o = $c.ord;
     return 1 if $o < 0x300;
     my $w = c-wcwidth($o);
@@ -232,14 +245,14 @@ class Terminal is export {
 
     method size(--> List) {
         my $ws = Buf.allocate(8);
-        if ioctl(1, 0x5413, $ws) == 0 && $ws.read-uint16(2) > 0 {
+        if ioctl(1, TIOCGWINSZ, $ws) == 0 && $ws.read-uint16(2) > 0 {
             ($!rows, $!cols) = ($ws.read-uint16(0), $ws.read-uint16(2));
         }
         ($!rows, $!cols);
     }
 
     method enter() {
-        $!saved = Buf.allocate(64);
+        $!saved = Buf.allocate(TERMIOS-BYTES);
         tcgetattr(0, $!saved);
         my $raw = Buf.new($!saved.list);
         cfmakeraw($raw);

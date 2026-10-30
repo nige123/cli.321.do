@@ -84,7 +84,8 @@ subtest 'every command has its own short help' => {
     like $out, / ^ \n ['❮▣❯' | '<#>'] ' 321 status:' /, 'and is about status, under the icon, after a line of air';
     is cli(IO::Path, 'status', '--help')[1], $out, '321 status --help says the same';
     is cli(IO::Path, 'help', 'iz4', 'install', '--advisory')[1], cli(IO::Path, 'help', 'iz4', 'install')[1], 'a flag is explained with its command';
-    is cli(IO::Path, 'help', 'harness')[1], cli(IO::Path, 'help', 'harness', 'detect')[1], 'a word that begins one command is that command';
+    is cli(IO::Path, 'help', 'receipt')[1], cli(IO::Path, 'help', 'receipt', 'verify')[1], 'a word that begins one command is that command';
+    like cli(IO::Path, 'help', 'harness')[1], / 'more than one form' .* 'harness detect' .* 'harness can' /, 'and harness names both of its forms';
     like cli(IO::Path, 'help', 'iz4')[1], / 'more than one form' .* 'iz4 install' .* 'iz4 status' .* 'iz4 remove' /, 'a word that begins several names them';
     ok cli(IO::Path, 'help', 'more')[1].lines.elems <= 42, 'the rest is one screen too';
     is cli(IO::Path, 'help', 'all')[1], cli(IO::Path, 'help', 'more')[1], 'help all, the older spelling, is help more';

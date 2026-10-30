@@ -251,7 +251,7 @@ sub runtime-argv(--> List) is export {
     return (%*ENV<DO_321_BIN>,) if %*ENV<DO_321_BIN>;
     my $exe = $*EXECUTABLE;
     my $prog = $*PROGRAM.absolute.IO;
-    # a compiled entry: 321 sits beside 321-mc
+    # a compiled entry: 321 itself, or one beside it
     if $exe.basename ne 'rakupp' && $exe.basename ne 'raku' && $exe.basename ne 'rakudo' {
         my $sib = $exe.parent.add('321');
         return ($sib.Str,) if $sib.x;
@@ -261,12 +261,12 @@ sub runtime-argv(--> List) is export {
     ($exe.Str, '-I', $root.add('lib').Str, $root.add('bin/321').Str);
 }
 
-#| The command that runs this Mission Control entry again (for the host).
+#| The command that runs this 321 again as a run's host.
 sub mission-argv(--> List) is export {
     return (%*ENV<DO_321_MC_BIN>,) if %*ENV<DO_321_MC_BIN>;
     my $exe = $*EXECUTABLE;
     return ($exe.Str,) if $exe.basename ne 'rakupp' && $exe.basename ne 'raku' && $exe.basename ne 'rakudo';
     my $prog = $*PROGRAM.absolute.IO;
     my $root = $prog.parent.parent;
-    ($exe.Str, '-I', $root.add('lib').Str, $root.add('bin/321-mc').Str);
+    ($exe.Str, '-I', $root.add('lib').Str, $root.add('bin/321').Str);
 }

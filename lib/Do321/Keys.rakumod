@@ -31,7 +31,7 @@ sub new-key(IO::Path $home --> Hash) is export {
     my ($pub, $priv) = generate-key();
     my %k = algorithm => ALGORITHM-ED25519, keyId => key-id($pub),
             publicKey => base64-encode($pub), privateKey => base64-encode($priv);
-    $home.mkdir;
+    mkdir-private($home);
     $f.spurt(encode-json-pretty(%k) ~ "\n");
     try $f.chmod(0o600);
     public-part(%k);

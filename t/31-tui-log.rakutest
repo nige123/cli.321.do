@@ -1,0 +1,52 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::Protocol;
+use Do321::TuiLog;
+use Do321::RunDir;
+
+# Mission Control keeps a record of each session, so a report of odd
+# behaviour can be read back; and 321 makes its home private, so the
+# record and everything beside it are the person's alone.
+
+my $home = temp-dir();
+
+subtest 'the log: what happened, in order, for its owner only' => {
+    my $p = $home.add('logs').add('tui.log');
+    my $log = TuiLog.new(:path($p)).open;
+    $log.note('open 120x36, 2 runs');
+    $log.note("error after key enter: boom\n  in sub x at y line 1");
+    $log.close;
+    my @l = $p.lines;
+    ok @l[0].ends-with('open 120x36, 2 runs'), 'a line per thing that happened';
+    ok @l[0] ~~ /^ \d**4 '-' .+ 'T' .+ ' [' \d+ '] '/, 'each with the time and the session';
+    ok @l[2].starts-with('    '), 'a backtrace keeps its lines, under the one with the time';
+    is ($p.mode +& 0o777).fmt('%o'), '600', 'the file is its owner\'s alone';
+    is ($p.parent.mode +& 0o777).fmt('%o'), '700', 'and so is its directory';
+}
+
+subtest 'a long log starts again, keeping one before' => {
+    my $p = $home.add('big').add('tui.log');
+    mkdir-private($p.parent);
+    $p.spurt('x' x 1_000_001);
+    my $log = TuiLog.new(:path($p)).open;
+    $log.note('fresh');
+    $log.close;
+    ok $p.s < 100, 'the log starts small';
+    ok $p.parent.add('tui.log.1').s > 1_000_000, 'and the one before is kept';
+}
+
+subtest 'a home 321 makes is private; one it did not make is refused with the fix' => {
+    my $d = $home.add('new').add('home');
+    mkdir-private($d);
+    is ($d.mode +& 0o777).fmt('%o'), '700', 'made 0700, whatever the umask';
+    my $open = $home.add('shared');
+    $open.mkdir;
+    $open.chmod(0o775);
+    my $err = (try { private-dir($open); '' }) // $!.message;
+    ok $err.contains('others may write to it'), 'a directory others may write to is refused' or diag $err;
+    ok $err.contains("chmod go-w $open"), 'and the message says how to fix it';
+    is ($open.mode +& 0o777).fmt('%o'), '775', 'and it is left as it was: that change is the person\'s';
+}
+
+done-testing;

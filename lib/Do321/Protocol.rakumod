@@ -208,6 +208,18 @@ sub mkdir-p(IO::Path $dir, Bool :$win = $*DISTRO.is-win --> IO::Path) is export 
     $dir;
 }
 
+#| Make a directory only its owner may use (0700), with any missing level
+#| above it made the same way.  A level that already exists is left as it
+#| is: changing someone's permissions is theirs to do.
+sub mkdir-private(IO::Path $dir --> IO::Path) is export {
+    return $dir if $dir.d;
+    my $parent = $dir.parent;
+    mkdir-private($parent) unless $parent.d || $parent.Str eq $dir.Str;
+    mkdir-p($dir);
+    try $dir.chmod(0o700);
+    $dir;
+}
+
 #| The comparable form of a path; :win is a test seam.
 sub path-key(Str $p, Bool :$win = $*DISTRO.is-win --> Str) is export {
     return $p unless $win;

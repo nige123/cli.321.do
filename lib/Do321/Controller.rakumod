@@ -364,6 +364,40 @@ sub find-iz4-file(Str $workspace --> IO::Path) is export {
     IO::Path;
 }
 
+#| What a harness's status line calls 321 for: '321 hook claude_code iz4
+#| status_line'.  Not a control: it checks nothing and refuses nothing.
+constant STATUS-LINE is export = 'status_line';
+
+#| The line iz4 left after its last verify of a workspace's tree, ready to
+#| show as it stands (iz4-last/1, in the Git directory's iz4/last.json), or
+#| '' where there is none.  The words are iz4's: the status line and
+#| Mission Control show them unchanged, so every harness says the same.
+#| Read often (a status line runs every few seconds), so it starts no
+#| process and never throws.
+sub iz4-last-line(Str $workspace --> Str) is export {
+    return '' if $workspace eq '';
+    my $dir = $workspace.IO;
+    loop {
+        my $g = $dir.add('.git');
+        if $g.d || $g.f {
+            my $git = $g;
+            # a worktree's .git is a file naming its own Git directory
+            if $g.f {
+                my $to = (try $g.slurp) // '';
+                return '' unless $to ~~ /^ 'gitdir:' \s* (\N+)/;
+                $git = ~$0.trim.IO;
+                $git = $dir.add(~$0.trim) if $git.is-relative;
+            }
+            my $doc = try parse-json($git.add('iz4').add('last.json').slurp);
+            return '' unless $doc ~~ Associative && ($doc<schema> // '') eq 'iz4-last/1' && ($doc<line> // '') ~~ Str;
+            return $doc<line>.lines.head // '';
+        }
+        last if $dir.parent.Str eq $dir.Str;
+        $dir = $dir.parent;
+    }
+    '';
+}
+
 #| The controllers the runtime drives by default.
 sub default-controllers(--> List) is export { (IZ4.new,) }
 

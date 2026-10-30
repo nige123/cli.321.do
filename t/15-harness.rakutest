@@ -319,6 +319,62 @@ sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@(
     is $code, 2, 'with no strength given, a guard is taken as enforcing';
 }
 
+# ---- iz4's last result on the status line, where nothing labels it a warning ------------
+{
+    # the person's own settings, so a status line of theirs can be set
+    my $home = temp-dir();
+    temp %*ENV<CLAUDE_CONFIG_DIR> = $home.Str;
+    my $ws = iz4-workspace();
+    $cc.install-controller($ws, '321', 'iz4', @wants);
+    is settings($ws)<statusLine><command>, '321 hook claude_code iz4 status_line', 'an install puts iz4\'s last result on the status line';
+    is settings($ws)<statusLine><refreshInterval>, 2, 'and re-reads it every two seconds';
+    is $cc.install-controller($ws, '/opt/321', 'iz4', @wants), 'updated', 'a changed 321 path';
+    is settings($ws)<statusLine><command>, '/opt/321 hook claude_code iz4 status_line', 'moves the status line with it';
+    is $cc.remove-controller($ws, 'iz4'), 'removed', 'remove';
+    nok settings($ws)<statusLine>:exists, 'takes the status line out too';
+
+    $ws = iz4-workspace();
+    $ws.add('.claude').mkdir;
+    $ws.add(CLAUDE-SETTINGS).spurt(encode-json(%( statusLine => %( type => 'command', command => 'my-line' ) )));
+    $cc.install-controller($ws, '321', 'iz4', @wants);
+    is settings($ws)<statusLine><command>, 'my-line', 'a project\'s own status line is kept';
+    $cc.remove-controller($ws, 'iz4');
+    is settings($ws)<statusLine><command>, 'my-line', 'and is still there after a remove';
+
+    $home.add('settings.json').spurt(encode-json(%( statusLine => %( type => 'command', command => 'mine' ) )));
+    $ws = iz4-workspace();
+    $cc.install-controller($ws, '321', 'iz4', @wants);
+    nok settings($ws)<statusLine>:exists, 'none is written over a status line the person set for every project';
+
+    $cc.install-controller($ws, '321', 'tracer', [CTRL-POST-TOOL]);
+    nok settings($ws)<statusLine>:exists, 'and only iz4 has one';
+}
+
+# ---- the line itself, from iz4's last result -----------------------------------------
+{
+    my $repo = temp-dir();
+    $repo.add('.git').add('iz4').mkdir;
+    is iz4-last-line($repo.Str), '', 'no result yet: nothing to show';
+    my $last = $repo.add('.git').add('iz4').add('last.json');
+    $last.spurt(encode-json(%( schema => 'iz4-last/1', result => 'pass', line => '◈ IZ4: all held' )));
+    is iz4-last-line($repo.Str), '◈ IZ4: all held', 'iz4\'s own line, as it wrote it';
+    $repo.add('src').add('deep').mkdir;
+    is iz4-last-line($repo.add('src').add('deep').Str), '◈ IZ4: all held', 'from anywhere in the tree';
+    $last.spurt(encode-json(%( schema => 'iz4-last/9', line => 'other' )));
+    is iz4-last-line($repo.Str), '', 'a form it does not know is not shown';
+    $last.spurt('{ not json');
+    is iz4-last-line($repo.Str), '', 'nor a file it cannot read';
+
+    # a worktree's .git is a file naming its own Git directory
+    my $gd = temp-dir();
+    $gd.add('iz4').mkdir;
+    $gd.add('iz4').add('last.json').spurt(encode-json(%( schema => 'iz4-last/1', line => '✗ IZ4: held back' )));
+    my $wt = temp-dir();
+    $wt.add('.git').spurt("gitdir: {$gd.Str}\n");
+    is iz4-last-line($wt.Str), '✗ IZ4: held back', 'a worktree reads its own result';
+    is iz4-last-line(''), '', 'no workspace: nothing';
+}
+
 # ---- every hook 321 writes calls 321, never the controller ------------------------------
 {
     my %entries = claude-entries('321', 'iz4', controls());

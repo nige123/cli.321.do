@@ -43,6 +43,9 @@ class Cmd is export {
 
 constant EVERY-DAY is export = 'Every day';
 constant HOLD      is export = 'When intent must hold';
+constant RUNS      is export = 'Runs that outlive the terminal';
+constant RUNS-MORE is export = 'Runs';
+constant STEERING  is export = 'Steering a run';
 constant TRUST     is export = 'Agents and trust';
 constant DEPLOY    is export = 'Deploying';
 constant HARNESS   is export = 'Harnesses';
@@ -120,7 +123,8 @@ sub commands(--> List) is export {
         subs => (Word.new(name => 'new', what => 'make one'), Word.new(name => 'show', what => 'the public half'))),
 
     Cmd.new(name => 'harness', group => HARNESS, what => 'the agent environments 321 knows, and which are here',
-        subs => (Word.new(name => 'detect', what => 'what is installed, and what this project is wired into'),)),
+        subs => (Word.new(name => 'detect', what => 'what is installed, and what this project is wired into'),
+                 Word.new(name => 'can', what => 'what each can enforce when it runs an agent'))),
     Cmd.new(name => 'hooks', group => HARNESS, what => 'the older direct wiring: see it, or take it out',
         subs => (Word.new(name => 'status', what => 'what is wired'), Word.new(name => 'remove', what => 'take it out'))),
 
@@ -132,7 +136,23 @@ sub commands(--> List) is export {
     Cmd.new(name => 'help', group => TOOL, what => 'the commands, or one of them with an example'),
     Cmd.new(name => 'version', group => TOOL, what => 'which 321 this is'),
 
+    Cmd.new(name => 'tui', group => RUNS, what => 'Mission Control: every run on one screen, watched and steered'),
+    Cmd.new(name => 'start', group => RUNS-MORE, values => 'agent', what => 'start a run that keeps going when you leave',
+        flags => (Flag.new(name => '--harness', :takes, values => 'harness', what => 'which harness it runs on'),
+                  Flag.new(name => '--isolate', what => 'a git worktree of its own'),
+                  Flag.new(name => '--workspace', :takes, values => 'dir', what => 'where the work happens'))),
+    Cmd.new(name => 'stop', group => RUNS-MORE, what => 'ask a run to stop, and wait for its own word',
+        flags => (Flag.new(name => '--force', what => 'when its host is not answering'),)),
+    Cmd.new(name => 'attach', group => RUNS-MORE, what => 'open Mission Control on one run'),
+    Cmd.new(name => 'steer', group => STEERING, what => 'say something to a run while it works'),
+    Cmd.new(name => 'hold', group => STEERING, what => 'end its current step now and wait'),
+    Cmd.new(name => 'resume', group => STEERING, what => 'carry on a held run where it was'),
+    Cmd.new(name => 'restart', group => RUNS-MORE, what => "run an ended run's request again, with its own budget",
+        flags => (Flag.new(name => '--harness', :takes, values => 'harness', what => 'run it on another harness'),
+                  Flag.new(name => '--yes', what => 'without asking, in a pipe'))),
+
     Cmd.new(name => 'run', group => MACHINE, :seam, what => 'a work package in, events and a receipt out'),
+    Cmd.new(name => 'host', group => MACHINE, :seam, what => 'be the process that keeps one run going'),
     Cmd.new(name => 'hook', group => MACHINE, :seam, what => 'the glue a harness calls at one of its events'),
     )
 }

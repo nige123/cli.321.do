@@ -20,11 +20,11 @@ my %me = proc-stat(my-pid());
 
 #| A run directory written as a host would write it.  A living host is
 #| this test process itself, so liveness reads it as running.
-sub make-run(Str $agent, Str $request, @events, Bool :$alive = True, Str :$receipt --> RunDir) {
+sub make-run(Str $agent, Str $request, @events, Bool :$alive = True, Str :$receipt, Str :$workspace = '/work/shop' --> RunDir) {
     my $r = run-dir(new-ulid(), $home);
     private-dir($r.dir);
     private-dir($r.inbox);
-    write-atomic($r.run-file, encode-json({ schema => SCHEMA-RUN, runId => $r.id, request => $request, workspace => '/work/shop',
+    write-atomic($r.run-file, encode-json({ schema => SCHEMA-RUN, runId => $r.id, request => $request, workspace => $workspace,
         agent => { name => $agent.lc, displayName => $agent, byline => 'builds, and brings the proof' },
         launchedAt => DateTime.now.utc.earlier(:minutes(12)).Str }));
     write-atomic($r.host-file, encode-json({ pid => my-pid(), startTicks => $alive ?? %me<start> !! 1, bootId => boot-id() }));
@@ -68,7 +68,8 @@ subtest 'the deck at 120x36' => {
     ok $t.contains('Bea, builds, and brings the proof'), 'the byline names who is answering';
     ok $t.contains('use base64url, not base64') && $t.contains('✓ taken'), 'the steer is shown taken';
     ok $t.contains("to BEA {$a.short} ›"), 'the input line says who it goes to';
-    ok @l[*-1].contains('Enter send') && @l[*-1].contains('Esc navigate'), 'the footer teaches the keys';
+    ok @l[*-1].contains('Enter send') && @l[*-1].contains('Esc keys') && @l[*-1].contains('/start'), 'the footer teaches the keys and the words';
+    nok $t.contains('Ctrl') || $t.contains('^'), 'and no control key';
     nok $t.contains('stuck'), 'nothing is called stuck';
 }
 
@@ -117,7 +118,69 @@ subtest 'keys: levels, the input line and confirmation' => {
     ok actions-for($mm).first(*<key> eq 'force'), 'a lost run offers Force stop';
     nok actions-for($mm).first(*<key> eq 'hold'), 'and not Hold';
     handle-key($mm, Key.new(:name<ctrl-d>));
-    ok $mm.quit, 'Ctrl-D leaves; the runs keep going';
+    nok $mm.quit, 'a control key is not a command';
+    $mm.mode = 'nav';
+    handle-key($mm, Key.new(:name<char>, :text<q>));
+    ok $mm.quit, 'q leaves; the runs keep going';
+}
+
+subtest 'a message too long for its row is never cut' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.tell("not started: {$*HOME}/.321 is not safe to use: others may write to it; chmod go-w {$*HOME}/.321 makes it yours alone");
+    ok $mm.flash.contains('~/.321'), 'the home directory is said the short way';
+    my $t = render($mm, 24, 60).text;
+    ok $t.contains('makes it yours alone'), 'the end of it, which says what to do, is on the screen' or diag $t;
+    ok $t.contains('not started'), 'and so is the start';
+}
+
+subtest 'words on the input line: the same words as at the shell' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $b.id }, :k);
+    my sub say-line(Str $t) { handle-key($mm, Key.new(:name<char>, :text($_))) for $t.comb }
+    say-line('/st');
+    ok render($mm, 36, 120).text.contains('/start  /steer  /stop'), 'a word begun lists what it could be';
+    handle-key($mm, Key.new(:name<tab>));
+    is $mm.input, '/st', 'Tab goes as far as they agree';
+    say-line('o');
+    handle-key($mm, Key.new(:name<tab>));
+    is $mm.input, '/stop ', 'and finishes the one it can only be';
+    ok render($mm, 36, 120).text.contains('ask a run to stop'), 'whose use is shown before it is sent';
+    handle-key($mm, Key.new(:name<enter>));
+    is $mm.mode, 'confirm', '/stop asks first, as s does';
+    handle-key($mm, Key.new(:name<char>, :text<n>));
+    is take-inbox($b).elems, 0, 'and a no sends nothing';
+
+    $mm.mode = 'input';
+    say-line('/hold');
+    handle-key($mm, Key.new(:name<enter>));
+    is take-inbox($b)[0]<directive><kind>, 'hold', '/hold holds the run you are on';
+    is $mm.input, '', 'and clears the line';
+
+    say-line('//look at /tmp');
+    handle-key($mm, Key.new(:name<enter>));
+    is take-inbox($b)[0]<directive><text>, '/look at /tmp', 'two slashes send one, as words';
+
+    say-line('/frobnicate');
+    handle-key($mm, Key.new(:name<enter>));
+    ok $mm.flash.contains('not a word here'), 'a word it does not know is said so' or diag $mm.flash;
+    is take-inbox($b).elems, 0, 'and nothing is sent';
+    $mm.input = ''; $mm.cursor = 0;
+
+    say-line("/stop {$d.id.substr(*-3).lc}");
+    handle-key($mm, Key.new(:name<enter>));
+    is $mm.selected.id, $d.id, 'a run named by its last three characters is chosen';
+    ok $mm.flash.contains('already ended'), 'and an ended one is not stopped again' or diag $mm.flash;
+
+    say-line('/view needs');
+    handle-key($mm, Key.new(:name<enter>));
+    is $mm.filter, 'needs', '/view chooses what the deck shows';
+    $mm.filter = 'all';
+
+    say-line('/quit');
+    handle-key($mm, Key.new(:name<enter>));
+    ok $mm.quit, '/quit leaves';
 }
 
 subtest 'from 150 columns: a rail, the conversation and the evidence' => {
@@ -163,17 +226,15 @@ subtest 'find in the conversation' => {
     my $mm = Model.new(:$home);
     $mm.scan;
     $mm.sel = $mm.crew.first({ .id eq $a.id }, :k);
-    handle-key($mm, Key.new(:name<char>, :text($_))) for 'draft'.comb;
-    handle-key($mm, Key.new(:name<ctrl-f>));
-    is $mm.mode, 'find', 'Ctrl-F finds';
-    handle-key($mm, Key.new(:name<char>, :text($_))) for 'CHALLENGE'.comb;
+    handle-key($mm, Key.new(:name<char>, :text($_))) for '/find CHALLENGE'.comb;
     handle-key($mm, Key.new(:name<enter>));
+    is $mm.mode, 'find', '/find finds';
     ok $mm.flash.starts-with('match 1 of 1'), 'the match is counted, case aside' or diag $mm.flash;
     my $cv = render($mm, 36, 120);
     my $row = (^36).first({ $cv.line($_).contains('Two tests fail') });
     ok $cv.grid[$row][20][1].contains('sel'), 'the line found is marked';
     handle-key($mm, Key.new(:name<esc>));
-    is ($mm.mode, $mm.input), ('input', 'draft'), 'Esc gives back what was being typed';
+    is ($mm.mode, $mm.input), ('input', ''), 'Esc goes back to the input line';
 }
 
 subtest 'what the screen says without evidence' => {
@@ -239,6 +300,21 @@ subtest 'widths' => {
     is text-width('漢字'), 4, 'wide characters take two columns';
     is fit('add passkey sign-in to the shop', 10), 'add passk…', 'cut with an ellipsis';
     is text-width(pad('漢字abc', 6)), 6, 'pad counts columns, not characters';
+}
+
+subtest 'the evidence says what iz4 last found, in its words' => {
+    my $ws = temp-dir();
+    $ws.add('.git').add('iz4').mkdir;
+    $ws.add('.git').add('iz4').add('last.json').spurt(encode-json(%( schema => 'iz4-last/1', result => 'pass',
+        line => '◈ IZ4: all held: the foundation word for word and all 3 invariants by their tests' )));
+    my $r = make-run('Iris', 'tidy the readme', [['run', 'attempt_started', { attempt => 1 }],], :workspace($ws.Str));
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $r.id }, :k);
+    my $t = render($mm, 40, 160).text;
+    ok $t.lines.first({ .contains('iz4') && .contains('all held: the foundation') }), 'iz4\'s last line is in the evidence, its verdict first' or diag $t;
+    $mm.sel = $mm.crew.first({ .id eq $a.id }, :k);
+    nok render($mm, 40, 160).text.lines.first({ .contains('all held') }), 'and only for the run whose workspace it is';
 }
 
 done-testing;

@@ -48,6 +48,11 @@ sub home-dir(--> IO::Path) is export {
 
 sub runs-root(IO::Path $home = home-dir() --> IO::Path) is export { $home.add('runs') }
 
+#| What a person can do about a directory refused as unsafe, in one clause.
+sub remedy(IO::Path $d, Str $why --> Str) is export {
+    $why eq 'others may write to it' ?? "; chmod go-w {$d} makes it yours alone" !! '';
+}
+
 #| Make a directory that holds control files: 0700, and refuse to use one
 #| that is a symlink, someone else's, or writable by others.
 sub private-dir(IO::Path $d --> IO::Path) is export {
@@ -55,7 +60,7 @@ sub private-dir(IO::Path $d --> IO::Path) is export {
         mkdir-p($d);
         $d.chmod(0o700);
     }
-    with unsafe-dir($d.Str) { die "$d is not safe to use: $_" }
+    with unsafe-dir($d.Str) { die "$d is not safe to use: $_" ~ remedy($d, $_) }
     $d;
 }
 

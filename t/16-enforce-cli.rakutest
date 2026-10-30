@@ -39,6 +39,21 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     is c('harness')[0], EXIT-USAGE, 'harness needs a subcommand';
 }
 
+# ---- what is not wired is said, not left out ----------------------------------------
+{
+    my $ws = iz4-workspace();
+    my $bin = temp-dir();
+    for <codex gemini> -> $n { $bin.add($n).spurt("#!/bin/sh\necho stand-in\n"); $bin.add($n).chmod(0o755) }
+    my %env = DO_321_CODEX_BINARY => $bin.add('codex').Str, PATH => "{$bin.Str}:/usr/bin:/bin";
+    my ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, :%env);
+    like $out, /^^ \s+ 'codex' \s+ 'runs under 321, but nothing checks the turn end' /, 'a harness 321 runs but cannot hook is named, with the gap' or diag "$out $err";
+    like $out, /^^ \s+ 'gemini' \s+ 'not known to 321: nothing is checked there' /, 'and one it does not know';
+    ($rc, $out, $err) = c('--json', 'iz4', 'status', '--workspace', $ws.Str, :%env);
+    is parse-json($out)<unwired>.map(*<harness>).sort.join(','), 'codex,gemini', 'the --json form lists them too';
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, :env(%( DO_321_CODEX_BINARY => '/nowhere/codex', PATH => '/usr/bin:/bin' )));
+    nok $out.contains('codex ') || $out.contains('gemini'), 'and a harness that is not here is not mentioned' or diag $out;
+}
+
 # ---- install, status, remove ---------------------------------------------------------
 {
     my $ws = iz4-workspace();
@@ -175,8 +190,15 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     is $rc, 0, 'asked a second time in the same turn, the glue lets it end: an agent is never trapped';
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ));
     is $rc, 0, 'a turn that verifies ends normally';
-    # everything held and the report the changed files owed is in: a line to the person, under iz4's mark
-    ok parse-json($out)<systemMessage> ~~ / ^ ['◈' | '*'] ' IZ4: verify pass' $ / && $err eq '', 'a clean turn end is said, in iz4\'s words' or diag "$out $err";
+    # everything held and the report is in: nothing waits on the person, so nothing is said at the turn end
+    ok $out eq '' && $err eq '', 'a clean turn end is quiet; the status line says what held' or diag "$out $err";
+    # the status line: iz4's last result as iz4 wrote it, from the workspace Claude Code is in
+    $ws.add('.git').add('iz4').mkdir;
+    $ws.add('.git').add('iz4').add('last.json').spurt(encode-json(%( schema => 'iz4-last/1', result => 'pass', line => '◈ IZ4: all held' )));
+    ($rc, $out, $err) = c('hook', 'claude_code', 'iz4', 'status_line', :in(encode-json(%( workspace => %( current_dir => $ws.Str ) ))));
+    ok $rc == 0 && $out eq "◈ IZ4: all held\n" && $err eq '', 'the status line shows iz4\'s last line, word for word' or diag "$rc $out $err";
+    ($rc, $out, $err) = c('hook', 'claude_code', 'iz4', 'status_line', :in(encode-json(%( workspace => %( current_dir => temp-dir().Str ) ))));
+    ok $rc == 0 && $out eq '' && $err eq '', 'and nothing where there is no result' or diag "$rc $out $err";
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ), STUB_REPORT => 'not_checked');
     ok $rc == 0 && $out eq '' && $err eq '', 'a turn that owed no report ends in silence' or diag "$out $err";
 

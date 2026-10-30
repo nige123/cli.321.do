@@ -29,7 +29,7 @@ my %env = DO_321_HOME => $home.Str, DO_321_TRUST => $trust.Str, FAKE_CLAUDE_MODE
 
 sub mc(*@args --> List) {
     my @cmd = %*ENV<DO_321_MC_TEST_BIN> ?? (%*ENV<DO_321_MC_TEST_BIN>,)
-        !! ($*EXECUTABLE.Str, '-I', repo-root().add('lib').Str, repo-root().add('bin/321-mc').Str);
+        !! ($*EXECUTABLE.Str, '-I', repo-root().add('lib').Str, repo-root().add('bin/321').Str);
     my $p = run |@cmd, |@args, :out, :err, :cwd($home.Str);
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
@@ -96,6 +96,21 @@ subtest 'the inbox carries no authority' => {
     is liveness($r)<phase>, 'running', 'the run carries on';
 }
 
+subtest 'steer, hold and resume, one at a time from the shell' => {
+    my $r = @runs[0];
+    my ($rc, $out) = mc('--brief', 'steer', $r.short, 'prefer', 'the', '--force', 'flag');
+    is $rc, 0, '321 steer';
+    ok $out.contains("\tdelivered"), 'says the run took it' or diag $out;
+    ok events($r).first({ .<kind> eq 'directive_delivered' && .<payload><text> eq 'prefer the --force flag' }), 'the words arrive as typed, dashes and all';
+    ($rc, $out) = mc('--brief', 'hold', $r.short);
+    ok $rc == 0 && $out.contains("\tdelivered"), '321 hold' or diag $out;
+    ($rc, $out) = mc('--brief', 'resume', $r.short);
+    ok $rc == 0 && $out.contains("\tdelivered"), '321 resume' or diag $out;
+    ($rc, $out, my $err) = mc('--brief', 'hold');
+    is $rc, 64, 'hold with no run is a usage exit';
+    ok $err.contains('say which run'), 'and says what is missing' or diag $err;
+}
+
 subtest 'a host killed outright: lost, then stopped by force' => {
     my $r = @runs[2];
     sleep 2.5;   # a heartbeat, so the host has noted what runs below it
@@ -123,10 +138,10 @@ subtest 'a host killed outright: lost, then stopped by force' => {
 }
 
 subtest 'records for programs, and what the host measures' => {
-    my ($rc, $out) = mc('--brief');
+    my ($rc, $out) = mc('--brief', 'tui');
     is $rc, 0, '--brief alone lists the runs';
     ok $out.lines.first(*.starts-with(@runs[0].id ~ "\trunning")), 'one record per run, with its phase' or diag $out;
-    ($rc, $out) = mc('--json');
+    ($rc, $out) = mc('--json', 'tui');
     ok parse-json($out)<runs>.first(*<runId> eq @runs[0].id), '--json alone is the document of runs';
     ok wait-for({ (@runs[0].status<usage><processes> // 0) >= 1 }, 5e0), 'status.json counts the processes below the host';
     ok @runs[0].status<usage><basis>.contains('/proc'), 'and says where the numbers came from';
@@ -175,7 +190,7 @@ subtest 'the last one stops cleanly' => {
     my ($rc, $out) = mc('--json', 'stop', @runs[0].short);
     is $rc, 3, 'stopped';
     is parse-json($out)<result>, 'stopped', 'the document says so';
-    my ($rc2, $list) = mc('runs');
+    my ($rc2, $list) = mc('--brief', 'tui');
     is $list.lines.grep(*.contains("\trunning\t")).elems, 0, 'nothing is left running';
 }
 

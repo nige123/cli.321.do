@@ -103,7 +103,8 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
         private-dir($r.inbox);
         $r;
     };
-    return (RunDir, ($!.message.contains('DO_321_HOME') ?? '' !! 'cannot make the run directory: ') ~ $!.message) if $!;
+    # a refusal that already says what to do needs no preface
+    return (RunDir, ($!.message.contains('DO_321_HOME') || $!.message.contains('not safe to use') ?? '' !! 'cannot make the run directory: ') ~ $!.message) if $!;
     my %m = $agent.manifest;
     write-atomic($rd.package-file, to-wire('WorkPackage', %wp) ~ "\n", :durable);
     my %run = schema => SCHEMA-RUN, runId => %wp<packageId>, attempt => 1, continues => (%continues ?? %continues !! Nil),
@@ -193,14 +194,14 @@ sub spawn-host(RunDir $r --> Str) {
 
 # ---------------------------------------------------------------- the host
 
-#| `321-mc host DIR`: be the host of one run.  Returns the exit code.
+#| `321 host DIR`: be the host of one run.  Returns the exit code.
 sub host-main(Str $dir --> Int) is export {
     my $r = RunDir.new(:dir($dir.IO.absolute.IO));
-    with unsafe-dir($r.dir.Str) { note "321-mc host: {$r.dir} is not safe to use: $_"; return 70 }
+    with unsafe-dir($r.dir.Str) { note "321 host: {$r.dir} is not safe to use: $_" ~ remedy($r.dir, $_); return 70 }
     return 64 unless valid-run-id($r.id) && $r.run-file.e && $r.package-file.e;
     # one host per run: the live marker is taken exclusively
     unless create-exclusive($r.live-file.Str, '') {
-        note "321-mc host: run {$r.id} already has a host";
+        note "321 host: run {$r.id} already has a host";
         return 70;
     }
     private-umask();

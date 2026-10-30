@@ -82,6 +82,26 @@ sub read-settings(IO::Path $target --> Hash) {
 
 sub settings-text($v --> Str) is export { encode-json-pretty($v) ~ "\n" }
 
+#| The status line 321 writes: it re-reads iz4's last result every two
+#| seconds, so a check run outside the session shows too.
+sub status-line-entry(Str $self --> Hash) is export {
+    %( type => 'command', command => "$self hook {CLAUDE-HARNESS} iz4 {STATUS-LINE}", refreshInterval => 2 );
+}
+
+sub status-line-ours($entry --> Bool) is export {
+    so $entry ~~ Associative && ($entry<command> // '') ~~ Str
+       && $entry<command>.ends-with(" hook {CLAUDE-HARNESS} iz4 {STATUS-LINE}");
+}
+
+#| Whether the person set a status line of their own, for every project.
+sub own-status-line(--> Bool) {
+    my $home = %*ENV<CLAUDE_CONFIG_DIR> ?? %*ENV<CLAUDE_CONFIG_DIR>.IO !! $*HOME.add('.claude');
+    so <settings.json settings.local.json>.grep(-> $f {
+        my $p = try parse-json($home.add($f).slurp);
+        $p ~~ Associative && $p<statusLine>.defined && !status-line-ours($p<statusLine>)
+    });
+}
+
 #| Wire a controller into a project's settings for the given controls,
 #| keeping every other setting and every hook that is not 321's for this
 #| controller.  Returns 'installed', 'updated' or 'unchanged'; dies on a
@@ -99,6 +119,11 @@ sub claude-install(IO::Path $workspace, Str $self, Str $controller, @controls --
     my %add = claude-entries($self, $controller, @controls);
     for %add.keys.sort -> $event { %hooks{$event} = [ |@(%hooks{$event} // []), |@(%add{$event}) ] }
     %settings<hooks> = %hooks;
+    # iz4's last result on the status line, where nothing labels it as a
+    # warning.  Only where no status line is set, here or in the person's
+    # own settings: a project's line would hide theirs.
+    %settings<statusLine> = status-line-entry($self)
+        if $controller eq 'iz4' && (status-line-ours(%settings<statusLine>) || (!%settings<statusLine>.defined && !own-status-line()));
     return 'unchanged' if $before ne '' && canonical(%settings) eq $before;
     mkdir-p($target.parent);
     $target.spurt(settings-text(%settings));
@@ -119,6 +144,7 @@ sub claude-remove(IO::Path $workspace, Str $controller --> Str) is export {
         $removed = True if @kept.elems != @all.elems;
         if @kept { %hooks{$event} = [ |@kept ] } else { %hooks{$event}:delete }
     }
+    if $controller eq 'iz4' && status-line-ours(%settings<statusLine>) { %settings<statusLine>:delete; $removed = True }
     return 'unchanged' unless $removed;
     if %hooks { %settings<hooks> = %hooks } else { %settings<hooks>:delete }
     $target.spurt(settings-text(%settings));
@@ -326,10 +352,10 @@ sub claude-answer(Str $control, Verdict $v, Bool :$headless = False, Str :$stren
         # (A proposal already opens with the controller's name.)
         return (2, '', ($v.proposal ne '' ?? $why !! "$who: $why") ~ "\n") if $v.stops;
         return (0, claude-system-message("321: $who warns: {$v.reason}"), '') if $v.result eq RESULT-WARN;
-        # Everything held and the report the changed files owed is in: that
-        # is worth a line to the person.  A turn that changed nothing owed
-        # nothing and stays quiet.
-        return (0, claude-system-message("{utf8-terminal() ?? '◈' !! '*'} $who: {$v.reason}"), '') if $v.report-in;
+        # A clean end is quiet: Claude Code shows any line here as a warning
+        # ("Stop says:"), and nothing waits on the person.  What held is
+        # shown where nothing labels it: the status line and Mission
+        # Control, both read from iz4's last result.
         return (0, '', '');
     }
     # After the fact nothing can be stopped; what was found is still shown.

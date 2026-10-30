@@ -3,6 +3,7 @@
 
 # Build artefacts from running the suite in a worktree
 /t/lib/.precomp/
+/lib/.precomp/
 
 # Per-host secrets (gobin signing key, etc.) — never commit (public repo)
 /conf/secrets.conf

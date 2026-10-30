@@ -112,6 +112,14 @@ sub outcome-of(Str $status --> Str) is export {
     so($w eq any(OUTCOMES)) ?? $w !! '';
 }
 
+#| What became of a run, in one word a machine can read: the envelope
+#| outcome once it has ended, and 'running' while it has not.  Never
+#| empty: a blank field cannot be told from one a reader missed.
+sub run-word(Str $status --> Str) is export {
+    my $w = outcome-of($status);
+    $w ne '' ?? $w !! $status.lc.subst(' ', '_', :g);
+}
+
 sub log-json(@runs, %tally, Int :$days = 7, Str :$agent = '', Str :$dir = '' --> Str) is export {
     result-json(result-document(
         command => 'log',

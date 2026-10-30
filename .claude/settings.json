@@ -41,5 +41,10 @@
         ]
       }
     ]
+  },
+  "statusLine": {
+    "command": "321 hook claude_code iz4 status_line",
+    "refreshInterval": 2,
+    "type": "command"
   }
 }

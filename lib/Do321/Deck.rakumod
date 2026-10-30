@@ -22,6 +22,9 @@ use Do321::Fold;
 use Do321::Host;
 use Do321::Term;
 use Do321::Harnesses;
+use Do321::RunWords;
+use Do321::TuiLog;
+use Do321::Controller;
 
 #| A control with no acknowledgement in this long is called unconfirmed.
 constant ACK-TIMEOUT = 5;
@@ -115,18 +118,15 @@ class Model is export {
     has IO::Path $.home = home-dir();
     has @.crew;
     has Int $.sel is rw = 0;
-    has Str $.mode is rw = 'input';      # input | nav | confirm | palette | new-agent | new-request
+    has Str $.mode is rw = 'input';      # input | nav | confirm | find
     has Str $.input is rw = '';
     has Int $.cursor is rw = 0;
     has Str $.flash is rw = '';
     has Num $.flash-at is rw = 0e0;
     has Int $.tick is rw = 0;
     has $.confirm is rw;                  # [question, action]
-    has @.palette;
-    has Int $.pal is rw = 0;
-    has Str $.new-agent is rw = '';
-    has Str $.new-harness is rw = '';
     has Str $.pick-harness is rw = '';
+    has $.log is rw;                      # a TuiLog, when there is a terminal
     has Bool $.quit is rw = False;
     has Num $.scanned is rw = 0e0;
     has Str $.filter is rw = 'all';       # all | active | needs
@@ -159,7 +159,13 @@ class Model is export {
         $!scanned = now.Num;
     }
 
-    method tell(Str $s) { $!flash = $s; $!flash-at = now.Num }
+    method tell(Str $s) {
+        # the home directory is said the short way, so the advice fits the line
+        my $home = $*HOME.Str;
+        $!flash = $home.chars > 1 ?? $s.subst($home, '~', :g) !! $s;
+        $!flash-at = now.Num;
+        .note("said: $s") with $!log;
+    }
 }
 
 sub run-older-than(Str $iso, Int $secs --> Bool) {
@@ -246,8 +252,8 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
     my $reported = @all.first(*.state.cost-reported).defined;
     my $clock = DateTime.now.local;
     my $time = sprintf('%02d:%02d:%02d', $clock.hour, $clock.minute, $clock.second);
-    my $empty = @all ?? "No {filter-word($m.filter)} right now.  v shows every run."
-                     !! 'No runs yet.  Ctrl-N starts one; it keeps going when you close this screen.';
+    my $empty = @all ?? "No {filter-word($m.filter)} right now.  /view all shows every run."
+                     !! 'No runs yet.  /start <agent> <request...> begins one; it keeps going when you close this screen.';
     my $row = 0;
 
     if $strip {
@@ -310,7 +316,7 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         draw-comms($cv, $sc, $row, $foot, 0, $cols - 1, :narrow($cols < 80));
     }
     elsif !$sc.defined && $foot - $row > 2 && $strip {
-        $cv.put($row + 1, 1, @all ?? $empty !! 'No runs yet.  Ctrl-N starts one.', 'dim');
+        $cv.put($row + 1, 1, @all ?? $empty !! 'No runs yet.  /start begins one.', 'dim');
     }
 
     # --- the input line and the footer
@@ -318,8 +324,16 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
     my ($prompt, $hint) = prompt-and-hint($m, $cols);
     my $pc = $cv.put($foot + 1, 1, $prompt, 'bold');
     $cv.put($foot + 1, $pc, ' ' ~ input-view($m, $cols - $pc - 2));
-    # a flash never hides what a palette or a question needs to say
+    # a flash never hides what a question needs to say
     my $flash = (now.Num - $m.flash-at < 6 && $m.mode eq 'input' | 'nav' | 'find') ?? $m.flash !! '';
+    if $flash ne '' && text-width($flash) > $cols - 2 {
+        # too long for one row: it begins on the rule above the input line
+        # and ends below it, so the end, which says what to do, is never cut
+        my ($first, $rest) = split-at-width($flash, $cols - 2);
+        $cv.put($foot, 0, ' ' x $cols);
+        $cv.put($foot, 1, $first, 'wait');
+        $flash = $rest;
+    }
     $cv.put($foot + 2, 1, $flash ne '' ?? $flash !! $hint, $flash ne '' ?? 'wait' !! 'dim');
     $cv;
 }
@@ -443,6 +457,10 @@ sub evidence-rows(Crew $c --> List) is export {
         @r.push(['cpu, mem', sprintf('%.1fs, %d MB', ($u<cpuSeconds> // 0).Num, (($u<rssBytes> // 0) / 1_048_576).Int), '']);
     }
     @r.push(['workspace', ($c.run<workspace> // '') || 'none', '']);
+    # iz4's last word on that workspace, in its own words, as the status line shows it
+    with iz4-last-line(($c.run<workspace> // '') ~~ Str ?? ($c.run<workspace> // '') !! '') -> $iz4 {
+        @r.push(['iz4', $iz4.subst(/^ \S+ ' IZ4: '/, ''), $iz4.starts-with('◈') ?? 'ok' !! $iz4.starts-with('✗') ?? 'bad' !! 'wait']) if $iz4 ne '';
+    }
     my $ctl = control-note($c) || $s.open-control;
     @r.push(['control', $ctl || 'none open', $ctl.contains('unconfirmed') ?? 'wait' !! '']);
     @r.push(['receipt', $c.rd.receipt-file.e ?? 'written by the runtime' !! $c.rd.ended-file.e ?? 'none; ended.json has the basis' !! 'not yet', '']);
@@ -496,14 +514,14 @@ sub draw-comms(Canvas $cv, Crew $sc, Int $top, Int $bottom, Int $left, Int $widt
 }
 
 sub input-view(Model $m, Int $w --> Str) {
-    my $t = $m.mode eq 'input' | 'new-agent' | 'new-request' | 'find' | 'pick-harness' ?? $m.input !! '';
+    my $t = $m.mode eq 'input' | 'find' ?? $m.input !! '';
     $t = $t.subst("\n", '⏎', :g);
     text-width($t) > $w ?? '…' ~ $t.substr(* - ($w - 1)) !! $t;
 }
 
 #| Where the cursor goes: the end of the typed text on the input line.
 sub cursor-at(Model $m, Int $rows, Int $cols --> List) is export {
-    return (-1, 0) unless $m.mode eq 'input' | 'new-agent' | 'new-request' | 'find' | 'pick-harness';
+    return (-1, 0) unless $m.mode eq 'input' | 'find';
     my ($prompt) = prompt-and-hint($m, $cols);
     my $pre = $m.input.substr(0, $m.cursor).subst("\n", '⏎', :g);
     my $col = 1 + text-width($prompt) + 1 + text-width($pre);
@@ -515,28 +533,19 @@ sub prompt-and-hint(Model $m, Int $cols --> List) {
     my $narrow = $cols < 100;
     given $m.mode {
         when 'confirm' { return ($m.confirm[0], 'y yes · any other key cancels') }
-        when 'palette' {
-            my @p = $m.palette;
-            my $item = @p[$m.pal];
-            return ("{$item<label>} ({$m.pal + 1}/{+@p})", "{$item<what>}   ↑↓ choose · Enter do it · Esc back");
-        }
-        when 'new-agent'   { return ('new run, agent ›', "the agent's name; 'bea on codex' picks the engine   Enter next · Esc cancel") }
-        when 'new-request' { return ("new run for {$m.new-agent}{$m.new-harness ne '' ?? ' on ' ~ harness-name($m.new-harness) !! ''} ›", 'what it should do   Enter start · Esc cancel') }
-        when 'pick-harness' {
-            my @ready = harness-records().grep(*<ready>).map(*<name>);
-            return ("run {$sc.defined ?? $sc.name ~ ' ' ~ $sc.short !! 'it'} again on ›", "one of: {@ready.join(', ') || 'none ready'}   Enter next · Esc cancel");
-        }
         when 'find' { return ('find ›', "words in {$sc.defined ?? $sc.name ~ ' ' ~ $sc.short !! 'this run'}'s conversation   Enter older match · Esc back") }
         when 'nav' {
             return ('', $narrow
-                ?? '↑↓ run · Enter type · h hold · r resume · s stop · v view · q leave'
-                !! '↑↓ run   Enter type   h hold   r resume   s stop   n new   v view   ^F find   ^P actions   q leave');
+                ?? '↑↓ run · s stop · h hold · r resume · n new · / word · q leave · Esc type'
+                !! '↑↓ run   s stop   h hold   r resume   a again   n new   / word   v view   q leave   Esc type');
         }
     }
     my $to = $sc.defined ?? "to {$sc.name} {$sc.short} ›" !! '›';
+    my $slash = slash-hint($m);
+    return ($to, $slash) if $slash ne '';
     ($to, $narrow
-        ?? 'Enter send · Esc navigate · ^P actions · ^N new · ^D leave'
-        !! 'Enter send   Esc navigate   ←→ run   PgUp/PgDn scroll   ^F find   ^P actions   ^N new run   ^D leave');
+        ?? 'Enter send · / words · Esc keys · ←→ run'
+        !! 'Enter send   / words: /start /stop /hold /find …   Esc keys   ←→ run   PgUp/PgDn scroll');
 }
 
 #| A run's conversation as screen lines: each a list of [text, style].
@@ -619,7 +628,6 @@ sub actions-for(Model $m --> List) is export {
         }
         if $c.phase eq 'ended' | 'lost' {
             @a.push(%( key => 'restart', label => 'Run again', what => 'a new run of this request, with its own budget; this one stays as it ended' ));
-            @a.push(%( key => 'restart-on', label => 'Run again on another harness', what => 'the same agent and request on another engine, as a new run; nothing carries over' ));
         }
         if $c.phase eq 'lost' || $c.live<unswept> || control-note($c).contains('unconfirmed') || ($c.phase eq 'stopping' && ($c.live<phase> // '') ne 'ended') {
             @a.push(%( key => 'force', label => 'Force stop', what => 'stops its host and everything below it, checked by process identity' ));
@@ -671,11 +679,6 @@ sub do-action(Model $m, Str $key) is export {
             $m.confirm = [restart-question($c.rd), 'restart-now'];
             $m.mode = 'confirm';
         }
-        when 'restart-on' {
-            return unless $c.defined;
-            with restart-refusal($c.rd) { $m.tell("not now: $_"); return }
-            $m.mode = 'pick-harness'; $m.input = ''; $m.cursor = 0;
-        }
         when 'restart-now' {
             my ($rd, $err) = restart-run($c.rd, :harness($m.pick-harness));
             with $err { $m.tell("not started: $_"); return }
@@ -685,7 +688,7 @@ sub do-action(Model $m, Str $key) is export {
             $m.tell("started {$rd.short}, again of {$c.short}{$m.pick-harness ne '' ?? ' on ' ~ harness-name($m.pick-harness) !! ''}; it has its own budget");
         }
         when 'view' { cycle-filter($m) }
-        when 'new'    { $m.mode = 'new-agent'; $m.input = ''; $m.cursor = 0 }
+        when 'new'    { $m.mode = 'input'; $m.input = '/start '; $m.cursor = $m.input.chars }
         when 'follow' { .scroll = 0 with $c }
         when 'quit'   { $m.quit = True }
     }
@@ -717,7 +720,130 @@ sub find-next(Model $m) {
     $m.tell("match $nth of {+@hits}, {hhmm(@lines[$i].at)}" ~ (@older ?? '' !! (@hits > 1 && $from <= @hits.head ?? '; back to the newest' !! '')));
 }
 
-#| One key, applied to the model.  Returns whether anything changed.
+#| The run a word names: '' is the one you are on; otherwise its id, or
+#| the end of it.  A run the filter hides is shown, rather than refused.
+sub pick-run(Model $m, Str $ref --> Crew) {
+    return $m.selected if $ref eq '';
+    my $want = $ref.uc;
+    my $c = $m.crew.first({ .id eq $want || .id.ends-with($want) });
+    without $c { $m.tell("no run here ends in '$ref'"); return Crew }
+    unless $m.visible.first({ .id eq $c.id }) { $m.filter = 'all' }
+    $m.sel = $m.visible.first({ .id eq $c.id }, :k) // $m.sel;
+    $c;
+}
+
+#| A line from the input: a steer, or a run word said as '/word', the same
+#| words '321 <word>' takes at the shell (Do321::RunWords).
+sub run-line(Model $m, Str $line) is export {
+    .note("line: $line") with $m.log;
+    my %w = parse-run-line($line);
+    with %w<error> { $m.tell($_); return }
+    my $clear = { $m.input = ''; $m.cursor = 0 };
+    given %w<verb> {
+        when 'steer' {
+            my $c = $m.selected;
+            return $m.tell('no run is selected; /start begins one') unless $c.defined;
+            unless $c.phase eq 'running' | 'held' | 'starting' {
+                return $m.tell("{$c.name} {$c.short} has {$c.phase eq 'lost' ?? 'been lost' !! 'ended'}; /restart runs it again");
+            }
+            my $id = try send-directive($c.rd, 'steer', :text(%w<words>), :client('mission-control'));
+            if $! { $m.tell("not sent: {$!.message}"); return }
+            $c.sent{$id} = ['steer', now.Num, %w<words>];
+            $clear();
+            $c.scroll = 0;
+            $m.tell(steer-note($c.harness));
+        }
+        when 'start' {
+            my $harness = '';
+            if %w<harness> ne '' {
+                my ($name, $why) = check-harness(%w<harness>);
+                with $why { $m.tell($why); return }
+                $harness = $name;
+            }
+            $clear();
+            $m.tell("starting {%w<agent>}…");
+            my ($rd, $err) = launch-run(%w<agent>, %w<words>, :via('mission-control'), :$harness,
+                :workspace(%w<workspace>), :isolate(%w<isolate>));
+            with $err { $m.tell("not started: $_"); return }
+            $m.filter = 'all'; $m.scan;
+            $m.sel = $m.visible.first({ .id eq $rd.id }, :k) // 0;
+            $m.tell("started {%w<agent>} {$rd.short}; it keeps going when you leave");
+        }
+        when 'stop' | 'hold' | 'resume' {
+            my $c = pick-run($m, %w<run>) // return;
+            $clear();
+            my $verb = %w<force> ?? 'force' !! $_;
+            if $verb eq 'hold' && $c.phase ne 'running' { return $m.tell("{$c.name} {$c.short} is not running; nothing to hold") }
+            if $verb eq 'resume' && $c.phase ne 'held' { return $m.tell("{$c.name} {$c.short} is not held") }
+            if $verb eq 'stop' && !$c.active { return $m.tell("{$c.name} {$c.short} has already ended") }
+            do-action($m, $verb);
+        }
+        when 'restart' {
+            my $c = pick-run($m, %w<run>) // return;
+            $clear();
+            with restart-refusal($c.rd) { $m.tell("not now: $_"); return }
+            my $harness = '';
+            if %w<harness> ne '' {
+                my ($name, $why) = check-harness(%w<harness>);
+                with $why { $m.tell($why); return }
+                $harness = $name;
+            }
+            $m.pick-harness = $harness;
+            $m.confirm = [restart-question($c.rd, :$harness), 'restart-now'];
+            $m.mode = 'confirm';
+        }
+        when 'attach' {
+            my $c = pick-run($m, %w<run>) // return;
+            $clear();
+            $m.tell("on {$c.name} {$c.short}");
+        }
+        when 'find' {
+            return $m.tell('no run is selected') unless $m.selected.defined;
+            $m.draft = '';
+            $m.mode = 'find'; $m.input = %w<words>; $m.cursor = $m.input.chars;
+            find-next($m);
+        }
+        when 'view' {
+            $clear();
+            if %w<view> eq '' { cycle-filter($m) }
+            else {
+                my $keep = $m.selected;
+                $m.filter = %w<view>;
+                $m.sel = $m.visible.first({ $keep.defined && .id eq $keep.id }, :k) // 0;
+                $m.tell("showing {filter-word($m.filter)}: {+$m.visible} of {+$m.crew}");
+            }
+        }
+        when 'quit' { $m.quit = True }
+    }
+}
+
+#| What '/' and the start of a word offer, for the line under the input.
+#| Text cut at a word boundary to fit a width: (what fits, the rest).
+sub split-at-width(Str $t, Int $w --> List) is export {
+    my @words = $t.split(' ');
+    my $first = '';
+    while @words && text-width($first ~ ($first ne '' ?? ' ' !! '') ~ @words[0]) <= $w {
+        $first ~= ($first ne '' ?? ' ' !! '') ~ @words.shift;
+    }
+    # a single word longer than the row is cut, never lost
+    if $first eq '' { $first = $t.substr(0, $w); return ($first, $t.substr($w)) }
+    ($first, @words.join(' '));
+}
+
+sub slash-hint(Model $m --> Str) {
+    my $t = $m.input;
+    return '' unless $t.starts-with('/') && !$t.starts-with('//');
+    my $word = $t.substr(1).split(' ', 2)[0];
+    my @w = $t.contains(' ') ?? run-words().grep(*.name eq $word) !! run-words-starting($word);
+    return "no word starts '/{$word}'; / alone lists them" unless @w;
+    return @w.map({ '/' ~ .name }).join('  ') ~ '   Tab completes' if @w > 1;
+    # on the screen a run left out is the one you are on, and a steer has no run word
+    my $usage = @w[0].name eq 'steer' ?? '<words...>' !! @w[0].usage.subst('<run>', '[run]');
+    "/{@w[0].name} $usage   {@w[0].what}" ~ ($t.contains(' ') ?? '   Enter does it' !! '   Tab completes');
+}
+
+#| One key, applied to the model.  Keys are for moving and for the few
+#| things done often; everything else is a word on the input line.
 sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
     my $c = $m.selected;
     my sub move(Int $d) {
@@ -725,36 +851,27 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
         return unless $n;
         $m.sel = ($m.sel + $d) % $n;
     }
+    my sub type(Str $text) { $m.mode = 'input'; $m.input = $text; $m.cursor = $text.chars }
     my sub edit() {
         given $k.name {
             when 'char' | 'paste' {
                 $m.input = $m.input.substr(0, $m.cursor) ~ $k.text ~ $m.input.substr($m.cursor);
                 $m.cursor += $k.text.chars;
             }
-            when 'alt-enter' | 'ctrl-j' { $m.input = $m.input.substr(0, $m.cursor) ~ "\n" ~ $m.input.substr($m.cursor); $m.cursor++ }
+            when 'alt-enter' { $m.input = $m.input.substr(0, $m.cursor) ~ "\n" ~ $m.input.substr($m.cursor); $m.cursor++ }
             when 'backspace' { if $m.cursor > 0 { $m.input = $m.input.substr(0, $m.cursor - 1) ~ $m.input.substr($m.cursor); $m.cursor-- } }
             when 'delete'    { $m.input = $m.input.substr(0, $m.cursor) ~ $m.input.substr($m.cursor + 1) if $m.cursor < $m.input.chars }
-            when 'home' | 'ctrl-a' { $m.cursor = 0 }
-            when 'end' | 'ctrl-e'  { $m.cursor = $m.input.chars }
-            when 'ctrl-u' { $m.input = ''; $m.cursor = 0 }
+            when 'home' { $m.cursor = 0 }
+            when 'end'  { $m.cursor = $m.input.chars }
             when 'left'  { $m.cursor-- if $m.cursor > 0 }
             when 'right' { $m.cursor++ if $m.cursor < $m.input.chars }
         }
     }
-    # keys that mean the same everywhere
+    # the terminal's own interrupt still leaves; the runs keep going
+    if $k.name eq 'ctrl-c' { $m.quit = True; return }
     given $k.name {
-        when 'ctrl-d' | 'ctrl-c' { $m.quit = True; return }
-        when 'ctrl-p' { $m.palette = actions-for($m); $m.pal = 0; $m.mode = 'palette'; return }
-        when 'ctrl-n' { do-action($m, 'new'); return }
-        when 'ctrl-l' { .scroll = 0 with $c; return }
-        when 'ctrl-f' {
-            return unless $c.defined;
-            $m.draft = $m.input unless $m.mode eq 'find';
-            $m.mode = 'find'; $m.input = ''; $m.cursor = 0;
-            return;
-        }
-        when 'pgup'   { if $c.defined { $c.scroll += $page }; return }
-        when 'pgdn'   { if $c.defined { $c.scroll = ($c.scroll - $page) max 0 }; return }
+        when 'pgup' { if $c.defined { $c.scroll += $page }; return }
+        when 'pgdn' { if $c.defined { $c.scroll = ($c.scroll - $page) max 0 }; return }
     }
     given $m.mode {
         when 'confirm' {
@@ -763,66 +880,11 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
             $m.confirm = Nil;
             if $k.name eq 'char' && $k.text eq 'y' | 'Y' { do-action($m, $action) } else { $m.tell('cancelled; nothing was sent') }
         }
-        when 'palette' {
-            given $k.name {
-                when 'up'    { $m.pal = ($m.pal - 1) % $m.palette.elems }
-                when 'down' | 'tab' { $m.pal = ($m.pal + 1) % $m.palette.elems }
-                when 'esc'   { $m.mode = 'nav' }
-                when 'enter' { my $a = $m.palette[$m.pal]<key>; $m.mode = 'nav'; do-action($m, $a) }
-            }
-        }
         when 'find' {
             given $k.name {
                 when 'esc'   { $m.mode = 'input'; $m.input = $m.draft; $m.cursor = $m.input.chars; $m.draft = ''; .hit = Int with $c }
                 when 'enter' { find-next($m) }
                 default      { edit(); .hit = Int with $c }
-            }
-        }
-        when 'new-agent' {
-            given $k.name {
-                when 'esc'   { $m.mode = 'input'; $m.input = '' ; $m.cursor = 0 }
-                when 'enter' {
-                    if $m.input.trim eq '' { $m.tell('say which agent; 321 agents lists them'); return }
-                    my ($who, $on) = $m.input.trim.split(/\s+ on \s+/, 2);
-                    $m.new-harness = '';
-                    with $on {
-                        my ($name, $why) = check-harness(.trim);
-                        with $why { $m.tell($why); return }
-                        $m.new-harness = $name;
-                    }
-                    $m.new-agent = $who.trim; $m.input = ''; $m.cursor = 0; $m.mode = 'new-request';
-                }
-                default { edit() }
-            }
-        }
-        when 'pick-harness' {
-            given $k.name {
-                when 'esc'   { $m.mode = 'nav'; $m.input = ''; $m.cursor = 0 }
-                when 'enter' {
-                    my ($name, $why) = check-harness($m.input.trim);
-                    with $why { $m.tell($why); return }
-                    return unless $c.defined;
-                    $m.input = ''; $m.cursor = 0;
-                    $m.pick-harness = $name;
-                    $m.confirm = [restart-question($c.rd, :harness($name)), 'restart-now'];
-                    $m.mode = 'confirm';
-                }
-                default { edit() }
-            }
-        }
-        when 'new-request' {
-            given $k.name {
-                when 'esc'   { $m.mode = 'input'; $m.input = ''; $m.cursor = 0 }
-                when 'enter' {
-                    my ($agent, $req) = $m.new-agent, $m.input.trim;
-                    return $m.tell('say what it should do') if $req eq '';
-                    $m.mode = 'input'; $m.input = ''; $m.cursor = 0;
-                    $m.tell("starting {$agent}…");
-                    my ($rd, $err) = launch-run($agent, $req, :via('mission-control'), :harness($m.new-harness));
-                    with $err { $m.tell("not started: $_") }
-                    else { $m.filter = 'all'; $m.scan; $m.sel = $m.visible.first({ .id eq $rd.id }, :k) // 0; $m.tell("started {$agent} {$rd.short}; it keeps going when you leave") }
-                }
-                default { edit() }
             }
         }
         when 'nav' {
@@ -832,11 +894,13 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                 when 'enter' | 'esc' { $m.mode = 'input' }
                 when 'char' {
                     given $k.text {
-                        when 'h' { do-action($m, 'hold') }
-                        when 'r' { do-action($m, 'resume') }
-                        when 's' { do-action($m, 'stop') }
+                        when 'h' { run-line($m, '/hold') }
+                        when 'r' { run-line($m, '/resume') }
+                        when 's' { run-line($m, '/stop') }
                         when 'f' { do-action($m, 'force') if actions-for($m).first(*<key> eq 'force') }
-                        when 'n' { do-action($m, 'new') }
+                        when 'a' { run-line($m, '/restart') }
+                        when 'n' { type('/start ') }
+                        when '/' { type('/') }
                         when 'v' { cycle-filter($m) }
                         when 'q' { $m.quit = True }
                         when 'i' { $m.mode = 'input' }
@@ -849,7 +913,20 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
         default {   # input
             given $k.name {
                 when 'esc' { $m.mode = 'nav' }
-                when 'tab' { move(1) }
+                when 'tab' {
+                    # a word being typed after '/' is finished; otherwise the next run
+                    my $t = $m.input;
+                    if $t.starts-with('/') && !$t.starts-with('//') && !$t.contains(' ') {
+                        my @w = run-words-starting($t.substr(1));
+                        if @w == 1 { type("/{@w[0].name} ") }
+                        elsif @w > 1 {
+                            # as far as they agree
+                            my $common = @w.map(*.name).reduce(-> $a, $b { my $i = 0; $i++ while $i < $a.chars && $i < $b.chars && $a.substr($i, 1) eq $b.substr($i, 1); $a.substr(0, $i) });
+                            type("/$common");
+                        }
+                    }
+                    else { move(1) }
+                }
                 when 'shift-tab' { move(-1) }
                 when 'up'   { if $c.defined { $c.scroll += 1 } }
                 when 'down' { if $c.defined { $c.scroll = ($c.scroll - 1) max 0 } }
@@ -857,18 +934,8 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                     if $m.input eq '' { move($k.name eq 'left' ?? -1 !! 1) } else { edit() }
                 }
                 when 'enter' {
-                    my $text = $m.input.trim;
-                    return if $text eq '';
-                    return $m.tell('no run is selected; Ctrl-N starts one') unless $c.defined;
-                    unless $c.phase eq 'running' | 'held' | 'starting' {
-                        return $m.tell("{$c.name} {$c.short} has {$c.phase eq 'lost' ?? 'been lost' !! 'ended'}; Ctrl-N starts a new run");
-                    }
-                    my $id = try send-directive($c.rd, 'steer', :$text, :client('mission-control'));
-                    if $! { $m.tell("not sent: {$!.message}"); return }
-                    $c.sent{$id} = ['steer', now.Num, $text];
-                    $m.input = ''; $m.cursor = 0;
-                    $c.scroll = 0;
-                    $m.tell(steer-note($c.harness));
+                    return if $m.input.trim eq '';
+                    run-line($m, $m.input);
                 }
                 default { edit() }
             }
@@ -884,6 +951,15 @@ sub run-deck(Str :$focus = '' --> Int) is export {
     $m.scan;
     if $focus ne '' { $m.sel = $m.visible.first({ .id eq $focus }, :k) // 0 }
     my $t = Terminal.new;
+    my $log = TuiLog.new.open;
+    $m.log = $log;
+    $t.size;                                   # the real size, not the defaults, in the log
+    $log.note("open {$t.cols}x{$t.rows}, {+$m.crew} runs{$focus ne '' ?? ', on ' ~ $focus !! ''}");
+    # what the person sees change after a key: the mode, the run, the view, a question
+    my sub seen(--> Str) {
+        my $c = $m.selected;
+        "mode={$m.mode} run={$c.defined ?? $c.short !! '-'} view={$m.filter}" ~ ($m.confirm ?? " asking: {$m.confirm[0]}" !! '');
+    }
     my $restore = { $t.leave };
     $t.enter;
     LEAVE $t.leave;
@@ -899,12 +975,23 @@ sub run-deck(Str :$focus = '' --> Int) is export {
         # keys first: input never waits for a draw
         while $keys.poll -> $k {
             my ($rows, $cols) = ($t.rows, $t.cols);
-            handle-key($m, $k, :page(($rows - 12) max 5));
+            my $name = $k.name eq 'char' ?? 'typed' !! $k.name eq 'paste' ?? "paste of {$k.text.chars} characters" !! $k.name;
+            my $before = seen();
+            try {
+                handle-key($m, $k, :page(($rows - 12) max 5));
+                CATCH { default {
+                    $log.note("error after key $name: {.message}\n{.backtrace.Str}");
+                    $m.tell("that went wrong: {.message.lines.head}; {$log.path} has the detail");
+                } }
+            }
+            my $after = seen();
+            # a letter typed is logged only when it changed what is shown
+            $log.note("key $name" ~ ($after ne $before ?? " → $after" !! '')) if $name ne 'typed' || $after ne $before;
             $dirty = True;
             last if $m.quit;
         }
         last if $m.quit;
-        if $resized { $resized = False; $t.size; $t.invalidate; $dirty = True }
+        if $resized { $resized = False; $t.size; $t.invalidate; $dirty = True; $log.note("resize {$t.cols}x{$t.rows}") }
         for $m.crew -> $c { $dirty = True if $c.refresh }
         if now.Num - $m.scanned > 1 { my $n = $m.crew.elems; $m.scan; $dirty = True if $m.crew.elems != $n }
         if now.Num - $last-tick >= 0.4 {
@@ -914,9 +1001,19 @@ sub run-deck(Str :$focus = '' --> Int) is export {
         }
         if $dirty && now.Num - $last-draw >= 1/30 {
             my ($rows, $cols) = ($t.rows, $t.cols);
-            my $cv = render($m, $rows, $cols);
-            my ($cr, $cc) = cursor-at($m, $rows, $cols);
-            $t.draw($cv, :cursor-row($cr), :cursor-col($cc));
+            try {
+                my $cv = render($m, $rows, $cols);
+                my ($cr, $cc) = cursor-at($m, $rows, $cols);
+                $t.draw($cv, :cursor-row($cr), :cursor-col($cc));
+                CATCH { default {
+                    # said once per message, not thirty times a second
+                    my $msg = .message.lines.head;
+                    unless $m.flash.contains($msg) {
+                        $log.note("error drawing {$cols}x{$rows}: {.message}\n{.backtrace.Str}");
+                        $m.tell("the screen could not be drawn: $msg; {$log.path} has the detail");
+                    }
+                } }
+            }
             $last-draw = now.Num;
             $dirty = False;
         }
@@ -924,7 +1021,9 @@ sub run-deck(Str :$focus = '' --> Int) is export {
     }
     $t.leave;
     my $live = $m.crew.grep(*.active).elems;
-    say "{icon()} 321-mc: left Mission Control; " ~ ($live ?? "{many-of($live, 'run')} still going" !! 'nothing is running');
-    say next-text('come back to them', '321-mc') if $live;
+    $log.note("leave, {$live} still going");
+    $log.close;
+    say "{icon()} 321 tui: left Mission Control; " ~ ($live ?? "{many-of($live, 'run')} still going" !! 'nothing is running');
+    say next-text('come back to them', '321 tui') if $live;
     0;
 }

@@ -79,12 +79,20 @@ ok $out.lines[0] ~~ / ^ \d\d\d\d '-' \S+ \t 'helper' \t 'done' \t 'note: milk' \
 # a person reads; neither is what a caller is given, because a caller
 # matching the envelope's 'no_change' against 'no change' finds nothing.
 my @vocab = <done no_change blocked denied failed stopped>;
+# status also lists runs that have not ended: one with a package and no
+# receipt yet, as every run is while it works
+{
+    my $d = $home.add('runs').add('01M638ZVQHH6443V79PDZ2QCBE');
+    $d.mkdir;
+    $d.add('work-package.json').spurt(encode-json(%( issuedAt => '2026-10-29T07:29:02Z', objective => 'still at it', agent => %( id => 'example.test/helper' ) )));
+}
 for ('status',) -> @cmd {
     my $recs = cli('--brief', |@cmd)[1];
+    ok $recs.lines.first(*.contains('still at it')).split("\t")[2] eq 'running', '321 status calls a run that has not ended running, never a blank' or diag $recs;
     for $recs.lines.grep(*.chars) -> $line {
         my $word = $line.split("\t")[2] // '';
-        ok @vocab.first({ $_ eq $word }).defined,
-            "321 {@cmd} says what became of a run in one envelope word, not '$word'";
+        ok (|@vocab, 'running').first({ $_ eq $word }).defined,
+            "321 {@cmd} says what became of a run in one envelope word, or running, not '$word'";
     }
 }
 
