@@ -29,7 +29,8 @@ subtest 'run ids are ULIDs and nothing else becomes a path' => {
     dies-ok { run-dir('../x') }, 'run-dir refuses a non-id';
 }
 
-subtest 'a directive sent is taken once, in order, and moved out of the inbox' => {
+if $*KERNEL.name eq 'darwin' { skip 'the inbox is Mission Control\'s: it runs on Linux for now' }
+else { subtest 'a directive sent is taken once, in order, and moved out of the inbox' => {
     my $r = fresh-run();
     my $a = send-directive($r, 'steer', :text('use base64url'));
     my $b = send-directive($r, 'hold');
@@ -41,6 +42,7 @@ subtest 'a directive sent is taken once, in order, and moved out of the inbox' =
     ok $r.inbox.add('done').add("{$a}-steer.json").e, 'kept in done/ for audit';
     dies-ok { send-directive($r, 'approve') }, 'a client cannot even write a kind the inbox does not carry';
     dies-ok { send-directive($r, 'steer', :text('  ')) }, 'a steer needs words';
+}
 }
 
 subtest 'the inbox refuses what it cannot vouch for' => {
