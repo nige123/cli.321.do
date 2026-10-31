@@ -8,6 +8,11 @@ use Do321::RunDir;
 use Do321::Term;
 use Do321::Deck;
 
+if $*KERNEL.name eq 'darwin' {
+    plan :skip-all('Mission Control runs on Linux for now');
+    exit 0;
+}
+
 # Mission Control's screen, drawn without a terminal: the model in, the
 # canvas out, at the four sizes the design was drawn at.  The words on it
 # come from the runs' own files; the keys move between levels and only

@@ -8,6 +8,11 @@ use Do321::Sys;
 use Do321::RunDir;
 use Do321::Host;
 
+if $*KERNEL.name eq 'darwin' {
+    plan :skip-all('Mission Control runs on Linux for now');
+    exit 0;
+}
+
 # One agent, two harnesses, at once: each run asks for its engine, each
 # works in a worktree of its own, a second writer in a shared workspace is
 # refused, and a run started again on another harness is a new run with

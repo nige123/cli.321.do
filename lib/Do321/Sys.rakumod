@@ -33,6 +33,7 @@ constant O-WRONLY   = 0o1;
 # differently.  A wrong one is no error, it just stops doing its job.
 my constant DARWIN  = $*KERNEL.name eq 'darwin';
 constant O-CREAT    = DARWIN ?? 0x200 !! 0o100;
+constant O-TRUNC    = DARWIN ?? 0x400 !! 0o1000;
 constant O-EXCL     = DARWIN ?? 0x800 !! 0o200;
 constant O-NOFOLLOW = DARWIN ?? 0x100 !! $*KERNEL.arch eq 'x86_64' ?? 0o400000 !! 0o100000;
 constant S-IFMT     = 0o170000;
@@ -131,7 +132,7 @@ sub create-exclusive(Str $path, Str $text --> Bool) is export {
 #| Write a new file and fsync it: for a record that must survive a crash
 #| of the machine once this returns.  Truncates an existing file.
 sub write-synced(Str $path, Str $text --> Bool) is export {
-    my $fd = c-open($path, O-CREAT +| O-WRONLY +| O-NOFOLLOW +| 0o1000, 0o600);   # O_TRUNC
+    my $fd = c-open($path, O-CREAT +| O-WRONLY +| O-NOFOLLOW +| O-TRUNC, 0o600);
     return False if $fd < 0;
     my $b = Buf.new($text.encode('utf-8').list);
     my $ok = c-write($fd, $b, $b.elems) == $b.elems && c-fsync($fd) == 0;

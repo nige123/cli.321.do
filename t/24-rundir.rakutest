@@ -102,7 +102,8 @@ subtest 'the log has one writer and a reader never parses half a line' => {
     ok ($r.events-file.mode +& 0o077) == 0, 'the log is private';
 }
 
-subtest 'liveness comes from the kernel and the receipt' => {
+if $*KERNEL.name eq 'darwin' { skip 'liveness reads /proc: Mission Control runs on Linux for now' }
+else { subtest 'liveness comes from the kernel and the receipt' => {
     my $r = fresh-run();
     is liveness($r)<phase>, 'starting', 'just launched, no host yet: starting';
     my %me = proc-stat(my-pid());
@@ -126,6 +127,7 @@ subtest 'liveness comes from the kernel and the receipt' => {
     my $r2 = fresh-run();
     $r2.receipt-file.spurt('{}');
     nok record-ended($r2, %( summary => 'x' )), 'ended.json is never written beside a receipt';
+}
 }
 
 subtest 'a person names a run by the end of its id' => {

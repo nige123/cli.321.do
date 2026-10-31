@@ -1,5 +1,7 @@
 # Mission Control
 
+Mission Control runs on Linux for now. On macOS and Windows the rest of 321 works, and `321` on a terminal shows the help.
+
 Runs that outlive the terminal, watched and steered from one screen.
 Processes do the work. Files carry the messages. Mission Control presents the state.
 

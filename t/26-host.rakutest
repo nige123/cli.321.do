@@ -9,6 +9,11 @@ use Do321::Sys;
 use Do321::RunDir;
 use Do321::Host;
 
+if $*KERNEL.name eq 'darwin' {
+    plan :skip-all('Mission Control runs on Linux for now');
+    exit 0;
+}
+
 # Runs that outlive the terminal, against the fake harness (no model):
 # three at once, one stopped while the others carry on, what an agent
 # leaves running swept away by identity, forged requests refused, and a

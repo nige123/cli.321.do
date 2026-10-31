@@ -122,10 +122,12 @@ sub mc-main(@argv --> Int) is export {
         print help-text();
         return EXIT-USAGE;
     }
+    return usage('Mission Control runs on Linux for now; a run in this terminal is: 321 <agent> <request>')
+        if @rest[0] eq 'start' | 'restart' | 'host' && !screen-supported();
     given @rest[0] {
         when 'help' | '-h' | '--help' { print help-text(); return EXIT-OK }
         # in a pipe, the screen's rows as records
-        when 'tui'    { return cmd-runs(%o) if %o<json> || %o<brief>; return usage('Mission Control does not run on Windows yet; 321 tui --brief lists the runs') unless screen-supported(); return screen-allowed(@argv) ?? run-deck() !! usage('Mission Control needs a terminal on both ends; in a pipe, 321 tui --brief lists the runs') }
+        when 'tui'    { return cmd-runs(%o) if %o<json> || %o<brief>; return usage('Mission Control runs on Linux for now; 321 tui --brief lists the runs') unless screen-supported(); return screen-allowed(@argv) ?? run-deck() !! usage('Mission Control needs a terminal on both ends; in a pipe, 321 tui --brief lists the runs') }
         when 'host'   { return @rest == 2 ?? host-main(@rest[1]) !! usage('host takes one run directory') }
         when 'start'  { return cmd-start(%o, @rest[1 .. *]) }
         when 'stop'   { return cmd-stop(%o, @rest[1 .. *]) }

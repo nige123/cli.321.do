@@ -211,7 +211,7 @@ sub hand-runs-to(&mission) is export { &MISSION = &mission }
 #| Control is in this build.
 sub screen-wanted(Env $env, Global $g --> Bool) {
     return False without &MISSION;
-    return False if $*DISTRO.is-win;             # no screen there yet: the help instead
+    return False unless $*KERNEL.name eq 'linux';   # no screen there yet: the help instead
     return False if $g.json-out || $g.brief || brief-on() || is-in('--plain', $env.args);
     my $term = %*ENV<TERM> // '';
     return False if $term eq '' || $term eq 'dumb';

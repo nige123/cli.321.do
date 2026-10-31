@@ -25,9 +25,9 @@ my constant TIOCGWINSZ = DARWIN ?? 0x40087468 !! 0x5413;
 my constant LC-ALL     = DARWIN ?? 0 !! 6;
 my constant TERMIOS-BYTES = 256;
 
-#| Whether this system has a terminal Mission Control can drive.  Windows
-#| has no termios; its console is not driven yet.
-sub screen-supported(--> Bool) is export { !$*DISTRO.is-win }
+#| Whether Mission Control runs on this system.  Its host stands on Linux's
+#| /proc, subreaper and inotify; macOS and Windows have the rest of 321.
+sub screen-supported(--> Bool) is export { $*KERNEL.name eq 'linux' }
 
 my $locale-set = False;
 
