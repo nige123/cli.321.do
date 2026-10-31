@@ -28,9 +28,13 @@ sub c-poll(Buf, uint64, int32 --> int32) is native is symbol('poll') {*}
 
 constant O-RDONLY   = 0;
 constant O-WRONLY   = 0o1;
-constant O-CREAT    = 0o100;
-constant O-EXCL     = 0o200;
-constant O-NOFOLLOW = 0o400000;
+# open(2)'s flags are the kernel's own, and they differ: aarch64 Linux puts
+# O_NOFOLLOW where x86_64 puts O_LARGEFILE, and macOS numbers them all
+# differently.  A wrong one is no error, it just stops doing its job.
+my constant DARWIN  = $*KERNEL.name eq 'darwin';
+constant O-CREAT    = DARWIN ?? 0x200 !! 0o100;
+constant O-EXCL     = DARWIN ?? 0x800 !! 0o200;
+constant O-NOFOLLOW = DARWIN ?? 0x100 !! $*KERNEL.arch eq 'x86_64' ?? 0o400000 !! 0o100000;
 constant S-IFMT     = 0o170000;
 constant S-IFREG    = 0o100000;
 constant S-IFDIR    = 0o040000;
@@ -143,6 +147,20 @@ sub sync-dir(Str $path) is export {
     c-close($fd);
 }
 
+#| The mode, owner and size out of a struct stat, whose layout is each
+#| system's own.  Asked at run time: the one macOS file holds both slices,
+#| and the Intel one's plain stat calls keep the old 32-bit-inode layout.
+sub stat-fields(Buf $st --> List) {
+    if $*KERNEL.name eq 'darwin' {
+        return $*KERNEL.arch eq 'x86_64'
+            ?? ($st.read-uint16(8), $st.read-uint32(12), $st.read-int64(72))
+            !! ($st.read-uint16(4), $st.read-uint32(16), $st.read-int64(96));
+    }
+    $*KERNEL.arch eq 'x86_64'
+        ?? ($st.read-uint32(24), $st.read-uint32(28), $st.read-int64(48))
+        !! ($st.read-uint32(16), $st.read-uint32(24), $st.read-int64(48));
+}
+
 #| The filesystem a path is on, when it is one where rename and O_EXCL
 #| are not to be trusted across machines: 'nfs', 'smb', 'fuse'; else ''.
 sub weak-filesystem(Str $path --> Str) is export {
@@ -208,12 +226,11 @@ sub read-owned(Str $path, Int :$max = 1_048_576, Bool :$private = True, Bool :$g
     LEAVE c-close($fd);
     my $st = Buf.allocate(144);
     return (Str, 'it cannot be examined') if c-fstat($fd, $st) != 0;
-    my $mode = $st.read-uint32(24);
+    my ($mode, $owner, $size) = stat-fields($st);
     return (Str, 'it is not a regular file') if ($mode +& S-IFMT) != S-IFREG;
-    return (Str, 'it is owned by another user') if $st.read-uint32(28) != getuid();
+    return (Str, 'it is owned by another user') if $owner != getuid();
     return (Str, 'others may read or write it') if $private && $mode +& 0o077;
     return (Str, 'others may write it') if $mode +& ($group-ok ?? 0o002 !! 0o022);
-    my $size = $st.read-int64(48);
     return (Str, 'it is too large') if $size > $max;
     my $buf = Buf.new;
     my $chunk = Buf.allocate(65536);
@@ -234,9 +251,9 @@ sub read-owned(Str $path, Int :$max = 1_048_576, Bool :$private = True, Bool :$g
 sub unsafe-dir(Str $path --> Str) is export {
     my $st = Buf.allocate(144);
     return 'it does not exist' if c-lstat($path, $st) != 0;
-    my $mode = $st.read-uint32(24);
+    my ($mode, $owner) = stat-fields($st);
     return 'it is a symlink or not a directory' if ($mode +& S-IFMT) != S-IFDIR;
-    return 'it is owned by another user' if $st.read-uint32(28) != getuid();
+    return 'it is owned by another user' if $owner != getuid();
     return 'others may write to it' if $mode +& 0o022;
     Str;
 }
