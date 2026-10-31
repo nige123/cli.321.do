@@ -283,12 +283,14 @@ sub serve(Cancel $ctx, WireOptions $opts --> Int) is export {
     my $directives = Mailbox.new(:capacity(256));
     my $src = $opts.stdin;
     start { read-directives($run-ctx, $src, $directives, $out) }
+    my Mailbox $signals;
     if $opts.signals {
         my $pid = $wp<packageId>;
-        signal(SIGTERM, SIGINT).tap(-> $s { $directives.try-send(signal-directive($pid, $s.Str)) });
+        $signals = Mailbox.new(:capacity(8));
+        signal(SIGTERM, SIGINT).tap(-> $s { $signals.try-send(signal-directive($pid, $s.Str)) });
     }
 
-    my %run-opts = directives => $directives, sink => $out, run-id => $opts.run-id, history-dir => $opts.history-dir,
+    my %run-opts = directives => $directives, signals => $signals, sink => $out, run-id => $opts.run-id, history-dir => $opts.history-dir,
         adapter => $opts.adapter, package-raw => $raw;
     if $opts.continue-from ne '' {
         my $prev = try read-receipt($opts.continue-from);

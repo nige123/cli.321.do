@@ -9,6 +9,7 @@ use Do321ControlTest;
 use Do321::JSON;
 use Do321::Protocol;
 use Do321::Wire;
+use Do321::ClaudeHooks;
 
 my %base = DO_321_IZ4 => stub-iz4(), DO_321_CLAUDE_BINARY => fake-claude().Str;
 sub c(*@args, :%env, Str :$in = '', IO::Path :$cwd) { x321(|@args, :env(%( |%base, |%env )), :$in, |($cwd ?? (:$cwd) !! ())) }
@@ -188,6 +189,9 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     is $said.slurp, 'All done, no report.', 'iz4 was given the last thing the assistant said, as plain text';
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, stop_hook_active => True ), STUB_VERIFY => 'block');
     is $rc, 0, 'asked a second time in the same turn, the glue lets it end: an agent is never trapped';
+    $said.unlink;
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, stop_hook_active => True ), STUB_SUMMARY_OUT => $said.Str);
+    ok $rc == 0 && $said.e, 'and iz4 is still asked, so its last word does not go on showing a refusal put right' or diag "$rc $err";
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ));
     is $rc, 0, 'a turn that verifies ends normally';
     # everything held and the report is in: nothing waits on the person, so nothing is said at the turn end
@@ -204,7 +208,7 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
 
     # the log: how a run proves its hooks fired
     my @lines = $log.lines.map({ parse-json($_) });
-    is @lines.elems, 10, 'every call was logged';
+    is @lines.elems, 11, 'every call was logged';
     ok @lines.grep({ .<control> eq 'filesystem_guard' && .<result> eq 'block' && .<controller> eq 'iz4' && .<harness> eq 'claude_code' }), 'with controller, harness, control and result';
     ok @lines.grep({ .<control> eq 'post_run' && .<point> eq 'verify' }) && @lines.grep({ .<control> eq 'authoritative_context' && .<point> eq 'context' }), 'and the point each answered';
 
@@ -252,6 +256,29 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     $calls.unlink;
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, session_id => 'sess-2' ), STUB_LOG => $calls.Str);
     ok $calls.lines.grep({ .starts-with('verify') && !.contains('--base=') }), 'a session without a baseline measures from HEAD, as before' or diag $calls.slurp;
+
+    # an unapproved change stays in view, however many turns pass
+    my %s3 = session_id => 'sess-3';
+    hook('authoritative_context', %( hook_event_name => 'SessionStart', |%s3 ), STUB_TREE => $tree0);
+    hook('post_run', %( transcript_path => $t.Str, |%s3 ), STUB_VERIFY => 'block', STUB_TREE => $tree1);
+    my $read-only = temp-dir().add('read-only.jsonl');
+    $read-only.spurt(encode-json(%( type => 'user', message => %( content => 'what now?' ) )) ~ "\n" ~ encode-json(%( type => 'assistant', message => %( content => [ %( type => 'text', text => 'This.' ), ] ) )) ~ "\n");
+    $calls.unlink;
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $read-only.Str, |%s3 ), STUB_VERIFY => 'block', STUB_LOG => $calls.Str);
+    ok $rc == 0 && !$calls.lines.grep(*.starts-with('verify')), 'a turn of reading is not asked for a report' or diag "$rc $err";
+    ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str, |%s3 ), STUB_VERIFY => 'block', STUB_TREE => $tree1, STUB_LOG => $calls.Str);
+    ok $rc == 2 && $calls.lines.grep(*.contains("--base=$tree0")), 'and it clears nothing: the same change is measured from the same place' or diag $calls.slurp;
+
+    # a prompt typed while the assistant was busy comes as an attachment
+    {
+        my $q = temp-dir().add('queued.jsonl');
+        my $line = -> $name, $text { encode-json(%( type => 'assistant', message => %( content => [ $name ?? %( type => 'tool_use', name => $name ) !! %( type => 'text', text => $text ), ] ) )) };
+        my $queued = encode-json(%( type => 'attachment', attachment => %( type => 'queued_command', prompt => 'what was the bug?' ) ));
+        $q.spurt(($line('Write', ''), $line('', 'Done.'), $queued, $line('', 'This.')).join("\n") ~ "\n");
+        nok claude-turn-may-have-changed($q.Str), 'a queued prompt after a finished turn starts a new one';
+        $q.spurt(($line('Write', ''), $queued, $line('', 'This.')).join("\n") ~ "\n");
+        ok claude-turn-may-have-changed($q.Str), 'one delivered between tool calls joins the work already done';
+    }
 
     # nothing governs: stay out of the way
     my $bare = iz4-workspace(:!iz4);

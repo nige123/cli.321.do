@@ -26,7 +26,7 @@ sub fixtures(--> List) is export {
         blocks => [
             Note.new(text => '321 hands a piece of work to an agent and keeps the receipt. Nothing changes a file or deploys anything without authority you grant.'),
             Rows.new(rows => [
-                Row.new(label => 'here:',    value => '/home/s3/web.321.do (git), IZ4 guarded in claude_code'),
+                Row.new(label => 'here:',    value => '/work/web.321.do (git), IZ4 guarded in claude_code'),
                 Row.new(label => 'harness:', value => 'claude_code 2.1.311 — a model can run here'),
                 Row.new(label => 'agents:',  value => 'none yet'),
             ]),
@@ -45,7 +45,7 @@ sub fixtures(--> List) is export {
         blocks => [
             Note.new(text => 'It reads the files it can see here, answers one question about them in text, and changes nothing. It asks a model to do that, so it costs: the receipt will say exactly what.'),
             Rows.new(rows => [
-                Row.new(label => 'workspace:', value => '/home/s3/web.321.do (git) — read only'),
+                Row.new(label => 'workspace:', value => '/work/web.321.do (git) — read only'),
                 Row.new(label => 'granted:',   value => 'repo.read, and nothing else: no shell, no network, no writing'),
             ]),
             Said.new(mark => '◍', who => 'Prompt', text => 'This is the public website for 321, a Perl and Mojolicious site rendered on the server. It explains what 321 is for, profiles the agents, and links to the documentation and releases.'),
@@ -84,7 +84,7 @@ sub fixtures(--> List) is export {
         title => 'b1ll: wrap the status rows at the real terminal width',
         byline => B1LL,
         blocks => [
-            Rows.new(rows => [ Row.new(label => 'workspace:', value => '/home/s3/cli.321.do (git); you commit, the agent only edits') ]),
+            Rows.new(rows => [ Row.new(label => 'workspace:', value => '/work/cli.321.do (git); you commit, the agent only edits') ]),
         ],
     )),
 
@@ -92,7 +92,7 @@ sub fixtures(--> List) is export {
         title => 'b1ll: wrap the status rows at the real terminal width',
         byline => B1LL,
         blocks => [
-            Rows.new(rows => [ Row.new(label => 'workspace:', value => '/home/s3/cli.321.do (git); you commit, the agent only edits') ]),
+            Rows.new(rows => [ Row.new(label => 'workspace:', value => '/work/cli.321.do (git); you commit, the agent only edits') ]),
             Said.new(mark => '⬢', who => 'B1LL', text => 'The widths are nailed down in three places — 54, 72 and 76. I am taking them from the terminal instead, clamped so a narrow window still reads, and leaving a pipe at 72. Running the suite before I touch anything.'),
         ],
     )),
@@ -155,7 +155,7 @@ sub fixtures(--> List) is export {
             Upshot.new(state => 'denied', sentence => 'the package moved since you pinned it, so nothing ran'),
             Rows.new(rows => [
                 Row.new(label => 'pinned:',  value => 'sha256:be4cfffeb67dfe42d6… in ~/.321/trust.json'),
-                Row.new(label => 'on disk:', value => 'sha256:fa04f4d3e6bf0aa6cc… at /home/s3/agents.321.do/packages/321.do/b1ll'),
+                Row.new(label => 'on disk:', value => 'sha256:fa04f4d3e6bf0aa6cc… at /work/agents.321.do/packages/321.do/b1ll'),
                 Row.new(label => 'changed:', value => 'identity.byline added (1 field)'),
             ]),
             Note.new(text => '321 will not run a package whose content you have not pinned.'),

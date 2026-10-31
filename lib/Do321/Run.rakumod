@@ -39,6 +39,9 @@ sub null-sink() { SinkFunc.new(:f(-> % {})) }
 #| One run's options.
 class Options is export {
     has Mailbox $.directives;
+    #| Stops raised by signals.  Their own box, because the caller's closes
+    #| when stdin does, and a signal must still reach the run after that.
+    has Mailbox $.signals;
     has $.sink;
     has Str $.run-id = '';
     has Str $.history-dir = '';
@@ -211,28 +214,30 @@ class DirectiveState {
     #| and either cancels, queues or forwards.
     method start(Cancel $ctx, Cancel $cancel-run) {
         $!cancel-run = $cancel-run;
-        my $box = $!session.opts.directives;
-        return without $box;
         my $self = self;
-        start {
-            loop {
-                my $d = $box.receive(:cancel($ctx));
-                last without $d;
-                $self.receive($d);
+        for self!boxes -> $box {
+            start {
+                loop {
+                    my $d = $box.receive(:cancel($ctx));
+                    last without $d;
+                    $self.receive($d);
+                }
             }
         }
     }
+
+    method !boxes(--> List) { ($!session.opts.directives, $!session.opts.signals).grep(*.defined).List }
 
     #| Take every directive the caller has already delivered, so
     #| instructions handed over with the package apply at the first
     #| attempt rather than interrupting it a moment later.
     method drain-now() {
-        my $box = $!session.opts.directives;
-        return without $box;
-        loop {
-            my $d = $box.poll;
-            last without $d;
-            self.receive($d);
+        for self!boxes -> $box {
+            loop {
+                my $d = $box.poll;
+                last without $d;
+                self.receive($d);
+            }
         }
     }
 
@@ -441,7 +446,7 @@ class DirectiveState {
     method finish-run() {
         # Anything the caller has already handed over but the reader has not
         # yet taken is late: acknowledged as rejected rather than lost.
-        with $!session.opts.directives -> $box {
+        for self!boxes -> $box {
             loop {
                 my $d = $box.poll;
                 last without $d;

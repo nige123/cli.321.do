@@ -36,7 +36,7 @@ use Do321::History :read;
 use Do321::Complete;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.4.4';
+constant VERSION is export = '0.5.0';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
@@ -1444,9 +1444,16 @@ sub cmd-hook(Env $env, @args --> Int) {
     my ($code, $out, $err) = 0, '', '';
     my sub answer() { ($code, $out, $err) = $adapter.answer($control, $v, :$headless, :$strength, :controller($name)) }
     if $control eq CTRL-POST-RUN && %native<stop_hook_active> {
-        # The harness's own loop guard: this turn was already refused once.
-        # Nothing is asked again, and nothing is recorded as having passed.
-        $v = unavailable(POINT-VERIFY, 'not asked again: this turn end was already refused once (the harness\'s loop guard)');
+        # The harness's own loop guard: this turn was already refused once,
+        # so it ends whatever is said now and an agent is never trapped.
+        # iz4 is still asked, because the agent may have put it right: its
+        # last word must not go on showing the refusal, and a pass moves
+        # the baseline as any allowed turn end does.
+        my $session = $adapter.session-key(%native);
+        my $again = $controller.verify($workspace, %( summary => $adapter.final-words(%native), base => read-baseline($env, $harness, $session, $workspace) ));
+        store-baseline($env, $harness, $session, $workspace, tree-of($again)) if $again.ran && !$again.stops;
+        $v = $again.ran && !$again.stops ?? $again
+          !! unavailable(POINT-VERIFY, 'let through: this turn end was already refused once (the harness\'s loop guard)');
     }
     elsif !%found<available> {
         $v = unavailable('', "{$name} cannot be driven here: {%found<reason>}");
@@ -2019,9 +2026,11 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
         my $pid = %wp<packageId>;
         start { read-steering($ctx, $in, $directives, $pid) }
     }
+    my Mailbox $signals;
     if $env.signals {
         my $pid = %wp<packageId>;
-        signal(SIGTERM, SIGINT).tap(-> $s { $directives.try-send(local-directive($pid, 1 +< 30, DIRECTIVE-STOP, '', "signal {$s.Str}", 'signal')) });
+        $signals = Mailbox.new(:capacity(8));
+        signal(SIGTERM, SIGINT).tap(-> $s { $signals.try-send(local-directive($pid, 1 +< 30, DIRECTIVE-STOP, '', "signal {$s.Str}", 'signal')) });
     }
     my $out = $env.stdout;
     my $shown = 0;
@@ -2039,7 +2048,7 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
                 !! pretty-on()
                     ?? SinkFunc.new(:f(-> %e { my $t = brief-event-text(%e); if $t ne '' { live-line($out, "  {glyph('dot')} $t"); $live = True } }))
                     !! SinkFunc.new(:f(-> % {}));
-    my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$sink, :history-dir($run-dir.Str),
+    my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$signals, :$sink, :history-dir($run-dir.Str),
         :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8'))));
     $ctx.cancel;
     wipe-live($out) if $live;

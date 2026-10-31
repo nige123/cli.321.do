@@ -185,4 +185,22 @@ for (STATUS-COMPLETED, 0, STATUS-NO-CHANGE, 0, STATUS-BLOCKED, 2, STATUS-STOPPED
     is %r<directives><gaps>.elems, 1, 'stop bypassed the gap';
 }
 
+# a signal still stops the run after stdin has closed, and the receipt says stopped
+{
+    my %wp = pkg('stop me later');
+    my @steps = %( kind => 'await_directive' ),;
+    my $dir = temp-dir();
+    my $pkg = $dir.add('package.json');
+    $pkg.spurt(to-wire('WorkPackage', %wp) ~ "\n");
+    my $receipt = $dir.add('receipt.json');
+    my %env = %*ENV, |script-env(@steps);
+    my sub q(Str $s) { "'" ~ $s.subst("'", "'\\''", :g) ~ "'" }
+    my @cmd = |runtime-command().map(*.Str), 'run', '--package', '-', '--package-dir', $helper.Str, '--adapter', 'fake', '--receipt', $receipt.Str;
+    my $shell = @cmd.map(&q).join(' ') ~ " < {q($pkg.Str)} > /dev/null 2>&1 & p=\$!; sleep 2; kill -TERM \$p; wait \$p";
+    my $proc = run 'timeout', '20', 'bash', '-c', $shell, :%env;
+    is $proc.exitcode, EXIT-STOPPED, 'SIGTERM after stdin closed stops the run: exit 3';
+    my %r = load('RunReceipt', parse-json($receipt.slurp));
+    is %r<status>, STATUS-STOPPED, 'and the receipt says stopped';
+}
+
 done-testing;

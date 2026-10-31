@@ -115,7 +115,7 @@ say result-json(result-document(
         changed  => ['lib/Do321/Screen.rakumod', 't/21-screen.rakutest'],
         checked  => %( what => 'the project suite', tests => 1652, seconds => 51 ),
         cost     => %( usd => 0.31, turns => 3, attempts => 1, basis => 'harness' ),
-        receipt  => '/home/nige/.321/runs/01M5Y4X5ETGV2YPW3C6F4T2XE2/receipt.json',
+        receipt  => '/home/ada/.321/runs/01M5Y4X5ETGV2YPW3C6F4T2XE2/receipt.json',
         committed => False,
     ),
     words => ['done — the rows fold at the terminal width, clamped 40 to 100'],
@@ -132,7 +132,7 @@ say result-json(result-document(
         agent  => '321.do/b1ll',
         pinned => 'sha256:be4cfffeb67dfe42d628f7587eed0f153333de6694b6512334342ab08ddc66b6',
         actual => 'sha256:fa04f4d3e6bf0aa6cc118118c4f93aaa156b2e41dd5256cf9878abf471b152e4',
-        path   => '/home/s3/agents.321.do/packages/321.do/b1ll',
+        path   => '/work/agents/packages/321.do/b1ll',
     ),
     error => Error.new(
         code => 'package_moved',
@@ -145,7 +145,7 @@ say result-json(result-document(
 
 part 'and the shell form of the same two, one record per line';
 say '';
-say "done\t01M5Y4X5ETGV2YPW3C6F4T2XE2\t321.do/b1ll\tthe rows fold at the terminal width\t/home/nige/.321/runs/01M5Y4X5ETGV2YPW3C6F4T2XE2/receipt.json";
+say "done\t01M5Y4X5ETGV2YPW3C6F4T2XE2\t321.do/b1ll\tthe rows fold at the terminal width\t/home/ada/.321/runs/01M5Y4X5ETGV2YPW3C6F4T2XE2/receipt.json";
 say '';
 say '  and the failure, on standard error, with exit 5:';
 say '';

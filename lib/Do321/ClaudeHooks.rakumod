@@ -198,6 +198,11 @@ sub claude-run-settings(Str $self, %by-controller --> Str) is export {
 my constant @READ-ONLY-TOOLS = <Read Grep Glob LS WebSearch WebFetch TodoWrite AskUserQuestion ToolSearch
                                 ReadNotifications ListAgents SendMessage>;
 
+sub turn-record-uses-tool($rec --> Bool) {
+    my $content = ($rec<message> // {})<content> // $rec<content>;
+    $content ~~ Positional && so @$content.grep({ $_ ~~ Associative && ($_<type> // '') eq 'tool_use' });
+}
+
 #| Whether the turn that is ending (the records since the person's last
 #| prompt) used any tool that can change files.  No transcript, or one
 #| that cannot be read, is taken as yes: the controller is then asked.
@@ -215,6 +220,13 @@ sub claude-turn-may-have-changed(Str $path --> Bool) is export {
             my $is-prompt = $content ~~ Str
                 || ($content ~~ Positional && !@$content.grep({ $_ ~~ Associative && ($_<type> // '') eq 'tool_result' }));
             if $is-prompt { @turn = (); next }
+        }
+        # a prompt typed while the assistant was busy arrives as an
+        # attachment; it starts a turn only if the one before had ended,
+        # because one delivered between tool calls joins that turn's work
+        if $type eq 'attachment' && (($rec<attachment> // {})<type> // '') eq 'queued_command' {
+            @turn = () unless @turn && turn-record-uses-tool(@turn.tail);
+            next;
         }
         @turn.push($rec) if $type eq 'assistant';
     }

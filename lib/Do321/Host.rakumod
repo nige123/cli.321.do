@@ -30,7 +30,7 @@ use Do321::RunDir;
 use Do321::Fold;
 use Do321::Harnesses;
 
-constant HOST-VERSION is export = '0.5.0-dev';
+constant HOST-VERSION is export = '0.5.0';
 #| How long a delivered stop may take before the host signals the runtime.
 constant STOP-GRACE = 30;
 #| How long a stopped process gets between SIGTERM and SIGKILL.
