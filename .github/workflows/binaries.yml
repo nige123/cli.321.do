@@ -109,12 +109,12 @@ jobs:
           echo "== version";  "$bin" version
           echo "== doctor";   "$bin" doctor
           echo "== validate"
-          out=$("$bin" packages validate testdata/packages/local/helper); echo "$out"
-          grep -q '^OK local/helper' <<<"$out"
+          out=$("$bin" --brief packages validate testdata/packages/local/helper); echo "$out"
+          grep -q '^valid'$'\t''local/helper' <<<"$out"
           echo "== run"
           home=$(mktemp -d)
-          out=$(DO_321_HOME="$home" "$bin" --package-dir testdata/packages/local/helper --done 'a note exists' --non-interactive helper note: smoke test); echo "$out"
-          grep -q COMPLETED <<<"$out"
+          out=$(DO_321_HOME="$home" "$bin" --brief --package-dir testdata/packages/local/helper --done 'a note exists' --non-interactive helper note: smoke test); echo "$out"
+          grep -q '^done'$'\t' <<<"$out"
           echo "== receipt"; ls -R "$home"
           test -f "$home"/runs/*/receipt.json
 
