@@ -372,6 +372,10 @@ sub commands(IO::Path $ws) { settings($ws)<hooks>.values.map({ |@$_ }).map({ |@(
     my $wt = temp-dir();
     $wt.add('.git').spurt("gitdir: {$gd.Str}\n");
     is iz4-last-line($wt.Str), '✗ IZ4: held back', 'a worktree reads its own result';
+    $gd.add('iz4').add('last.json').spurt(encode-json(%( schema => 'iz4-last/1', line => '◈ IZ4: all held', unseen => 2 )));
+    is iz4-last-line($wt.Str), '◈ IZ4: all held · 2 unseen', 'changes no person has seen are counted beside iz4\'s line';
+    $gd.add('iz4').add('last.json').spurt(encode-json(%( schema => 'iz4-last/1', line => '◈ IZ4: all held', unseen => 0 )));
+    is iz4-last-line($wt.Str), '◈ IZ4: all held', 'and none leaves the line word for word';
     is iz4-last-line(''), '', 'no workspace: nothing';
 }
 

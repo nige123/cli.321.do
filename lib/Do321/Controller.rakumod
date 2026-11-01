@@ -390,7 +390,10 @@ sub iz4-last-line(Str $workspace --> Str) is export {
             }
             my $doc = try parse-json($git.add('iz4').add('last.json').slurp);
             return '' unless $doc ~~ Associative && ($doc<schema> // '') eq 'iz4-last/1' && ($doc<line> // '') ~~ Str;
-            return $doc<line>.lines.head // '';
+            my $line = $doc<line>.lines.head // '';
+            # a notice beside iz4's words, never in them, and never a hold
+            my $unseen = ($doc<unseen> // 0).Str;
+            return $line ne '' && $unseen ~~ / ^ \d+ $ / && $unseen.Int > 0 ?? "$line · $unseen unseen" !! $line;
         }
         last if $dir.parent.Str eq $dir.Str;
         $dir = $dir.parent;
