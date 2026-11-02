@@ -16,6 +16,7 @@ registry that help, typo suggestions and shell completion all read.
 | `321 stop <run>` | asks the run to stop through its inbox and waits for its own evidence |
 | `321 stop <run> --force` | stops a run whose host is not answering, by process identity |
 | `321 start --harness <name> --isolate <agent> <request...>` | the same, on the harness named, in a worktree of its own |
+| `321 start --package <file> [--workspace <dir>] [--continue <receipt>]` | hosts a work package something else issued, as it stands: the run id is its packageId; a continuation gets an id of its own |
 | `321 restart <run>` | a new run of an ended run's request, with its own id and budget; asks first on a terminal, and takes `--yes` in a pipe; `--harness` runs it on another engine |
 | `321 harness can` | the harnesses this machine has, whether 321 drives each, and what each can enforce |
 | `321 tui --brief` | one record per run: id, phase, outcome, agent, harness, request |

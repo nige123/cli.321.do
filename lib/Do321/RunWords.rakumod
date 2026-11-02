@@ -51,7 +51,7 @@ sub run-words-starting(Str $prefix, Bool :$screen = True --> List) is export {
 #| force, yes, view; or error, saying what is wrong in one line.
 sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export {
     my %r = verb => $verb, run => '', words => '', harness => '', isolate => False, workspace => '',
-            force => False, yes => False, view => '';
+            force => False, yes => False, view => '', package => '', continue => '';
     my $w = run-word($verb);
     return %( |%r, error => "'$verb' is not a run word" ) without $w;
     return %( |%r, error => "'$verb' is for Mission Control's screen" ) if $w.screen-only && !$screen;
@@ -67,9 +67,18 @@ sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export 
                     when '--harness'   { return err('--harness needs a name; 321 harness can lists them') unless @a; %r<harness> = @a.shift }
                     when '--isolate'   { %r<isolate> = True }
                     when '--workspace' { return err('--workspace needs a directory') unless @a; %r<workspace> = @a.shift }
+                    when '--package'   { return err('--package needs a work package file') unless @a; %r<package> = @a.shift }
+                    when '--continue'  { return err('--continue needs a receipt file') unless @a; %r<continue> = @a.shift }
                     default            { return err("'$_' is not an option of start") }
                 }
             }
+            # a package arrives whole: it says which agent and what
+            if %r<package> ne '' {
+                return err('--package takes the package file alone, not an agent and a request') if @a;
+                return err('--isolate is for a run 321 builds; a package names its own workspace') if %r<isolate>;
+                return %r;
+            }
+            return err('--continue goes with --package') if %r<continue> ne '';
             return err('say which agent and what it should do') if @a < 2;
             %r<run> = '';
             %r<agent> = @a.shift;

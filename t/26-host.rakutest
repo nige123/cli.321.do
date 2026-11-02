@@ -191,6 +191,58 @@ subtest 'a log past its cap keeps everything but the words' => {
     is (1..@e.elems).List, @e.map(*<seq>).List, 'the sequence has no gaps';
 }
 
+subtest 'a package something else issued is hosted as it stands' => {
+    my $id = new-ulid();
+    my $f = $home.add("$id.json");
+    $f.spurt(encode-json(%( schema => SCHEMA-WORK-PACKAGE, packageId => $id, issuer => %( kind => 'work-system', id => '123.do' ),
+        issuedAt => now-stamp(), correlation => %( refs => [ %( kind => 'step', id => 'dev#119' ), ] ),
+        agent => %( id => 'example.test/helper', version => '1.2.0', digest => compute($pkg)[0] ),
+        placement => PLACEMENT-CLIENT, workspace => %( kind => 'none', ownership => 'caller' ), objective => 'host this package',
+        context => %( lines => [] ), completion => %( conditions => ['it ran'] ),
+        capabilities => %( granted => [CAP-REPO-READ], limits => %() ), authority => %() )) ~ "\n");
+    my ($rc, $out, $err) = mc('--json', 'start', '--package', $f.Str);
+    is $rc, 0, 'started' or diag $err;
+    my %a = parse-json($out);
+    is %a<runId>, $id, 'the run is the package: its id is the packageId';
+    my $r = run-dir($id);
+    @runs.push($r);
+    ok %a<dir> eq $r.dir.Str && $r.run-file.e, 'and it is hosted like any start, run.json and all';
+    my %run = $r.run;
+    is %run<launchedBy><via>, '321 start --package', 'run.json says how it came';
+    is %run<issuer><id>, '123.do', 'and who issued it';
+    is %run<refs>[0]<id>, 'dev#119', 'with the issuer\'s refs, for the crew row';
+    ok %run<agent><id> eq 'example.test/helper' && %run<agent><name> eq 'helper', 'and the agent the package names';
+    is %run<request>, 'host this package', 'its objective is the request';
+    is $r.package-file.slurp, $f.slurp, 'the package is kept byte for byte';
+    ok wait-for({ events($r).first(*<kind> eq 'host_started') }), 'the host is up';
+    ($rc, $out, $err) = mc('--json', 'start', '--package', $f.Str);
+    isnt $rc, 0, 'the same package is not started twice';
+    ok $err.contains('already exists'), 'and says so' or diag $err;
+    ($rc, $out) = mc('stop', $r.short);
+    is $rc, 3, 'it stops like any other' or diag $out;
+    # a continuation goes on from a receipt, as a run of its own
+    my $receipt = $home.add('receipt.json');
+    $receipt.spurt(encode-json(%( schema => SCHEMA-RUN-RECEIPT, packageId => $id, runId => $id, receiptId => new-ulid(), status => 'stopped' )) ~ "\n");
+    ($rc, $out, $err) = mc('--json', 'start', '--package', $f.Str, '--continue', $receipt.Str);
+    is $rc, 0, 'a continuation starts' or diag $err;
+    my $c = run-dir(parse-json($out)<runId>);
+    @runs.push($c);
+    isnt $c.id, $id, 'as a run with an id of its own';
+    is $c.run<continues><runId>, $id, 'naming the run it goes on from';
+    ok $c.dir.add('continued-receipt.json').e, 'with the receipt kept beside it for the runtime';
+    ok wait-for({ !$c.live-file.e && ($c.receipt-file.e || $c.ended-file.e) }), 'the runtime judged the receipt and the run ended' or diag ($c.log-file.e ?? $c.log-file.slurp !! '');
+    $receipt.spurt(encode-json(%( schema => SCHEMA-RUN-RECEIPT, packageId => new-ulid(), runId => $id )) ~ "\n");
+    ($rc, $out, $err) = mc('--json', 'start', '--package', $f.Str, '--continue', $receipt.Str);
+    isnt $rc, 0, 'a receipt of another package is refused before anything is made';
+    # the words
+    ($rc, $out, $err) = mc('start', '--package');
+    ok $rc != 0 && $err.contains('--package needs'), 'the flag needs its file' or diag $err;
+    ($rc, $out, $err) = mc('start', '--package', $f.Str, 'helper', 'and words');
+    ok $rc != 0 && $err.contains('alone'), 'a package and an agent are not both given' or diag $err;
+    ($rc, $out, $err) = mc('help', 'start');
+    ok $out.contains('--package FILE'), 'help start names the flag, so a caller can probe for it' or diag $out;
+}
+
 subtest 'the last one stops cleanly' => {
     my ($rc, $out) = mc('--json', 'stop', @runs[0].short);
     is $rc, 3, 'stopped';

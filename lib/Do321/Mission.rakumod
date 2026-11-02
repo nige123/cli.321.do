@@ -149,7 +149,11 @@ sub cmd-start(%o, @args --> Int) {
     with %w<error> { return usage($_) }
     my $ws = %w<workspace> ne '' ?? %w<workspace> !! %o<workspace>;
     my $harness = %w<harness> ne '' ?? %w<harness> !! %o<harness>;
-    my ($r, $err) = launch-run(%w<agent>, %w<words>, :workspace($ws), :via('321 start'), :$harness, :isolate(%w<isolate> || %o<isolate>));
+    # a package something else issued is hosted as it stands; an agent
+    # and a request are built into one here
+    my ($r, $err) = %w<package> ne ''
+        ?? launch-package(%w<package>.IO, :workspace($ws), :continue(%w<continue>), :$harness)
+        !! launch-run(%w<agent>, %w<words>, :workspace($ws), :via('321 start'), :$harness, :isolate(%w<isolate> || %o<isolate>));
     with $err { note "$ME: $err"; return $r.defined ?? EXIT-INTERNAL !! 5 }
     say-started(%o, $r, 'start');
 }

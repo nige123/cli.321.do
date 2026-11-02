@@ -120,6 +120,105 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
     ($rd, Str);
 }
 
+#| Host a package something else issued: `321 start --package FILE`.  The
+#| package arrives whole, grants and all, so nothing is built here and no
+#| trust is read for it: the runtime re-checks every grant as it does for
+#| any package, and a package it will not run ends the run with the
+#| reason on the receipt.  The run id is the packageId, so the issuer
+#| knows it before the host answers.  A continuation runs the same
+#| package again from its receipt, so that run needs an id of its own,
+#| and the issuer reads it from the answer.  Returns (RunDir, error).
+sub launch-package(IO::Path $file, Str :$workspace = '', Str :$continue = '', IO::Path :$home = home-dir(),
+                   Str :$via = '321 start --package', Str :$harness = '' --> List) is export {
+    return (RunDir, "no such file: $file") unless $file.f;
+    my $raw = try $file.slurp;
+    return (RunDir, "cannot read $file: {$!.message}") if $!;
+    my $doc = try parse-json($raw);
+    return (RunDir, "$file is not JSON") unless $doc ~~ Associative;
+    my %wp = try load('WorkPackage', $doc);
+    return (RunDir, "$file is not a work package: {$!.message}") if $!;
+    my $problems = validate-work-package(%wp);
+    return (RunDir, "$file is not a work package: {$problems.Str}") if $problems;
+    my $id = %wp<packageId>.Str;
+    return (RunDir, "packageId '$id' is not a ULID, so it cannot name a run") unless valid-run-id($id);
+    my $adapter = '';
+    if $harness ne '' {
+        my ($name, $why) = check-harness($harness);
+        return (RunDir, $why) with $why;
+        $adapter = $name;
+    }
+    # the workspace: the caller's word, else the package's; caller-owned
+    # either way, and never a worktree of 321's making
+    my $ws = $workspace ne '' ?? $workspace !! ((%wp<workspace> // {})<path> // '').Str;
+    return (RunDir, "no such directory: $ws") if $ws ne '' && !$ws.IO.d;
+    $ws = $ws.IO.absolute.Str if $ws ne '';
+    # a continuation: the receipt it goes on from, read now and kept with
+    # the run, so the runtime continues exactly what the issuer named
+    my (%prev, $prev-bytes);
+    if $continue ne '' {
+        return (RunDir, "no such receipt: $continue") unless $continue.IO.f;
+        $prev-bytes = try $continue.IO.slurp(:bin);
+        return (RunDir, "cannot read $continue: {$!.message}") if $!;
+        my $p = try parse-json($prev-bytes.decode);
+        return (RunDir, "$continue is not a run receipt") unless $p ~~ Associative && ($p<schema> // '') eq SCHEMA-RUN-RECEIPT;
+        return (RunDir, "$continue is the receipt of package {$p<packageId> // ''}, not $id") if ($p<packageId> // '') ne $id;
+        %prev = %$p;
+    }
+    private-umask();
+    my $rd = try {
+        private-dir(home-dir-of($home));
+        private-dir(runs-root($home));
+        with weak-filesystem(runs-root($home).Str) {
+            die "{runs-root($home)} is on $_, and runs need a local filesystem; set DO_321_HOME to a local directory" if $_ ne '';
+        }
+        my $r = run-dir(%prev ?? new-ulid() !! $id, $home);
+        die "run $id already exists: a package starts once, and a continuation names its receipt with --continue" if $r.dir.e;
+        private-dir($r.dir);
+        private-dir($r.inbox);
+        $r;
+    };
+    return (RunDir, ($!.message.contains('DO_321_HOME') || $!.message.contains('not safe to use') || $!.message.contains('already exists')
+                     ?? '' !! 'cannot make the run directory: ') ~ $!.message) if $!;
+    # the package exactly as received
+    write-atomic($rd.package-file, $raw.ends-with("\n") ?? $raw !! $raw ~ "\n", :durable);
+    write-atomic(continued-file($rd), $prev-bytes.decode, :durable) if %prev;
+    my %run = schema => SCHEMA-RUN, runId => $rd.id, attempt => 1,
+        continues => (%prev ?? %( runId => (%prev<runId> // '').Str, receiptDigest => digest-bytes($prev-bytes) ) !! Nil),
+        agent => agent-words(%wp<agent><id>.Str), request => %wp<objective>.Str, workspace => $ws,
+        grants => [ |@((%wp<capabilities> // {})<granted> // []) ],
+        harness => { requested => $adapter }, isolation => Nil,
+        issuer => %wp<issuer>, refs => [ |@((%wp<correlation> // {})<refs> // []) ],
+        launchedBy => { uid => my-uid(), via => $via }, launchedAt => now-iso();
+    write-atomic($rd.run-file, encode-json-pretty(%run) ~ "\n", :durable);
+    my $spawned = spawn-host($rd);
+    return ($rd, "the host did not start: $spawned") with $spawned;
+    ($rd, Str);
+}
+
+#| Where a hosted continuation keeps the receipt it goes on from.
+sub continued-file(RunDir $r --> IO::Path) { $r.dir.add('continued-receipt.json') }
+
+#| How the crew list names an agent a package refers to by id: its
+#| local package's own words when it is installed here, the id's last
+#| word otherwise.  Nothing here decides whether it runs.
+sub agent-words(Str $id --> Hash) {
+    my $name = $id.split('/').tail;
+    my %w = id => $id, name => $name, displayName => $name, byline => '', version => '';
+    try {
+        my $cfg = load-trust(default-trust-path());
+        my $g = Do321::CLI::Global.new;
+        my ($agent, $err) = load-agent-named($cfg, $g, $id);
+        ($agent, $err) = load-agent-named($cfg, $g, $name) without $agent;
+        with $agent {
+            my %m = .manifest;
+            %w<displayName> = %m<displayName> // $name;
+            %w<byline> = byline-of(%m);
+            %w<version> = %m<version> // '';
+        }
+    }
+    %w;
+}
+
 sub home-dir-of(IO::Path $home --> IO::Path) { $home }
 
 #| Take back a worktree no run used.
@@ -239,9 +338,17 @@ sub host-main(Str $dir --> Int) is export {
 
     # The runtime, as its own child, told to go when the host goes.
     my @pre = </usr/bin/setpriv /bin/setpriv>.first(*.IO.x) ?? (</usr/bin/setpriv /bin/setpriv>.first(*.IO.x), '--pdeathsig', 'TERM', '--') !! ();
-    my @argv = |@pre, |runtime-argv(), 'run', '--package', $r.package-file.Str, '--receipt', $r.receipt-file.Str, '--history-dir', $r.dir.Str;
+    # the receipt names the run as this directory does, so the two agree
+    my @argv = |@pre, |runtime-argv(), 'run', '--package', $r.package-file.Str, '--receipt', $r.receipt-file.Str, '--history-dir', $r.dir.Str,
+               '--run-id', $r.id;
     my $asked = (%run<harness> // {})<requested> // '';
     @argv.append('--adapter', $asked) if $asked ne '';
+    # a hosted package: the caller's workspace where it is not the
+    # package's own, and the receipt a continuation goes on from
+    my %wp = (read-json-file($r.package-file) // {}).Hash;
+    my $ws = (%run<workspace> // '').Str;
+    @argv.append('--workspace', $ws) if $ws ne '' && $ws ne ((%wp<workspace> // {})<path> // '').Str;
+    @argv.append('--continue', continued-file($r).Str) if continued-file($r).e;
     my $proc = Proc::Async.new(:w, |@argv);
     my $receipt-seen = False;
     $proc.stdout.lines.tap(-> $line {
