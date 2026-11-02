@@ -21,6 +21,7 @@ unit module Do321::Enforcement;
 use Do321::Protocol;
 use Do321::Controller;
 use Do321::Adapter;
+use Do321::Exercised;
 
 constant PROTECT-AWARE    is export = 'aware';
 constant PROTECT-CHECKED  is export = 'checked';
@@ -121,8 +122,20 @@ sub enforcement-status(Adapter $adapter, Controller $controller, IO::Path $works
         levels     => [ |@levels ],
         headline   => headline(@levels),
         warnings   => @warnings,
-        note       => 'what is wired, not what happened: a run\'s receipt records the checks that ran and whether the result was verified',
+        note       => 'what is wired, and (exercised) what the hooks really did here; a run\'s receipt records the checks of one run and whether its result was verified',
     );
+}
+
+#| Add what the hooks really did (Do321::Exercised) to a status.  Calls
+#| that could not reach the controller since it last answered are the one
+#| thing a person can act on, so they become a warning.
+sub with-exercised(%s, %x --> Hash) is export {
+    return %s unless %x;
+    %s<exercised> = %x;
+    my $u = %x<unansweredSince> // 0;
+    %s<warnings>.push("$u hook call{$u == 1 ?? '' !! 's'} since {%s<controller>} last answered could not reach it, and the harness stopped those actions; 321 doctor says whether {%s<controller>} can be driven here.")
+        if $u > 0;
+    %s;
 }
 
 #| Wire a controller into a harness for a workspace and report what is
@@ -210,6 +223,7 @@ sub status-lines(%s --> List) is export {
     }
     @l.push('');
     @l.push("Effective enforcement: {%s<headline>}" ~ (%s<levels> ?? " ({@(%s<levels>).join(', ')})" !! ''));
+    @l.push("Checks run: {exercised-row(%s<exercised>)}") if %s<exercised>;
     if @(%s<legacy> // []) {
         @l.push("Managed by: legacy {%s<controller>.uc} wiring (its own hook commands in {%s<wiring>}; still active, left as it is)");
         @l.push("Legacy wiring: {%s<legacyMode> // 'advisory'} (" ~ @(%s<legacy>).map({ legacy-does($_) }).join('; ') ~ ')');
@@ -248,5 +262,7 @@ sub verdict(%s --> Str) is export {
     my $n = @(%s<warnings> // []).elems;
     my $tail = (%s<detected> ?? '' !! '; harness not detected here')
              ~ ($n ?? " ($n warning{$n == 1 ?? '' !! 's'}: --verbose)" !! '');
-    "$lead: {@c.join(', ')}$tail";
+    # then what happened: when the controller last answered here, or the
+    # calls that could not reach it
+    "$lead: {@c.join(', ')}{exercised-words(%s<exercised> // %(), :controller(%s<controller>))}$tail";
 }

@@ -19,6 +19,7 @@ use Do321::Trust;
 use Do321::Tool;
 use Do321::Adapter;
 use Do321::Codex;
+use Do321::Exercised;
 use Do321::Run;
 use Do321::Wire;
 use Do321::Hooks;
@@ -1371,6 +1372,8 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
         when 'remove'  { @adapters.map({ remove-enforcement($_, $controller, $ws) }) }
         default        { @adapters.map({ enforcement-status($_, $controller, $ws) }) }
     };
+    # what the hooks really did here, beside what is wired
+    with-exercised($_, exercised-summary(home-of($env), exercised-key(%found, $ws.absolute.Str), .<harness>)) for @statuses;
     if $json {
         $env.stdout.say(encode-json-pretty(%( schema => 'enforcement-report.v1', workspace => $ws.absolute, controller => $name, harnesses => [ |@statuses ],
                                               unwired => [ |(%found ?? unwired-harnesses($env) !! ()) ] )));
@@ -1386,17 +1389,20 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
         $w.say(header("$name $sub", $ws.absolute.Str));
         $w.say('');
         my $wide = @statuses.map({ .<harness>.chars }).max // 10;
+        # a row is marked ? when calls could not reach the controller: the
+        # one thing on this screen a person acts on
+        my sub unreached(%s --> Bool) { ((%s<exercised> // %())<unansweredSince> // 0) > 0 }
         for @statuses -> %s {
             my $did = $sub eq 'status' || !%s<applies> ?? ''
                 !! %s<action> ~ (%s<action> eq 'unchanged' | 'removed' | 'failed' ?? '' !! (%s<wiring> ne '' ?? " ({%s<wiring>})" !! '')) ~ '; ';
-            $w.say(sprintf('  %-*s  %s%s', $wide, %s<harness>, $did, verdict(%s)));
-            $w.say(sprintf('  %-*s  adopted the wiring an earlier %s wrote (%s): its commands are replaced by 321\'s', $wide, '', $name, @(%s<adopted>).map({ control-label($_) }).join(', ')))
+            $w.say(sprintf('  %-2s%-*s  %s%s', (unreached(%s) ?? '?' !! ''), $wide, %s<harness>, $did, verdict(%s)));
+            $w.say(sprintf('  %-2s%-*s  adopted the wiring an earlier %s wrote (%s): its commands are replaced by 321\'s', '', $wide, '', $name, @(%s<adopted>).map({ control-label($_) }).join(', ')))
                 if (%s<action> // '') eq 'adopted';
-            $w.say(sprintf('  %-*s  ! %s', $wide, '', %s<error>)) if (%s<error> // '') ne '';
+            $w.say(sprintf('  %-2s%-*s  ! %s', '', $wide, '', %s<error>)) if (%s<error> // '') ne '';
             if $verbose { $w.say(''); $w.say($_) for status-lines(%s) }
         }
         # what is not wired is said, not left out
-        $w.say(sprintf('  %-*s  %s', $wide, .<harness>, .<why>)) for (%found ?? unwired-harnesses($env) !! ());
+        $w.say(sprintf('  %-2s%-*s  %s', '', $wide, .<harness>, .<why>)) for (%found ?? unwired-harnesses($env) !! ());
         $w.say('');
         my @live = @statuses.grep({ .<applies> });
         my @weak = @live.grep({ !.<available> || .<headline> ne 'GUARDED' });
@@ -1404,10 +1410,16 @@ sub cmd-controller(Env $env, Global $g, Str $name, @args --> Int) {
         if !@live { $w.say(next-text('an IZ4 here would say what the software is for; iz4 init starts one', 'iz4 init')) }
         elsif @live.grep({ !.<available> }) { $w.say(next-text("{$name} cannot be driven here; make it so, then install again", "321 $name install")) }
         elsif @legacy { $w.say(next-text("adopt the wiring an earlier {$name} wrote, so 321 drives it", "321 $name install")) }
+        elsif @live.grep({ unreached($_) }) { $w.say(next-text("some checks could not reach {$name}; doctor says whether it can be driven here", '321 doctor')) }
         elsif @weak && $sub ne 'remove' { $w.say(next-text('wire it as strongly as the harness allows', "321 $name install")) }
         elsif $sub eq 'remove' { $w.say(next-text('wire it again when wanted', "321 $name install")) }
         else {
-            $w.say(all-well('wired', "{$name.uc} is guarded in {@live.map(*<harness>).join(', ')}. That is what is wired, not what happened: a run's receipt records the checks that ran."));
+            # when it last checked work, from the hooks' own records; nothing
+            # is claimed where there are none (timestamps sort as text)
+            my @when = @live.map({ (.<exercised> // %())<lastAnswered> // '' }).grep(* ne '').sort;
+            my $when = @when ?? @when.tail.Str !! '';
+            $w.say(all-well('wired', "{$name.uc} is guarded in {@live.map(*<harness>).join(', ')}"
+                ~ ($when ne '' ?? ", and it last checked work {ago-words($when)}" !! '') ~ '.'));
         }
     }
     @statuses.grep({ (.<action> // '') eq 'failed' }) ?? EXIT-FAILED !! 0;
@@ -1441,6 +1453,7 @@ sub cmd-hook(Env $env, @args --> Int) {
     # warns.  Nothing is let through quietly.
     my $strength = control-strength($headless ?? $adapter.headless-controls !! $adapter.controls, $control);
     my Verdict $v;
+    my Verdict $said;          # what the controller itself said, where that differs from the answer given
     my ($code, $out, $err) = 0, '', '';
     my sub answer() { ($code, $out, $err) = $adapter.answer($control, $v, :$headless, :$strength, :controller($name)) }
     if $control eq CTRL-POST-RUN && %native<stop_hook_active> {
@@ -1452,6 +1465,7 @@ sub cmd-hook(Env $env, @args --> Int) {
         my $session = $adapter.session-key(%native);
         my $again = $controller.verify($workspace, %( summary => $adapter.final-words(%native), base => read-baseline($env, $harness, $session, $workspace) ));
         store-baseline($env, $harness, $session, $workspace, tree-of($again)) if $again.ran && !$again.stops;
+        $said = $again;
         $v = $again.ran && !$again.stops ?? $again
           !! unavailable(POINT-VERIFY, 'let through: this turn end was already refused once (the harness\'s loop guard)');
     }
@@ -1478,7 +1492,7 @@ sub cmd-hook(Env $env, @args --> Int) {
         if !$adapter.turn-wrote(%native) {
             # Nothing this turn could have changed a file: there is nothing
             # to verify and no report owed.  Said so in the log, not asked.
-            $v = Verdict.new(:point(POINT-VERIFY), :result(RESULT-PASS), :reason('not asked: this turn used no tool that can change files'));
+            $v = Verdict.new(:point(POINT-VERIFY), :result(RESULT-PASS), :!asked, :reason('not asked: this turn used no tool that can change files'));
         }
         else {
             my $base = read-baseline($env, $harness, $session, $workspace);
@@ -1513,9 +1527,20 @@ sub cmd-hook(Env $env, @args --> Int) {
         }
     }
     hook-log($name, $harness, $control, $v);
+    # What really happened here, for `321 iz4 status`: never in the way
+    # of the answer, and nothing when the controller was asked nothing.
+    record-exercised(home-of($env), exercised-key(%found, $workspace), $harness, $adapter.session-key(%native), $control,
+        exercised-outcome($control, $said // $v));
     $env.stdout.print($out) if $out ne '';
     $env.stderr.print($err) if $err ne '';
     $code;
+}
+
+#| What a project's exercised records are filed under: its IZ4, so the
+#| hooks and a status run from any directory of the project agree; the
+#| workspace itself when the controller names no subject.
+sub exercised-key(%found, Str $workspace --> Str) {
+    (%found<subject> // '') ne '' ?? %found<subject>.Str !! $workspace;
 }
 
 #| Where a session's baseline lives: the tree the current turn began
@@ -1551,6 +1576,9 @@ sub hook-log(Str $controller, Str $harness, Str $control, Verdict $v) {
     return if $path eq '';
     my %line = controller => $controller, harness => $harness, control => $control, point => $v.point,
         result => $v.result, reason => $v.reason, invariants => [ |$v.invariants.map(*.Str) ];
+    # A turn that owed nothing was never put to the controller: the line
+    # says so, and a receipt counts it as no hook answered.
+    %line<asked> = False unless $v.asked;
     try {
         my $fh = $path.IO.open(:a);
         $fh.say(encode-json(%line));

@@ -45,6 +45,7 @@ class Verdict is export {
     has Str $.limits = '';       # what the controller says it did not establish
     has @.parts;                 # for a compound answer: { part, result, detail } each
     has $.evidence;              # the controller's own document, verbatim, or Any
+    has Bool $.asked = True;     # False when nothing was owed, so the controller was never put the question
 
     #| Whether work must not simply continue past this answer.
     method stops(--> Bool) { $!result eq RESULT-BLOCK || $!result eq RESULT-NEEDS-HUMAN }

@@ -912,6 +912,10 @@ class Session is export {
             next unless $rec ~~ Associative;
             my $g = @!governing.first({ .controller.name eq ($rec<controller> // '') });
             next without $g;
+            # A hook that owed the controller no question (a turn that could
+            # not have changed a file) answered nothing: it is not a hook
+            # that fired, and never counts towards guarded.
+            next if ($rec<asked>:exists) && !$rec<asked>;
             # A hook that could not get the controller's answer checked
             # nothing: it is counted apart and never as protection.
             if ($rec<result> // '') eq RESULT-UNAVAILABLE {

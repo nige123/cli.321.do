@@ -570,6 +570,23 @@ and is recorded as not asked, never as a pass.
 321 runs but cannot wire hooks into (Codex), and one it does not know
 (Gemini).
 
+**What ran, not only what is wired.** Every hook 321 answers leaves one
+small record under `~/.321/exercised`, filed by the project's IZ4: when,
+which harness and session, which control, and whether the controller
+answered, kept the work back, or could not be reached. No command, file or
+reason is kept. `321 iz4 status` reads them: a row says `guarded: ...,
+last checked 3 minutes ago`, and the closing line says when iz4 last
+checked work. When calls since iz4's last answer could not reach it, the
+row is marked `?`, the warning says so, and the next step is `321 doctor`.
+`--verbose` adds a `Checks run` row counting the last seven days; `--json`
+carries the counts as `exercised`. A turn that could not have changed a
+file asks iz4 nothing and leaves no record, so "last checked" always means
+iz4 answered. Recording never holds a hook up or changes its answer: a
+record that could not be written is simply absent, and a status with no
+records claims nothing. Records older than seven days are pruned, the
+file stays local and is sent nowhere, and the words say only that a hook
+ran and what iz4 answered, never that an invariant held.
+
 **When the controller cannot be asked.** iz4 missing, crashed, timed out
 (every call has a time limit), exiting 1, printing no result document, or
 giving a result that disagrees with its exit code: none of these is a

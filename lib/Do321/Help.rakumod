@@ -128,7 +128,7 @@ sub topics(--> List) is export {
       '321 iz4 install'),
     t('iz4 status', HOLD, 'what is enforced here, one verdict per harness',
       ['321 iz4 status', '321 iz4 status --verbose'],
-      'A row per harness: its level (aware, checked or guarded) and what that is made of. --verbose lists every control and the warnings. It says what is wired, not what happened: a run\'s receipt records the checks that ran. 321 help enforcement explains the levels.',
+      'A row per harness: its level (aware, checked or guarded), what that is made of, and when iz4 last checked work here, from the hooks\' own records. A row marked ? had calls that could not reach iz4. --verbose lists every control, the warnings and the checks of the last seven days. 321 help enforcement explains the levels.',
       '321 iz4 status'),
 
     t('whois', 'Agents and trust', 'meet an agent: what it is for, how it works, what it may do',

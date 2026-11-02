@@ -1,0 +1,97 @@
+# What the hooks really did, as a status reads it: the outcome of a call,
+# the records, the counts, the words.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Controller;
+use Do321::Exercised;
+
+my $home = temp-dir();
+my $key = temp-dir().add('IZ4').Str;
+
+# ---- the outcome of one call ---------------------------------------------------------
+{
+    my sub v(*%p) { Verdict.new(|%p) }
+    is exercised-outcome(CTRL-FILESYSTEM-GUARD, v(:result(RESULT-PASS))), OUT-CHECKED, 'a pass is a check';
+    is exercised-outcome(CTRL-SHELL-GUARD, v(:result(RESULT-WARN))), OUT-CHECKED, 'so is a warning: the controller answered';
+    is exercised-outcome(CTRL-POST-RUN, v(:result(RESULT-BLOCK))), OUT-REFUSED, 'a block kept the work back';
+    is exercised-outcome(CTRL-FILESYSTEM-GUARD, v(:result(RESULT-NEEDS-HUMAN))), OUT-REFUSED, 'as does a question for a person';
+    is exercised-outcome(CTRL-POST-RUN, v(:result(RESULT-UNAVAILABLE))), OUT-UNANSWERED, 'a controller that could not be asked';
+    is exercised-outcome(CTRL-AUTHORITATIVE-CONTEXT, v(:result(RESULT-PASS))), OUT-DELIVERED, 'the context is delivered, never checked';
+    is exercised-outcome(CTRL-AUTHORITATIVE-CONTEXT, v(:result(RESULT-UNAVAILABLE))), OUT-UNANSWERED, 'unless it could not be read';
+    is exercised-outcome(CTRL-POST-RUN, v(:result(RESULT-PASS), :!asked)), '', 'a turn that owed nothing is not recorded at all';
+}
+
+# ---- records and the summary ---------------------------------------------------------
+{
+    is exercised-summary($home, $key, 'claude_code'), %(), 'no records: nothing is claimed';
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-POST-RUN, '');
+    nok exercised-file($home, $key).e, 'an empty outcome writes nothing';
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-AUTHORITATIVE-CONTEXT, OUT-DELIVERED);
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-FILESYSTEM-GUARD, OUT-UNANSWERED);
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-FILESYSTEM-GUARD, OUT-CHECKED);
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-POST-RUN, OUT-REFUSED);
+    record-exercised($home, $key, 'codex', 's2', CTRL-POST-RUN, OUT-CHECKED);
+    my %x = exercised-summary($home, $key, 'claude_code');
+    is %x<schema>, 'exercised.v1', 'a named schema';
+    is (%x<checked>, %x<refused>, %x<unanswered>, %x<delivered>), (1, 1, 1, 1), 'one harness\'s records, counted by outcome' or diag %x.raku;
+    is %x<unansweredSince>, 0, 'the unanswered call came before an answer: nothing to act on';
+    ok %x<lastAnswered> ne '' && %x<latest> ne '', 'when the controller last answered, and the latest record';
+    is exercised-summary($home, $key, 'codex')<checked>, 1, 'the other harness has its own count';
+    is exercised-words(%x, :controller<iz4>), ', last checked just now', 'the row says when it last checked';
+    like exercised-row(%x), / ^ '1 checked, 1 kept back, 1 unanswered in the last 7 days; latest just now' $ /, 'and --verbose counts the window';
+
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-SHELL-GUARD, OUT-UNANSWERED);
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-SHELL-GUARD, OUT-UNANSWERED);
+    %x = exercised-summary($home, $key, 'claude_code');
+    is %x<unansweredSince>, 2, 'calls since the last answer that could not reach it are counted';
+    is exercised-words(%x, :controller<iz4>), ', but 2 checks could not reach iz4', 'and come first in the words: they are what a person acts on';
+
+    # the window: a record older than seven days is not counted, and the
+    # next append prunes it
+    my $f = exercised-file($home, $key);
+    my $old = encode-json(%( at => '2020-01-01T00:00:00Z', harness => 'claude_code', session => 's0', control => CTRL-POST-RUN, outcome => OUT-CHECKED ));
+    $f.spurt("$old\n");
+    %x = exercised-summary($home, $key, 'claude_code');
+    is %x<checked>, 0, 'a record outside the window is not counted';
+    is %x<lastAnswered>, '2020-01-01T00:00:00Z', 'though it still says when the controller last answered';
+    like exercised-words(%x, :controller<iz4>), / ', last checked ' \d+ ' days ago' /, 'in days';
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-SHELL-GUARD, OUT-CHECKED);
+    is $f.lines.elems, 1, 'the next record prunes everything older than the window';
+    nok $f.lines.head.contains('2020'), 'and the new one is what is left';
+    $f.spurt("$old\n" ~ "not a record\n" ~ $f.slurp);
+    record-exercised($home, $key, 'claude_code', 's1', CTRL-SHELL-GUARD, OUT-CHECKED);
+    is $f.lines.elems, 2, 'a line that is not a record goes with the old ones';
+    is exercised-words(%(), :controller<iz4>), '', 'nothing recorded, nothing said';
+
+    # a line that is not a record is skipped, and so is one for an unknown outcome
+    $f.spurt("not json\n" ~ encode-json(%( at => now-stamp(), harness => 'claude_code', outcome => 'odd' )) ~ "\n");
+    is exercised-summary($home, $key, 'claude_code'), %(), 'a file with no records of this harness claims nothing';
+
+    # a different key is a different project
+    nok exercised-file($home, $key).Str eq exercised-file($home, temp-dir().add('IZ4').Str).Str, 'records are filed by project';
+}
+
+# ---- the file stays small ------------------------------------------------------------
+{
+    my $k = temp-dir().add('IZ4').Str;
+    record-exercised($home, $k, 'claude_code', 's', CTRL-FILESYSTEM-GUARD, OUT-CHECKED) for ^4001;
+    my $f = exercised-file($home, $k);
+    ok $f.lines.elems < 4001 && $f.s < 400_000, 'past four hundred kilobytes in the window, the newest two thousand lines are kept, so the file stays under the size' or diag "{$f.s} bytes, {$f.lines.elems} lines";
+    is exercised-summary($home, $k, 'claude_code')<checked>, exercised-file($home, $k).lines.elems, 'and they still count';
+}
+
+# ---- time in words ---------------------------------------------------------------------
+{
+    my sub at(Int $secs-ago --> Str) { DateTime.now.utc.earlier(:seconds($secs-ago)).Str.subst(/ '.' \d+ /, '') }
+    is ago-words(at(5)), 'just now', 'under a minute: just now';
+    is ago-words(at(61)), '1 minute ago', 'one minute, singular';
+    is ago-words(at(180)), '3 minutes ago', 'minutes';
+    is ago-words(at(7200)), '2 hours ago', 'hours';
+    is ago-words(at(3 * 86400)), '3 days ago', 'days';
+    is ago-words('nonsense'), '', 'not a time: nothing';
+}
+
+done-testing;

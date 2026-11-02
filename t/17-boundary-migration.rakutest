@@ -19,7 +19,9 @@ use Do321::Protocol;
 use Do321::Wire;
 
 my $lib = $?FILE.IO.parent.parent.add('lib/Do321');
-my %base = DO_321_CLAUDE_BINARY => fake-claude().Str;
+# a home of its own: the hooks here record what they did, and that must
+# not land in the developer's ~/.321
+my %base = DO_321_CLAUDE_BINARY => fake-claude().Str, DO_321_HOME => temp-dir().Str;
 sub c(*@args, :%env, Str :$in = '', IO::Path :$cwd) { x321(|@args, :env(%( |%base, |%env )), :$in, |($cwd ?? (:$cwd) !! ())) }
 sub commands(IO::Path $ws --> List) {
     my $f = $ws.add('.claude/settings.json');

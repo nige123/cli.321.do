@@ -11,7 +11,10 @@ use Do321::Protocol;
 use Do321::Wire;
 use Do321::ClaudeHooks;
 
-my %base = DO_321_IZ4 => stub-iz4(), DO_321_CLAUDE_BINARY => fake-claude().Str;
+# a home of its own: the hooks here record what they did, and that must
+# not land in the developer's ~/.321
+my $home = temp-dir();
+my %base = DO_321_IZ4 => stub-iz4(), DO_321_CLAUDE_BINARY => fake-claude().Str, DO_321_HOME => $home.Str;
 sub c(*@args, :%env, Str :$in = '', IO::Path :$cwd) { x321(|@args, :env(%( |%base, |%env )), :$in, |($cwd ?? (:$cwd) !! ())) }
 sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) }
 
@@ -66,7 +69,7 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     ($rc, $out, $err) = c('iz4', 'install', '--workspace', $ws.Str, '--verbose');
     is $rc, 0, 'install' or diag "$out\n$err";
     like $out, / 'claude_code' \s+ 'installed (.claude/settings.json); guarded: context delivered, edits and shell held, the turn end checked' /, 'it says what it did and where, in one row' or diag $out;
-    ok $out.contains('All wired: IZ4 is guarded in claude_code'), 'and that everything is in place, plainly';
+    ok $out.contains('All wired: IZ4 is guarded in claude_code.'), 'and that everything is in place, plainly, claiming no check that did not run' or diag $out;
     like $out, /^^ 'Context injection' \s+ 'yes (told to the agent; nothing is refused)' $$/, 'context: yes, and called what it is';
     like $out, /^^ 'Filesystem guard' \s+ 'yes' $$/, 'write guard: yes';
     like $out, /^^ 'Shell guard' \s+ 'yes' $$/, 'shell guard: yes';
@@ -224,6 +227,7 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     ok $rc == 0 && $out eq '' && $err eq '', 'a turn of reading and answering ends in silence even when verify would block' or diag "$out $err";
     ok !$calls.e || !$calls.lines.grep(*.starts-with('verify')), 'and iz4 verify was not run' or diag $calls.slurp;
     ok parse-json($log.lines.tail)<reason>.contains('not asked'), 'the log says it was not asked, not that it passed a check' or diag $log.lines.tail;
+    is-deeply parse-json($log.lines.tail)<asked>, False, 'and marks it as a question never put, so a receipt counts no hook as answered' or diag $log.lines.tail;
     # the earlier turn's Write still counts when it is the turn ending
     ($rc, $out, $err) = hook('post_run', %( transcript_path => $t.Str ), STUB_VERIFY => 'block', STUB_LOG => $calls.Str);
     ok $rc == 2 && $calls.lines.grep(*.starts-with('verify')), 'a turn that wrote is verified' or diag $calls.slurp;
@@ -237,6 +241,25 @@ sub settings(IO::Path $ws) { parse-json($ws.add('.claude/settings.json').slurp) 
     $calls.unlink;
     ($rc, $out, $err) = hook('post_run', %( ), STUB_LOG => $calls.Str);
     ok $calls.lines.grep(*.starts-with('verify')), 'no transcript: asked' or diag $calls.slurp;
+
+    # what ran: status says when iz4 last answered, from the hooks' own records
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str);
+    like $out, / 'claude_code' \N* 'last checked just now' /, 'the status row says when iz4 last checked work here' or diag $out;
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, '--json');
+    my %x = parse-json($out)<harnesses>.first({ .<harness> eq 'claude_code' })<exercised>;
+    ok %x<checked> > 0 && %x<refused> > 0 && %x<unanswered> == 0 && %x<delivered> == 1, 'and --json counts what the hooks did' or diag %x.raku;
+    ok %x<lastAnswered> ne '' && %x<unansweredSince> == 0, 'with when iz4 last answered';
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str, '--verbose');
+    like $out, / 'Checks run: ' \d+ ' checked, ' \d+ ' kept back in the last 7 days; latest just now' /, '--verbose counts the last seven days' or diag $out;
+    # a hook that cannot reach iz4 is the one thing the screen asks a person to act on
+    ($rc, $out, $err) = hook('filesystem_guard', %write, DO_321_IZ4 => '/nonexistent/iz4');
+    is $rc, 2, 'a guard that cannot reach iz4 stops the action';
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str);
+    like $out, / '?' \s+ 'claude_code' \N* ', but 1 check could not reach iz4' /, 'the row is marked and says so' or diag $out;
+    like $out, / 'next:' .* '321 doctor' /, 'and the next step is doctor' or diag $out;
+    ($rc, $out, $err) = hook('filesystem_guard', %write);
+    ($rc, $out, $err) = c('iz4', 'status', '--workspace', $ws.Str);
+    unlike $out, / 'could not reach' /, 'once iz4 answers again there is nothing to act on' or diag $out;
 
     # the baseline: a turn is measured from the tree it began with, not from HEAD
     my $tree0 = 'a' x 40; my $tree1 = 'b' x 40;

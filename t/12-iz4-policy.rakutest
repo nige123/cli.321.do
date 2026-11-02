@@ -109,11 +109,13 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     # hooks that fired but could not ask iz4 checked nothing: never counted as guarded
     {
         my @unasked = %( controller => 'iz4', harness => 'answering', control => 'filesystem_guard', point => 'action', result => 'unavailable', reason => 'iz4 check action timed out after 30s' ),
-                      %( controller => 'iz4', harness => 'answering', control => 'filesystem_guard', point => 'action', result => 'pass', reason => 'ok' );
+                      %( controller => 'iz4', harness => 'answering', control => 'filesystem_guard', point => 'action', result => 'pass', reason => 'ok' ),
+                      # a turn end that owed nothing: logged as a pass, but iz4 was never asked
+                      %( controller => 'iz4', harness => 'answering', control => 'post_run', point => 'verify', result => 'pass', asked => False, reason => 'not asked: this turn used no tool that can change files' );
         my %u = go(Answering.new(:summary($report), :has-controls(%full), :carries-hooks, :fire(@unasked)), $ws);
         my %ug = governed(%u);
         nok is-in('guarded', %ug<levels>), 'a run in which a guard could not ask iz4 is not counted as guarded';
-        is %ug<hooksFired>, 1, 'only the hook that really got an answer is counted as fired';
+        is %ug<hooksFired>, 1, 'only the hook that really got an answer is counted as fired: not the unanswered one, not the one that asked nothing';
         ok %ug<gaps>.grep(*.contains('could not ask iz4')), 'and the gap says a hook could not ask iz4';
         ok %ug<checks>.grep({ .<result> eq 'unavailable' && .<control> eq 'filesystem_guard' }), 'with the unanswered check on the receipt';
     }
