@@ -1,7 +1,7 @@
 unit module Do321::Harnesses;
 
-#| Harnesses as Mission Control shows them: a name a person reads, a short
-#| tag beside the agent's own name, and what each can do, in words.  The
+#| Harnesses as Mission Control shows them: a name a person reads beside
+#| the agent's own name, and what each can do, in words.  The
 #| words come from what each adapter claims to enforce (its enforcement
 #| map), never from a list kept here by provider, so a new adapter is
 #| described the day it is registered.  An agent is the crew; a harness is
@@ -13,10 +13,8 @@ use Do321::CLI;
 
 #| Display names, only where an adapter's own name reads badly.
 my constant NAMES = %( claude_code => 'Claude Code', codex => 'Codex', fake => 'a stand-in harness', procedure => 'a procedure' );
-my constant TAGS  = %( claude_code => 'claude' );
 
 sub harness-name(Str $adapter --> Str) is export { NAMES{$adapter} // $adapter }
-sub harness-tag(Str $adapter --> Str) is export { TAGS{$adapter} // $adapter }
 
 #| The adapters `321 run` will drive: the runtime's own set.
 sub runtime-registry(--> Registry) is export { default-registry($*ERR) }

@@ -72,7 +72,7 @@ subtest 'the deck at 120x36' => {
     ok $t.lines.first(*.contains($d.short)).contains('done'), 'a run with a receipt says how it ended';
     ok $t.contains('Bea, builds, and brings the proof'), 'the byline names who is answering';
     ok $t.contains('use base64url, not base64') && $t.contains('✓ taken'), 'the steer is shown taken';
-    ok $t.contains("to BEA {$a.short} ›"), 'the input line says who it goes to';
+    ok $t.contains("to BEA {$a.short} ❯"), 'the input line says who it goes to';
     ok @l[*-1].contains('Enter send') && @l[*-1].contains('Esc keys') && @l[*-1].contains('/start'), 'the footer teaches the keys and the words';
     nok $t.contains('Ctrl') || $t.contains('^'), 'and no control key';
     nok $t.contains('stuck'), 'nothing is called stuck';
@@ -276,15 +276,16 @@ subtest 'the agent first, the harness beside it' => {
     my $t = render($mm, 36, 120).text;
     my $r1 = $t.lines.first(*.contains($h1.short));
     my $r2 = $t.lines.first(*.contains($h2.short));
-    ok $r1.contains('BEA') && $r1.contains('claude'), 'one row: Bea, on Claude Code' or diag $r1;
-    ok $r2.contains('BEA') && $r2.contains('codex'), 'the other: Bea, on Codex' or diag $r2;
-    ok $r1.index('BEA') < $r1.index('claude'), 'the agent leads, the harness follows';
+    ok $r1.contains('BEA') && $r1.contains('Claude Code'), 'one row: Bea, on Claude Code' or diag $r1;
+    ok $r2.contains('BEA') && $r2.contains('Codex'), 'the other: Bea, on Codex' or diag $r2;
+    ok $r1.index('BEA') < $r1.index('Claude Code'), 'the agent leads, the harness follows';
+    ok $t.lines.first({ .contains('CREW') && .contains('HARNESS') && .contains('MISSION') }), 'and the column is headed HARNESS, so the engine is never read as the model';
     ok $t.contains("{$h1.short} · on Claude Code"), 'the selected run says which engine it is on';
     $mm.sel = $mm.crew.first({ .id eq $h2.id }, :k);
     my $w = render($mm, 40, 160).text;
     ok $w.contains('on Codex'), 'from 150 columns the conversation is headed with the engine too';
     ok $w.lines.first({ .contains('cannot') && .contains('tool_allowlist') }), 'and the evidence says what that engine cannot do';
-    ok $w.lines.first({ .contains('codex · add a coupon') }), 'the rail tags each run with its engine';
+    ok $w.lines.first({ .contains('Codex · add a coupon') }), 'the rail names each run\'s engine';
 }
 
 subtest 'decoding keys' => {

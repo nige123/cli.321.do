@@ -81,7 +81,8 @@ class Crew is export {
     method byline(--> Str) { %!run<agent><byline> // '' }
     #| The harness the run is on: the one the runtime chose, else the one asked for.
     method harness(--> Str) { $!state.harness || ((%!run<harness> // {})<requested> // '') }
-    method tag(--> Str) { self.harness ne '' ?? harness-tag(self.harness) !! '' }
+    #| The harness by its name, so 'Claude Code' is never read as the model.
+    method tag(--> Str) { self.harness ne '' ?? harness-name(self.harness) !! '' }
     method request(--> Str) { (%!run<request> // '').subst(/\s+/, ' ', :g) }
     method phase(--> Str) { $!state.phase eq 'ended' ?? 'ended' !! %!live<phase> // $!state.phase }
     method outcome(--> Str) { $!state.outcome ne '' ?? $!state.outcome !! (%!live<outcome> // '') }
@@ -344,14 +345,15 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
     my $row = $top;
     my $deck-max = (($rows div 3) - 1) max 3;
     my $wide = $cols >= 110;
-    my @w = $wide ?? (6, 16, 0, 30, 9, 6, 6, 9) !! (5, 7, 0, 18, 6, 5, 0, 0);
+    # run, crew, harness, mission, state, met, last, tools, cost
+    my @w = $wide ?? (6, 8, 13, 0, 30, 9, 6, 6, 9) !! (5, 7, 0, 0, 18, 6, 5, 0, 0);
     my $spare = $cols - 2 - @w.sum - 1;
     # the mission gets up to 44 columns; anything more goes to the state
-    @w[2] = $spare min 44;
-    @w[3] += $spare - @w[2];
+    @w[3] = $spare min 44;
+    @w[4] += $spare - @w[3];
     if $wide {
-        $cv.put($row, 2, pad('RUN', @w[0]) ~ pad('CREW', @w[1]) ~ pad('MISSION', @w[2]) ~ pad('STATE', @w[3]) ~
-            pad('MET', @w[4]) ~ pad('LAST', @w[5]) ~ pad('TOOLS', @w[6]) ~ 'COST', 'dim');
+        $cv.put($row, 2, pad('RUN', @w[0]) ~ pad('CREW', @w[1]) ~ pad('HARNESS', @w[2]) ~ pad('MISSION', @w[3]) ~ pad('STATE', @w[4]) ~
+            pad('MET', @w[5]) ~ pad('LAST', @w[6]) ~ pad('TOOLS', @w[7]) ~ 'COST', 'dim');
         $row++;
         $deck-max--;
     }
@@ -372,21 +374,20 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
         $word ~= " · {$cr.unread} new" if !$sel && $cr.unread;
         my $c = $cv.put($row, 0, $sel ?? '▶ ' !! '  ', $sel ?? 'bold' !! '');
         $c = $cv.put($row, $c, pad($cr.short, @w[0]), $sel ?? 'bold' !! '');
+        # the agent first; the harness it runs on beside it, quieter
+        $c = $cv.put($row, $c, pad($cr.name, @w[1] - 1) ~ ' ', $sel ?? 'bold' !! '');
         if $wide {
-            # the agent first; the harness beside it, quieter
-            my $nc = $cv.put($row, $c, pad($cr.name, 7), $sel ?? 'bold' !! '');
-            $cv.put($row, $nc, fit($cr.tag, @w[1] - 8), 'dim');
-            $c += @w[1];
+            $cv.put($row, $c, fit($cr.tag, @w[2] - 1), 'dim');
+            $c += @w[2];
         }
-        else { $c = $cv.put($row, $c, pad($cr.name, @w[1] - 1) ~ ' ', $sel ?? 'bold' !! '') }
-        $c = $cv.put($row, $c, pad($cr.request, @w[2] - 1) ~ ' ', $sel ?? 'bold' !! '');
+        $c = $cv.put($row, $c, pad($cr.request, @w[3] - 1) ~ ' ', $sel ?? 'bold' !! '');
         my $sc = $cv.put($row, $c, $mark ~ ' ', $tone);
-        $cv.put($row, $sc, fit($word, @w[3] - 3), $tone eq 'ok' ?? '' !! $tone);
-        $c += @w[3];
-        $c = $cv.put($row, $c, pad(met($cr), @w[4]), 'dim');
-        $c = $cv.put($row, $c, pad(ago($cr.state.last-at), @w[5]), 'dim');
+        $cv.put($row, $sc, fit($word, @w[4] - 3), $tone eq 'ok' ?? '' !! $tone);
+        $c += @w[4];
+        $c = $cv.put($row, $c, pad(met($cr), @w[5]), 'dim');
+        $c = $cv.put($row, $c, pad(ago($cr.state.last-at), @w[6]), 'dim');
         if $wide {
-            $c = $cv.put($row, $c, pad($cr.state.tools.Str, @w[6]), 'dim');
+            $c = $cv.put($row, $c, pad($cr.state.tools.Str, @w[7]), 'dim');
             $cv.put($row, $c, $cr.state.cost-text, 'dim');
         }
         $cv.tint($row, 0, $cols, 'sel') if $sel;
@@ -533,14 +534,14 @@ sub prompt-and-hint(Model $m, Int $cols --> List) {
     my $narrow = $cols < 100;
     given $m.mode {
         when 'confirm' { return ($m.confirm[0], 'y yes · any other key cancels') }
-        when 'find' { return ('find ›', "words in {$sc.defined ?? $sc.name ~ ' ' ~ $sc.short !! 'this run'}'s conversation   Enter older match · Esc back") }
+        when 'find' { return ('find ❯', "words in {$sc.defined ?? $sc.name ~ ' ' ~ $sc.short !! 'this run'}'s conversation   Enter older match · Esc back") }
         when 'nav' {
             return ('', $narrow
                 ?? '↑↓ run · s stop · h hold · r resume · n new · / word · q leave · Esc type'
                 !! '↑↓ run   s stop   h hold   r resume   a again   n new   / word   v view   q leave   Esc type');
         }
     }
-    my $to = $sc.defined ?? "to {$sc.name} {$sc.short} ›" !! '›';
+    my $to = $sc.defined ?? "to {$sc.name} {$sc.short} ❯" !! '❯';
     my $slash = slash-hint($m);
     return ($to, $slash) if $slash ne '';
     ($to, $narrow
@@ -993,11 +994,16 @@ sub run-deck(Str :$focus = '' --> Int) is export {
         last if $m.quit;
         if $resized { $resized = False; $t.size; $t.invalidate; $dirty = True; $log.note("resize {$t.cols}x{$t.rows}") }
         for $m.crew -> $c { $dirty = True if $c.refresh }
-        if now.Num - $m.scanned > 1 { my $n = $m.crew.elems; $m.scan; $dirty = True if $m.crew.elems != $n }
+        # a run started elsewhere shows within two seconds; a run started
+        # here is scanned for at once
+        if now.Num - $m.scanned > 2 { my $n = $m.crew.elems; $m.scan; $dirty = True if $m.crew.elems != $n }
         if now.Num - $last-tick >= 0.4 {
             $m.tick++;
             $last-tick = now.Num;
-            $dirty = True if $m.crew.first(*.active) || True;
+            # the beat moves while a run works; otherwise only the clock,
+            # the flash and the 'ago' words change, once a second at most.
+            # An idle screen is not redrawn more often than that
+            $dirty = True if $m.crew.first(*.active) || $last-tick.Int != $last-draw.Int;
         }
         if $dirty && now.Num - $last-draw >= 1/30 {
             my ($rows, $cols) = ($t.rows, $t.cols);
