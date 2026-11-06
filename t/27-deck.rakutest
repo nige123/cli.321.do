@@ -288,6 +288,26 @@ subtest 'the agent first, the harness beside it' => {
     ok $w.lines.first({ .contains('Codex · add a coupon') }), 'the rail names each run\'s engine';
 }
 
+subtest 'the arrows stop at the ends of the crew; Tab cycles' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    my $n = $mm.visible.elems;
+    ok $n >= 2, "$n runs to move between";
+    $mm.mode = 'nav';
+    $mm.sel = $n - 1;
+    handle-key($mm, Key.new(:name<down>));
+    is $mm.sel, $n - 1, 'down on the last run stays on it';
+    $mm.sel = 0;
+    handle-key($mm, Key.new(:name<up>));
+    is $mm.sel, 0, 'up on the first stays on it';
+    $mm.mode = 'input';
+    $mm.sel = $n - 1;
+    handle-key($mm, Key.new(:name<tab>));
+    is $mm.sel, 0, 'Tab from the last run comes round to the first';
+    handle-key($mm, Key.new(:name<shift-tab>));
+    is $mm.sel, $n - 1, 'and Shift-Tab goes back round';
+}
+
 subtest 'decoding keys' => {
     my ($k, $rest) = decode-keys(Buf.new("\e[A\e[B\e[5~a\r".encode.list));
     is $k.map(*.Str).join(' '), '<up> <down> <pgup> a <enter>', 'arrows, page keys, a character and Enter';

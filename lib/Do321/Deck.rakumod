@@ -847,10 +847,12 @@ sub slash-hint(Model $m --> Str) {
 #| things done often; everything else is a word on the input line.
 sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
     my $c = $m.selected;
-    my sub move(Int $d) {
+    # the arrows stop at the ends of the crew, as a list does; Tab cycles,
+    # which is what Tab is for
+    my sub move(Int $d, Bool :$cycle = False) {
         my $n = $m.visible.elems;
         return unless $n;
-        $m.sel = ($m.sel + $d) % $n;
+        $m.sel = $cycle ?? ($m.sel + $d) % $n !! (($m.sel + $d) max 0) min ($n - 1);
     }
     my sub type(Str $text) { $m.mode = 'input'; $m.input = $text; $m.cursor = $text.chars }
     my sub edit() {
@@ -891,7 +893,8 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
         when 'nav' {
             given $k.name {
                 when 'up' | 'left'    { move(-1) }
-                when 'down' | 'right' | 'tab' { move(1) }
+                when 'down' | 'right' { move(1) }
+                when 'tab'            { move(1, :cycle) }
                 when 'enter' | 'esc' { $m.mode = 'input' }
                 when 'char' {
                     given $k.text {
@@ -926,9 +929,9 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                             type("/$common");
                         }
                     }
-                    else { move(1) }
+                    else { move(1, :cycle) }
                 }
-                when 'shift-tab' { move(-1) }
+                when 'shift-tab' { move(-1, :cycle) }
                 when 'up'   { if $c.defined { $c.scroll += 1 } }
                 when 'down' { if $c.defined { $c.scroll = ($c.scroll - 1) max 0 } }
                 when 'left' | 'right' {
