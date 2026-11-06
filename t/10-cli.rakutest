@@ -252,6 +252,19 @@ sub operator-env(Bool $bound, *%extra --> List) {
     ok !read-lines($log).grep(*.starts-with('go ')), 'the engine\'s go did not run';
 }
 
+# a go for the revision that is already live is a no-op, said as one, exit 0
+{
+    my $tp = operator-trust(policy => { standingApprovals => [ %( action => 'deploy', targets => ['alpha.web@live'], approvedBy => 'nige' ), ] });
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live', FAKE_ENGINE_DEPLOYED => '2' x 40);
+    my ($rc, $out, $err) = cli($tp, '--non-interactive', 'op', 'go', 'alpha.web', 'live', :env(%$env));
+    my $all = $out ~ $err;
+    is $rc, 0, 'already live: exit 0' or diag $all;
+    ok $all.contains('alpha.web@live is already at 2222222; nothing to do'), 'the screen says it is already there' or diag $all;
+    ok $all.contains('op status alpha.web live'), 'and the next step is to look, not to try again' or diag $all;
+    ok !$all.contains('plan again') && !$all.contains('fix what'), 'never sends the person back round' or diag $all;
+    ok !read-lines($log).grep(*.starts-with('go ')), 'the engine\'s go did not run';
+}
+
 # an unattended go deploys under a standing approval the operator wrote into local policy
 {
     my $tp = operator-trust(policy => { standingApprovals => [ %( action => 'deploy', targets => ['alpha.web@live'], approvedBy => 'nige' ), ] });

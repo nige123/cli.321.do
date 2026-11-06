@@ -680,6 +680,20 @@ class ProcedureAdapter does Adapter is export {
         if $fresh<service> ne $approved<service> || $fresh<target> ne $approved<target> {
             $err = "the fresh plan is for {$fresh<service> ~ '@' ~ $fresh<target>}, the approval for {$approved<service> ~ '@' ~ $approved<target>}";
         }
+        # the target already carries the approved revision: there is
+        # nothing to deploy.  Said as what it is, a no-op, not as a
+        # refusal to retry; nothing executes, and the approval stands
+        my $at = ($fresh<observed> // {})<deployedRevision>; $at = '' unless $at ~~ Str;
+        my $want = ($approved<revision> // {})<sha>; $want = '' unless $want ~~ Str;
+        if !$err.defined && $want ne '' && $at eq $want {
+            my $where = $approved<service> ~ '@' ~ $approved<target>;
+            %check<operationMatched> = False;
+            %check<detail> = "$where is already at {$want.substr(0, 7)}; nothing to deploy";
+            $out.approval-check = %check;
+            $out.status = STATUS-NO-CHANGE; $out.end-reason = 'already_deployed';
+            $out.summary = "$where is already at {$want.substr(0, 7)}; nothing to do";
+            return (True, False);
+        }
         my $result = '';
         without $err {
             $result = try gate($approved, $approval, state-from($fresh, $approved), $ex);

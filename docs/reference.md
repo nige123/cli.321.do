@@ -317,7 +317,10 @@ match its pattern is refused before anything runs.
   still resolving, the manifest digest and the deployed revision unchanged
   since the approved plan. Any of these failing is `approval_mismatch` with
   the reason on the receipt and nothing executed. Changed parameters mean a
-  new proposal and a renewed approval.
+  new proposal and a renewed approval. One case is said as what it is: when
+  the fresh plan finds the target already at the approved revision, the run
+  ends `no_change` (`already_deployed`), nothing executes, and the approval
+  stands; there is nothing to deploy and no plan to make again.
 - **Who approves a standalone `321 <agent> go`.** A person typing it at a
   terminal is the approval: the runner plans first, mints an `operator/`
   approval bound to that plan and grants `deploy.invoke`; the run header

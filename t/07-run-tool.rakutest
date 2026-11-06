@@ -213,6 +213,22 @@ sub approved-plan(Registry $reg --> List) {
     ok %r<evidence><approvalCheck>.defined && !%r<evidence><approvalCheck><operationMatched>, 'the check is recorded as failed';
 }
 
+# the target already carries the approved revision: a no-op, said as one
+{
+    my ($reg, $, $) = bound-registry();
+    my ($, $approval) = approved-plan($reg);
+    my ($reg2, $, $ex) = bound-registry(FAKE_ENGINE_DEPLOYED => '0f94b03');
+    my %wp = op-pkg($agent, 'go alpha.web live revision 0f94b03', CAP-DEPLOY-READ, CAP-DEPLOY-PLAN, CAP-DEPLOY-INVOKE);
+    %wp<approval> = $approval;
+    my %r = runner($reg2).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    is %r<status>, STATUS-NO-CHANGE, 'a go for a revision that is already live ends no_change, not failed' or diag "{%r<status>} {%r<evidence><errors>.raku}";
+    ok %r<summary>.contains('alpha.web@live is already at 0f94b03') && %r<summary>.contains('nothing to do'), 'and says so' or diag %r<summary>;
+    is %r<attempts>[0]<endReason>, 'already_deployed', 'with the reason on the attempt';
+    is $ex.calls.elems, 0, 'nothing executes';
+    ok !%r<evidence><externalAction>.defined && !@(%r<evidence><errors>), 'no action, no error';
+}
+
 {
     my ($reg, $, $ex) = bound-registry();
     my ($, $approval) = approved-plan($reg);

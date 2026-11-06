@@ -357,6 +357,11 @@ sub next-after-run(%r, Str :$invocation, Str :$prefix, Str :$workspace = '', Boo
         if $deployed && $service ne '' {
             return next-text('check it is serving as you expect', "$prefix status $service $target");
         }
+        my $at = (%p<observed> // {})<deployedRevision> // '';
+        my $want = (%p<revision> // {})<sha> // '';
+        if $status eq 'no_change' && $service ne '' && $want ne '' && $at eq $want {
+            return next-text("$service is serving $target at that revision already; see it for yourself", "$prefix status $service $target");
+        }
         if %p && %p<status> eq 'planned' && $service ne '' {
             return $target ∈ @allowed
                 ?? next-text('if this plan is what you want deployed, type the go; typing it is your approval', "$prefix go $service $target")
