@@ -92,7 +92,7 @@ define 'RunReceipt', (
     continues => 'ptr:Continuation?', agent => 'obj:AgentRef', harness => 'obj:HarnessInfo',
     attempts => 'list:Attempt', directives => 'obj:DirectiveSummary', instructionHistory => 'obj:HistoryRef',
     events => 'obj:EventSummary', startedAt => 'str', endedAt => 'str', status => 'str', summary => 'str?',
-    blockedOn => 'str?', conditions => 'list:ConditionProof', evidence => 'obj:Evidence', cost => 'obj:Cost',
+    blockedOn => 'str?', blockedEvidence => 'str?', conditions => 'list:ConditionProof', evidence => 'obj:Evidence', cost => 'obj:Cost',
     stop => 'ptr:StopInfo?', denied => 'ptr:DenialInfo?', uncertain => 'strs?', receiptDigest => 'str',
     signature => 'ptr:Signature?');
 define 'Continuation', (runId => 'str', receiptId => 'str', receiptDigest => 'str', attempts => 'int');
@@ -108,7 +108,7 @@ define 'EventSummary', (emitted => 'int', coalesced => 'int');
 define 'ConditionProof', (met => 'bool', proof => 'str?');
 define 'Evidence', (
     filesChanged => 'strs?', artifacts => 'list:Artifact?', externalAction => 'ptr:ExternalAction?',
-    approvalCheck => 'ptr:ApprovalCheck?', denials => 'strs?', errors => 'strs?', noChange => 'bool?',
+    approvalCheck => 'ptr:ApprovalCheck?', denials => 'strs?', errors => 'strs?', toolFailures => 'strs?', noChange => 'bool?',
     toolCalls => 'list:ToolCall?', proposal => 'ptr:DeploymentProposal?', controllers => 'list:ControllerEvidence?');
 # What governed the work besides the runtime's own grants: one record per
 # controller (IZ4, say) that applied, with what really operated.

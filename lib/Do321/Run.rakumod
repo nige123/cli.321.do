@@ -568,6 +568,8 @@ class Session is export {
     has Str $.policy-text = '';          # the controllers' context, as it goes into the prompt
     has Str $!hook-log = '';             # where this run's hooks report back
     has Str $!final-words = '';          # what the agent said in its last attempt, beyond the summary
+    has @!tool-failures;                 # failing tool results 321 saw in this run's events, in words
+    has Int $!tool-failures-more = 0;    # those beyond the ones kept
     has Int $!hook-lines = 0;
 
     method !init() {
@@ -617,6 +619,27 @@ class Session is export {
                 seq => $!event-seq, at => &!now(), kind => $kind, payload => %payload);
         });
         ($!opts.sink // null-sink()).emit(%ev);
+        self!note-tool-failure(%payload) if $kind eq EVENT-TOOL-RESULT;
+    }
+
+    #| A tool result that says it failed is something 321 saw on the run,
+    #| not something the agent claimed.  A few are kept, in words; the
+    #| rest are counted.
+    method !note-tool-failure(%p) {
+        return unless (%p<ok>:exists) && !%p<ok>;
+        my sub s($v) { $v ~~ Str ?? $v !! '' }
+        my $what = (s(%p<tool>), s(%p<op>)).grep(* ne '').join(' ') || 'a tool';
+        my $why = s(%p<unavailable>) || s(%p<error>) || ((%p<exitCode>:exists) ?? "exit {%p<exitCode>}" !! 'failed');
+        $!mu.protect({
+            if @!tool-failures.elems < 10 { @!tool-failures.push("$what: $why") }
+            else { $!tool-failures-more++ }
+        });
+    }
+
+    method tool-failures(--> List) {
+        $!mu.protect({
+            ( |@!tool-failures, |($!tool-failures-more ?? ("and $!tool-failures-more more failing tool result(s)",) !! ()) ).List
+        });
     }
 
     #| Refuse packages the runtime must not execute at all.  Returns
@@ -802,6 +825,8 @@ class Session is export {
         $!dir.finish-run;
         self.fill($last);
         self.check-controllers;
+        self.check-conditions;
+        self.blocked-evidence($last);
         self.finish;
     }
 
@@ -1012,6 +1037,43 @@ class Session is export {
         try $!hook-log.IO.unlink if $!hook-log ne '';
     }
 
+    #| The package's done conditions decide whether the work is done, not
+    #| the agent's word that it is.  A run that would end completed or
+    #| no_change with any condition unmet, or unanswered, ends blocked
+    #| instead, naming them, so it can be continued to finish them.  The
+    #| answers themselves are the agent's: the receipt says 321 did not
+    #| check them.  A run with no conditions is left as it is.
+    method check-conditions() {
+        my @want = @(%!wp<completion><conditions> // []);
+        return unless @want;
+        my %r := %!receipt;
+        self!uncertain("the done conditions' met and proof answers are the agent's own; 321 did not check them");
+        return unless is-in(%r<status>, [STATUS-COMPLETED, STATUS-NO-CHANGE]);
+        my @unmet = @want.keys.grep({ !(%r<conditions>[$_] // {})<met> });
+        return unless @unmet;
+        my sub short(Str $s) { my $l = $s.lines.head // ''; $l.chars > 80 ?? $l.substr(0, 80) ~ '…' !! $l }
+        my @named = @unmet.head(3).map({ "#{$_ + 1} {short(@want[$_].Str)}" });
+        @named.push('…') if @unmet > 3;
+        %r<status> = STATUS-BLOCKED;
+        %r<blockedOn> = "done conditions not met: {+@unmet} of {+@want} ({@named.join('; ')})";
+        self.emit(EVENT-PROGRESS, %( text => "{+@unmet} of {+@want} done conditions are not met; the run is blocked, not completed" ));
+    }
+
+    #| Whether a blocked run's blocker was seen by 321 or is only the
+    #| agent's word.  Blocked by 321 itself (unmet conditions, a
+    #| controller, a procedure's own step): observed.  Blocked on the
+    #| agent's say-so: observed only when the run recorded a failing tool,
+    #| a denial or an error; otherwise reported.  The status stands either
+    #| way: this records, it does not judge.
+    method blocked-evidence(Outcome $last) {
+        my %r := %!receipt;
+        return unless %r<status> eq STATUS-BLOCKED;
+        my %e = %r<evidence> // {};
+        my $seen = so (@(%e<toolFailures> // []) || @(%e<denials> // []) || @(%e<errors> // []));
+        my $agents-word = $last.status eq STATUS-BLOCKED && !$!procedure.defined;
+        %r<blockedEvidence> = !$agents-word || $seen ?? 'observed' !! 'reported';
+    }
+
     method !controller-evidence(Governing $g --> Hash) {
         my @levels;
         @levels.push(PROTECT-AWARE) if $g.aware;
@@ -1096,6 +1158,7 @@ class Session is export {
         %r<evidence><externalAction> = $out.external-action if $out.external-action.defined;
         %r<evidence><approvalCheck> = $out.approval-check if $out.approval-check.defined;
         %r<evidence><toolCalls> = [ |@(%r<evidence><toolCalls> // []), |$out.tool-calls ] if $out.tool-calls;
+        with self.tool-failures { %r<evidence><toolFailures> = [ |$_ ] if .elems }
         %r<evidence><proposal> = $out.proposal if $out.proposal.defined;
         if %!wp<workspace><kind> eq 'git' && %!wp<workspace><path> ne '' {
             my @files = ($!opts.list-changed-files // &git-changed-files)(%!wp<workspace><path>);

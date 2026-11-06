@@ -859,6 +859,7 @@ class StreamConsumer is export {
     has Summary $.envelope;
     has Str $.session = '';
     has @.said;                # the assistant's own text, in order
+    has %!tool-names;          # tool_use id => tool name, to name a result
 
     method line(Str $line) {
         return if $line.trim eq '';
@@ -874,12 +875,29 @@ class StreamConsumer is export {
                 # the runtime's own note about the run, not the agent's words
                 $!ctl.emit.(EVENT-PROGRESS, %( notice => 'rate limited, waiting' )) with $!ctl;
             }
+            when 'user' {
+                # Tool results come back as the user's turn.  Only a failure
+                # is recorded: it is something 321 saw, not the agent's
+                # word.  A success is left out to keep the log small.
+                my $msg = $ev<message>;
+                for @(($msg ~~ Associative ?? $msg<content> !! []) // []) -> $c {
+                    next unless $c ~~ Associative && str-of($c<type>) eq 'tool_result' && $c<is_error>;
+                    my $tool = %!tool-names{str-of($c<tool_use_id>)} // '';
+                    my $text = $c<content> ~~ Str ?? $c<content>
+                        !! @(($c<content> ~~ Positional ?? $c<content> !! []) // []).grep(Associative).map({ str-of(.<text>) }).join("\n");
+                    $text = $text.trim.subst(/\s+/, ' ', :g);
+                    $text = $text.substr(0, 200) ~ '…' if $text.chars > 200;
+                    self!say('  · ' ~ ($tool || 'a tool') ~ ' failed' ~ ($text ne '' ?? ": {first-line($text, 100)}" !! ''));
+                    $!ctl.emit.(EVENT-TOOL-RESULT, %( tool => $tool, ok => False, error => $text )) with $!ctl;
+                }
+            }
             when 'assistant' {
                 my $msg = $ev<message>;
                 for @(($msg ~~ Associative ?? $msg<content> !! []) // []) -> $c {
                     next unless $c ~~ Associative;
                     given str-of($c<type>) {
                         when 'tool_use' {
+                            %!tool-names{str-of($c<id>)} = str-of($c<name>) if str-of($c<id>) ne '';
                             next if str-of($c<name>) eq 'StructuredOutput';
                             my $target = tool-target($c<input>);
                             self!say('  · ' ~ (str-of($c<name>) ~ ' ' ~ $target).trim);

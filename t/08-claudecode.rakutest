@@ -141,4 +141,64 @@ sub claude-registry(%env --> Registry) {
     ok is-in(%stop<directiveId>, %r<directives><applied>), 'the stop is applied once the process has ended';
 }
 
+# a failing tool result in the stream is recorded as observed; a success is not
+{
+    my @seen;
+    my $ctl = Control.new(emit => -> $kind, %p { @seen.push(%( :$kind, |%p )) });
+    my @lines =
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/x/a.txt"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"make"}}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"fine"}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"make: *** No rule to make target.  ' ~ ('x' x 300) ~ '"}]}]}}';
+    consume-stream(@lines, Any, $ctl);
+    my @res = @seen.grep(*<kind> eq EVENT-TOOL-RESULT);
+    is @res.elems, 1, 'only the failing tool result is recorded';
+    ok @res && @res[0]<tool> eq 'Bash' && !@res[0]<ok>, 'named by its tool_use, and not ok' or diag @res.raku;
+    ok @res && @res[0]<error>.starts-with('make: *** No rule') && @res[0]<error>.chars <= 201, 'with the start of the error, cut short' or diag @res.raku;
+}
+
+# a run that saw a failing tool records it; blocked after it is observed
+{
+    my ($log, $env) = claude-env('complete', FAKE_CLAUDE_TOOL_ERROR => 'tests failed: 3 of 10', FAKE_CLAUDE_STATUS => 'blocked');
+    my %wp = pkg-for($agent, 'build it');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    is %r<status>, STATUS-BLOCKED, 'the agent said blocked';
+    is-deeply %r<evidence><toolFailures>, ['Bash: tests failed: 3 of 10'], 'the failing tool is on the receipt' or diag %r<evidence>.raku;
+    is %r<blockedEvidence>, 'observed', 'blocked after a failing tool: observed';
+}
+
+# blocked on the agent's word alone is reported, not observed
+{
+    my ($log, $env) = claude-env('complete', FAKE_CLAUDE_STATUS => 'blocked');
+    my %wp = pkg-for($agent, 'build it');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    is %r<status>, STATUS-BLOCKED, 'the agent said blocked';
+    ok !%r<evidence><toolFailures>, 'no tool failed';
+    is %r<blockedEvidence>, 'reported', 'blocked with nothing seen: reported';
+}
+
+# a completed run carries no blockedEvidence
+{
+    my ($log, $env) = claude-env('complete');
+    my %wp = pkg-for($agent, 'build it', 'built');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-COMPLETED && (%r<blockedEvidence> // '') eq '', 'completed: no blockedEvidence';
+}
+
+# the agent says done, but leaves a condition unmet: blocked, observed
+{
+    my ($log, $env) = claude-env('complete', FAKE_CLAUDE_CONDITIONS => '1');
+    my %wp = pkg-for($agent, 'build it', 'built', 'and tested');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    is %r<status>, STATUS-BLOCKED, 'an unmet condition blocks a run the agent called done';
+    is %r<blockedOn>, 'done conditions not met: 1 of 2 (#2 and tested)', 'blockedOn names it';
+    is %r<blockedEvidence>, 'observed', 'the unmet condition is observed by 321';
+}
+
 done-testing;

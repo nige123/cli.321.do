@@ -44,6 +44,61 @@ my $agent = helper();
         'fewer answers than conditions: the missing ones are unmet with a reason';
 }
 
+# unmet done conditions cannot end completed; the agent's answers are its own
+{
+    my %wp = pkg-for($agent, 'do three things', 'one', 'two', 'three');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my sub run-with(@script) { runner(fake-registry([ |@script ])).run($bg, %wp, $agent, Options.new(:adapter<fake>)) }
+    my sub assert(Int $n, Bool $met) { %( kind => 'assert', condition => $n, met => $met, proof => "answer $n" ) }
+
+    my %r = run-with([ assert(1, True), assert(2, True), assert(3, True) ]);
+    check-receipt(%r);
+    is %r<status>, STATUS-COMPLETED, 'all conditions met: completed';
+    ok (%r<blockedOn> // '') eq '' && (%r<blockedEvidence> // '') eq '', 'with nothing blocked';
+    ok @(%r<uncertain> // []).grep(*.contains("the agent's own; 321 did not check them")),
+        'the receipt says the met and proof answers are the agent\'s own' or diag %r<uncertain>.raku;
+
+    %r = run-with([ assert(1, True), assert(2, False), assert(3, False) ]);
+    check-receipt(%r);
+    is %r<status>, STATUS-BLOCKED, 'conditions answered unmet: blocked, not completed';
+    is %r<blockedOn>, 'done conditions not met: 2 of 3 (#2 two; #3 three)', 'blockedOn names the unmet conditions in their own words';
+    is %r<blockedEvidence>, 'observed', '321 saw the unmet conditions itself';
+    ok %r<conditions>[1]<proof> eq 'answer 2' && !%r<conditions>[1]<met>, 'the answers are kept as given';
+
+    %r = run-with([ assert(2, True), ]);
+    check-receipt(%r);
+    is %r<status>, STATUS-BLOCKED, 'conditions left unanswered: blocked';
+    is %r<blockedOn>, 'done conditions not met: 2 of 3 (#1 one; #3 three)', 'naming the unanswered ones';
+
+    my %none = pkg-for($agent, 'do it');
+    %none<capabilities><limits><network> = NETWORK-OPEN;
+    %r = runner(fake-registry([ %( kind => 'emit', text => 'done' ), ])).run($bg, %none, $agent, Options.new(:adapter<fake>));
+    is %r<status>, STATUS-COMPLETED, 'a run with no conditions is unchanged';
+    ok !@(%r<uncertain> // []).grep(*.contains('done conditions')), 'and says nothing about conditions';
+}
+
+# a failing tool result on the events (as Codex reports a failing command)
+# is recorded on the receipt, and a blocker after it counts as observed
+{
+    my class FailingStub is StubAdapter {
+        method run(Cancel $ctx, Spec $spec, Control $ctl --> Outcome) {
+            $ctl.emit.(EVENT-TOOL-RESULT, %( tool => 'shell', ok => True, exitCode => 0 ));
+            $ctl.emit.(EVENT-TOOL-RESULT, %( tool => 'shell', ok => False, exitCode => 2 ));
+            callsame;
+        }
+    }
+    my %wp = pkg-for($agent, 'do it');
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my $stub = FailingStub.new(:enf(new-stub(False).enforcement), :status(STATUS-BLOCKED.Str));
+    my %r = runner(stub-registry($stub)).run($bg, %wp, $agent, Options.new);
+    check-receipt(%r);
+    is %r<status>, STATUS-BLOCKED, 'the agent said blocked';
+    is-deeply %r<evidence><toolFailures>, ['shell: exit 2'], 'only the failing result is on the receipt' or diag %r<evidence>.raku;
+    is %r<blockedEvidence>, 'observed', 'a blocker after a failing tool is observed';
+    %r = runner(stub-registry(new-stub(False, :status(STATUS-BLOCKED.Str)))).run($bg, %wp, $agent, Options.new);
+    ok %r<status> eq STATUS-BLOCKED && %r<blockedEvidence> eq 'reported', 'with nothing seen, blocked is the agent\'s word: reported';
+}
+
 # denials name their reason and never fall back
 sub deny(%wp, Registry $reg, Str $want) {
     my %r = runner($reg).run($bg, %wp, $agent, Options.new);

@@ -239,6 +239,24 @@ condition list, so the issuer can prove the receipt answers the package it
 issued, condition by condition. Its `receiptDigest` is over its own
 canonical content.
 
+The receipt keeps what 321 saw apart from what the agent said:
+
+- The package's done conditions decide whether the work is done, not the
+  agent's word. A run that would end `completed` or `no_change` with any
+  condition answered unmet, or not answered at all, ends **blocked**, and
+  `blockedOn` names them in their own words (`done conditions not met: 1
+  of 2 (#2 the tests pass)`), so `--continue` can ask the agent to finish.
+  The `met` and `proof` answers are still the agent's own: whenever there
+  are conditions, `uncertain` says 321 did not check them. A run with no
+  conditions is unaffected.
+- `evidence.toolFailures` lists tool results the runtime saw fail on the
+  harness's own event stream (`Bash: <error>`, `shell: exit 1`); a few are
+  kept and the rest counted. Successful results are not listed.
+- A blocked run carries `blockedEvidence`: `observed` when 321 saw the
+  blocker itself (unmet conditions, a controller, a procedure step, or a
+  failing tool, a denial or an error recorded on the run), `reported` when
+  it is the agent's word alone. It records; it never changes the status.
+
 A receipt can also be signed. `321 key new` makes this 321 an Ed25519 key
 under `~/.321/key.json` (or `DO_321_HOME`); from then on every receipt it
 writes carries `signature` over its `receiptDigest`, and `321 key` shows

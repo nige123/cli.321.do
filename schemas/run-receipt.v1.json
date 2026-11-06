@@ -44,6 +44,7 @@
     "status": { "enum": ["completed", "no_change", "blocked", "failed", "stopped", "denied"] },
     "summary": { "type": "string" },
     "blockedOn": { "type": "string" },
+    "blockedEvidence": { "enum": ["observed", "reported"], "description": "Present when status is blocked: observed when the runtime itself saw the blocker (unmet done conditions, a controller, a procedure step, or a failing tool, denial or error recorded on the run); reported when the blocker is the agent's word alone. It records; it never changes the status." },
     "conditions": { "type": "array", "items": { "type": "object", "required": ["met"], "properties": { "met": { "type": "boolean" }, "proof": { "type": "string" } } } },
     "evidence": {
       "type": "object", "additionalProperties": false,
@@ -74,6 +75,7 @@
           }
         },
         "errors": { "type": "array", "items": { "type": "string" } },
+        "toolFailures": { "type": "array", "items": { "type": "string" }, "description": "Tool results the runtime saw fail during the run, from the harness's own event stream, in words (tool: error). A few are kept and the rest counted." },
         "noChange": { "type": "boolean" }
       }
     },

@@ -15,6 +15,8 @@
 #                           completing (relative to the working directory)
 #   FAKE_CLAUDE_CONDITIONS  how many done conditions to answer as met (default 1)
 #   FAKE_CLAUDE_STATUS      changed (default) | no_change | blocked
+#   FAKE_CLAUDE_TOOL_ERROR  when set, a Bash tool call whose result is an
+#                           error with this text, before the result
 set -u
 if [ "${1:-}" = "--version" ]; then echo "fake-claude 0.0.1"; exit 0; fi
 if [ -n "${FAKE_CLAUDE_LOG:-}" ]; then printf '%q ' "$@" >> "$FAKE_CLAUDE_LOG"; printf '\n' >> "$FAKE_CLAUDE_LOG"; fi
@@ -36,6 +38,10 @@ if [ "$mode" = "hang" ] || { [ "$mode" = "hang-until-resumed" ] && [ -z "$resume
 fi
 if [ -n "${FAKE_CLAUDE_WRITE:-}" ]; then
   printf 'package calc\n\n// Add returns the sum of a and b.\nfunc Add(a, b int) int { return a + b }\n' > "$FAKE_CLAUDE_WRITE"
+fi
+if [ -n "${FAKE_CLAUDE_TOOL_ERROR:-}" ]; then
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_fake1","name":"Bash","input":{"command":"make test"}}]}}\n'
+  printf '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_fake1","is_error":true,"content":"%s"}]}}\n' "$FAKE_CLAUDE_TOOL_ERROR"
 fi
 n=${FAKE_CLAUDE_CONDITIONS:-1}
 conds=""
