@@ -215,8 +215,8 @@ subtest 'a package something else issued is hosted as it stands' => {
     is %run<request>, 'host this package', 'its objective is the request';
     is $r.package-file.slurp, $f.slurp, 'the package is kept byte for byte';
     ok wait-for({ events($r).first(*<kind> eq 'host_started') }), 'the host is up';
-    ($rc, $out, $err) = mc('--json', 'start', '--package', $f.Str);
-    isnt $rc, 0, 'the same package is not started twice';
+    ($rc, $out, $err) = mc('start', '--package', $f.Str, '--json');
+    isnt $rc, 0, 'the same package is not started twice (and --json may follow the package)';
     ok $err.contains('already exists'), 'and says so' or diag $err;
     ($rc, $out) = mc('stop', $r.short);
     is $rc, 3, 'it stops like any other' or diag $out;
@@ -241,6 +241,33 @@ subtest 'a package something else issued is hosted as it stands' => {
     ok $rc != 0 && $err.contains('alone'), 'a package and an agent are not both given' or diag $err;
     ($rc, $out, $err) = mc('help', 'start');
     ok $out.contains('--package FILE'), 'help start names the flag, so a caller can probe for it' or diag $out;
+}
+
+subtest 'a package that leaves its git workspace path to the caller' => {
+    # an issuer's digest is taken over the document as issued, so the path
+    # is deliberately absent and arrives as the caller's --workspace
+    my $id = new-ulid();
+    my $f = $home.add("$id.json");
+    $f.spurt(encode-json(%( schema => SCHEMA-WORK-PACKAGE, packageId => $id, issuer => %( kind => 'work-system', id => '123.do' ),
+        issuedAt => now-stamp(), agent => %( id => 'example.test/helper', version => '1.2.0', digest => compute($pkg)[0] ),
+        placement => PLACEMENT-CLIENT, workspace => %( kind => 'git', ownership => 'caller' ), objective => 'work in the caller\'s checkout',
+        context => %( lines => [] ), completion => %( conditions => ['it ran'] ),
+        capabilities => %( granted => [CAP-REPO-READ], limits => %() ), authority => %() )) ~ "\n");
+    my ($rc, $out, $err) = mc('--json', 'start', '--package', $f.Str);
+    ok $rc != 0 && $err.contains('workspace.path'), 'without a workspace from anyone it is refused, naming the gap' or diag $err;
+    ok !run-dir($id).dir.e, 'and nothing is made';
+    my $ws = $home.add('checkout');
+    $ws.mkdir;
+    run 'git', 'init', '-q', $ws.Str, :out, :err;
+    ($rc, $out, $err) = mc('--json', 'start', '--package', $f.Str, '--workspace', $ws.Str);
+    is $rc, 0, 'with --workspace it starts' or diag $err;
+    my $r = run-dir($id);
+    @runs.push($r);
+    is $r.run<workspace>, $ws.absolute.Str, 'in the caller\'s checkout';
+    is $r.package-file.slurp, $f.slurp, 'and the package is still kept as issued, without the path';
+    ok wait-for({ events($r).first(*<kind> eq 'host_started') }), 'the host is up';
+    ($rc, $out) = mc('stop', $r.short);
+    is $rc, 3, 'and it stops' or diag $out;
 }
 
 subtest 'the last one stops cleanly' => {

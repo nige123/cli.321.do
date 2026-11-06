@@ -147,6 +147,10 @@ sub mc-main(@argv --> Int) is export {
 sub cmd-start(%o, @args --> Int) {
     my %w = parse-run-words('start', @args);
     with %w<error> { return usage($_) }
+    %o<json> ||= %w<json>;
+    %o<brief> ||= %w<brief>;
+    return usage('--json and --brief are two forms; ask for one') if %o<json> && %o<brief>;
+    dress(False) if %o<json> || %o<brief>;
     my $ws = %w<workspace> ne '' ?? %w<workspace> !! %o<workspace>;
     my $harness = %w<harness> ne '' ?? %w<harness> !! %o<harness>;
     # a package something else issued is hosted as it stands; an agent

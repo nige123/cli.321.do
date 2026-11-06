@@ -51,7 +51,7 @@ sub run-words-starting(Str $prefix, Bool :$screen = True --> List) is export {
 #| force, yes, view; or error, saying what is wrong in one line.
 sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export {
     my %r = verb => $verb, run => '', words => '', harness => '', isolate => False, workspace => '',
-            force => False, yes => False, view => '', package => '', continue => '';
+            force => False, yes => False, view => '', package => '', continue => '', json => False, brief => False;
     my $w = run-word($verb);
     return %( |%r, error => "'$verb' is not a run word" ) without $w;
     return %( |%r, error => "'$verb' is for Mission Control's screen" ) if $w.screen-only && !$screen;
@@ -69,6 +69,11 @@ sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export 
                     when '--workspace' { return err('--workspace needs a directory') unless @a; %r<workspace> = @a.shift }
                     when '--package'   { return err('--package needs a work package file') unless @a; %r<package> = @a.shift }
                     when '--continue'  { return err('--continue needs a receipt file') unless @a; %r<continue> = @a.shift }
+                    # the forms a pipe asks for are accepted anywhere around
+                    # the word; after the agent they are the request's own
+                    when '--json'      { %r<json> = True }
+                    when '--brief'     { %r<brief> = True }
+                    when '--plain'     { }
                     default            { return err("'$_' is not an option of start") }
                 }
             }

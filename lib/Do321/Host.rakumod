@@ -137,6 +137,15 @@ sub launch-package(IO::Path $file, Str :$workspace = '', Str :$continue = '', IO
     return (RunDir, "$file is not JSON") unless $doc ~~ Associative;
     my %wp = try load('WorkPackage', $doc);
     return (RunDir, "$file is not a work package: {$!.message}") if $!;
+    # the workspace: the caller's word, else the package's; caller-owned
+    # either way, and never a worktree of 321's making.  An issuer leaves
+    # the path out on purpose, since its digest is taken over the document
+    # as issued, so the caller's word is filled in before the package is
+    # judged, as the runtime does
+    my $ws = $workspace ne '' ?? $workspace !! ((%wp<workspace> // {})<path> // '').Str;
+    return (RunDir, "no such directory: $ws") if $ws ne '' && !$ws.IO.d;
+    $ws = $ws.IO.absolute.Str if $ws ne '';
+    %wp<workspace><path> = $ws if $ws ne '' && ((%wp<workspace> // {})<path> // '') eq '';
     my $problems = validate-work-package(%wp);
     return (RunDir, "$file is not a work package: {$problems.Str}") if $problems;
     my $id = %wp<packageId>.Str;
@@ -147,11 +156,6 @@ sub launch-package(IO::Path $file, Str :$workspace = '', Str :$continue = '', IO
         return (RunDir, $why) with $why;
         $adapter = $name;
     }
-    # the workspace: the caller's word, else the package's; caller-owned
-    # either way, and never a worktree of 321's making
-    my $ws = $workspace ne '' ?? $workspace !! ((%wp<workspace> // {})<path> // '').Str;
-    return (RunDir, "no such directory: $ws") if $ws ne '' && !$ws.IO.d;
-    $ws = $ws.IO.absolute.Str if $ws ne '';
     # a continuation: the receipt it goes on from, read now and kept with
     # the run, so the runtime continues exactly what the issuer named
     my (%prev, $prev-bytes);

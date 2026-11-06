@@ -29,6 +29,9 @@ subtest "a word's own options, and only its own" => {
     %r = parse-run-words('start', <--harness codex --isolate helper tidy --force the README>);
     is (%r<agent>, %r<words>, %r<harness>, %r<isolate>), ('helper', 'tidy --force the README', 'codex', True),
         'options come before the agent; the request is word for word, dashes and all';
+    %r = parse-run-words('start', <--package p.json --json>);
+    ok %r<package> eq 'p.json' && %r<json>, 'a form a pipe asks for may follow --package, where no request could own it';
+    ok parse-run-words('start', <--package p.json helper tidy>)<error>.contains('alone'), 'a package and an agent are not both given';
 }
 
 subtest 'a line on the screen' => {
