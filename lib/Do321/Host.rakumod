@@ -207,7 +207,7 @@ sub continued-file(RunDir $r --> IO::Path) { $r.dir.add('continued-receipt.json'
 #| word otherwise.  Nothing here decides whether it runs.
 sub agent-words(Str $id --> Hash) {
     my $name = $id.split('/').tail;
-    my %w = id => $id, name => $name, displayName => $name, byline => '', version => '';
+    my %w = id => $id, name => $name, displayName => $name, byline => '', version => '', color => '';
     try {
         my $cfg = load-trust(default-trust-path());
         my $g = Do321::CLI::Global.new;
@@ -218,6 +218,8 @@ sub agent-words(Str $id --> Hash) {
             %w<displayName> = %m<displayName> // $name;
             %w<byline> = byline-of(%m);
             %w<version> = %m<version> // '';
+            # the agent's own accent, as 123 gives each agent one
+            %w<color> = ((%m<identity> // {})<color> // '').Str;
         }
     }
     %w;

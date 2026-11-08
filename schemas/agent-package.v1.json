@@ -40,7 +40,8 @@
         "byline": { "type": "string", "minLength": 1, "maxLength": 48 },
         "personality": { "type": "string" },
         "tone": { "type": "string" },
-        "decisionStyle": { "type": "string" }
+        "decisionStyle": { "type": "string" },
+        "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
       }
     },
     "prompts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/safeRelPath" } },

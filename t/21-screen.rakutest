@@ -11,6 +11,7 @@ use v6.d;
 use lib $?FILE.IO.parent.add('lib').Str;
 use Test;
 use Do321::Screen;
+use Do321::Palette;
 use Do321::Result;
 use Do321ScreenFixtures;
 
@@ -87,7 +88,7 @@ subtest 'an agent looks the same whatever happened; a state carries all the colo
     is @drawn[1][1], @drawn[2][1], 'and the same again on a failure';
 
     for @drawn -> @l {
-        nok @l[1].contains("\e[32m") || @l[1].contains("\e[31m") || @l[1].contains("\e[33m"),
+        nok @l[1].contains(colour-code('green')) || @l[1].contains(colour-code('red')) || @l[1].contains(colour-code('amber')),
             'the byline takes no state colour';
         nok @l[1] ~~ / '✓' | '✗' | '?' /, 'and no state mark';
     }
@@ -122,7 +123,7 @@ subtest 'where both registers appear in one row, each keeps to its own column' =
         ok @spans.elems >= 1, 'something in the row is coloured';
         for @spans -> ($code, $text) {
             ok $text ~~ / ^ <[✓✗?·]> ' ' /, "only a state is coloured, not '{$text.trim}'";
-            ok $code eq any('32', '31', '33', '2'), 'and in a state colour';
+            ok $code eq any(colour-sgr('green'), colour-sgr('red'), colour-sgr('amber'), '2'), 'and in a state colour';
         }
         nok @spans.grep({ .[1] ~~ / <[⬢⬣⬡◉◍⬤⯁⬠]> / }), 'no agent mark is inside a coloured span';
     }

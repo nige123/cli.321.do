@@ -13,6 +13,7 @@ use Do321::Trust;
 use Do321::Wire;
 use Do321::Help;
 use Do321::Look;
+use Do321::Palette;
 
 sub trust-file(%cfg --> IO::Path) {
     my $p = temp-dir().add('trust.json');
@@ -236,7 +237,7 @@ subtest 'the icon marks a header, never a result' => {
     ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_PROGRESS => '1'));
     ok $out ~~ / ^^ '  · procedure ' / && !$out.contains("\e["), 'DO_321_PROGRESS=1: one line per event, plain' or diag $out;
     # a denial: the mark, the word, and the details once, wrapped under it
-    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_COLOR => '0', LANG => 'C', LC_ALL => 'C', LC_CTYPE => 'C', WT_SESSION => ''));
+    ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(%(DO_321_COLOR => '0', LANG => 'C', LC_ALL => 'C', LC_CTYPE => 'C', WT_SESSION => '')));
     ok $err.lines[0].starts-with("{ICON-PLAIN} 321 helper: ") && $out ~~ / ^^ '+ completed: ' /, 'plain twins where the locale is not UTF-8' or diag "$err\n$out";
 }
 
@@ -273,8 +274,9 @@ subtest 'pretty dresses output for a terminal only' => {
     like $on, /"\e[1m" '  321 agents' "\e[0m" '       who'/, 'a command heading a column is bold and the words are left alone';
     like $on, /"\e[1m" 'next:' "\e[0m"/, 'next is bold';
     like $on, /"\e[1m" '       321 helper status' "\e[0m"/, 'and so is the command beneath it';
-    like $on, /"\e[32m" '✓' "\e[0m"/, 'a tick is green';
-    like $on, /"\e[31m" '✗' "\e[0m"/, 'a cross is red';
+    my ($green, $red) = colour-code('green'), colour-code('red');
+    like $on, /$green '✓' "\e[0m"/, 'a tick is the family green';
+    like $on, /$red '✗' "\e[0m"/, 'a cross is red';
     like $on, /"\e[2m" '# a comment' "\e[0m"/, 'a comment is dimmed';
     like $on, /"\e[1m" 'completed' "\e[0m"/, 'the last word of a run is bold';
     like $on, /"\e[1m" 'All clear' "\e[0m"/, 'and so is the line that says everything holds';

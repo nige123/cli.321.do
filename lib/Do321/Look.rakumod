@@ -1,5 +1,7 @@
 unit module Do321::Look;
 
+use Do321::Palette;
+
 #| How 321 speaks to a person: the one place every command's words pass
 #| through on their way to a terminal.
 #|
@@ -30,7 +32,7 @@ sub icon(--> Str) is export { utf8-terminal() ?? ICON !! ICON-PLAIN }
 
 #| The marks a result carries, each a different shape so it reads without
 #| colour, each with a plain twin.
-constant %GLYPH = yes => ('✓', '+'), no => ('✗', 'x'), unknown => ('?', '?'), dot => ('·', '-'), note => ('»', '>');
+constant %GLYPH = yes => ('✓', '+'), no => ('✗', 'x'), unknown => ('?', '?'), dot => ('·', '-'), note => ('›', '>');
 sub glyph(Str $which --> Str) is export { %GLYPH{$which}[utf8-terminal() ?? 0 !! 1] }
 
 #| The mark a run's last word carries: a tick for done, a cross for what
@@ -80,13 +82,14 @@ sub dress(Bool $on) is export { $DRESS = $on }
 
 # --------------------------------------------------------------- colour
 
-#| The brand's blue, as this terminal can show it; ink stays the terminal's own.
-my sub blue(--> Str) { (%*ENV<COLORTERM> // '') eq 'truecolor' | '24bit' ?? "\e[38;2;59;130;246m" !! "\e[38;5;69m" }
+#| The family's colours (Do321::Palette), as this terminal can show
+#| them; ink stays the terminal's own.
+my sub blue(--> Str)  { colour-code('blue') }
+my sub green(--> Str) { colour-code('green') }
+my sub amber(--> Str) { colour-code('amber') }
+my sub red(--> Str)   { colour-code('red') }
 my constant BOLD  = "\e[1m";
 my constant DIM   = "\e[2m";
-my constant RED   = "\e[31m";
-my constant GREEN = "\e[32m";
-my constant AMBER = "\e[33m";
 my constant OFF   = "\e[0m";
 
 #| The first words a person types: the command words, bold wherever a
@@ -139,9 +142,9 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
         # comments, dimmed
         elsif $l ~~ / ^ \h* '#' / { $l = "{DIM}{$l}{OFF}" }
         # the marks; a run's last word after one is bold
-        elsif $l ~~ / ^ (\h*) ('✓' | '+') (\h .*) $ / { $l = "{$0}{GREEN}{$1}{OFF}{verdict(~$2)}" }
-        elsif $l ~~ / ^ (\h*) ('✗' | 'x') (\h .*) $ / { $l = "{$0}{RED}{$1}{OFF}{verdict(~$2)}" }
-        elsif $l ~~ / ^ (\h*) '?' (\h .*) $ / { $l = "{$0}{AMBER}?{OFF}{verdict(~$1)}" }
+        elsif $l ~~ / ^ (\h*) ('✓' | '+') (\h .*) $ / { $l = "{$0}{green()}{$1}{OFF}{verdict(~$2)}" }
+        elsif $l ~~ / ^ (\h*) ('✗' | 'x') (\h .*) $ / { $l = "{$0}{red()}{$1}{OFF}{verdict(~$2)}" }
+        elsif $l ~~ / ^ (\h*) '?' (\h .*) $ / { $l = "{$0}{amber()}?{OFF}{verdict(~$1)}" }
         elsif $l ~~ / ^ (\h*) ('·' | '-') (\h 'stopped' .*) $ / { $l = "{$0}{$1}{verdict(~$2)}" }
         # the line that says everything holds
         elsif $l ~~ / ^ ('All ' \w+) (':' .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }

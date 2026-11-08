@@ -1902,7 +1902,7 @@ my class Collector { has @.lines; method say($s) { @!lines.push($s.Str) } }
 sub brief-event-text(%e --> Str) {
     my $c = Collector.new;
     render-event($c, %e);
-    $c.lines.join(' ').subst(/ ^ \h* ['·' | '-' | '»' | '>'] \h+ /, '').trim;
+    $c.lines.join(' ').subst(/ ^ \h* ['·' | '-' | '›' | '»' | '>'] \h+ /, '').trim;
 }
 
 #| What the run came to, in chunks a person can take in: the last word

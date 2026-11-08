@@ -1,5 +1,7 @@
 unit module Do321::Screen;
 
+use Do321::Palette;
+
 #| What a command says, as values rather than as text.
 #|
 #| A command builds a Screen: a title, a byline where an agent is
@@ -31,12 +33,8 @@ unit module Do321::Screen;
 # ----------------------------------------------------------------- the ink
 
 #| The brand's blue, as this terminal can show it.
-my sub blue(--> Str) { (%*ENV<COLORTERM> // '') eq 'truecolor' | '24bit' ?? "\e[38;2;59;130;246m" !! "\e[38;5;69m" }
 my constant BOLD  = "\e[1m";
 my constant DIM   = "\e[2m";
-my constant RED   = "\e[31m";
-my constant GREEN = "\e[32m";
-my constant AMBER = "\e[33m";
 my constant OFF   = "\e[0m";
 
 #| The one place ink is applied.  Without colour the text is returned as
@@ -44,12 +42,12 @@ my constant OFF   = "\e[0m";
 sub ink(Str $text, Str $with, Bool :$colour --> Str) is export {
     return $text unless $colour && $text ne '';
     my $code = do given $with {
-        when 'brand' { blue() }
+        when 'brand' { colour-code('blue') }
         when 'bold'  { BOLD }
         when 'dim'   { DIM }
-        when 'red'   { RED }
-        when 'green' { GREEN }
-        when 'amber' { AMBER }
+        when 'red'   { colour-code('red') }
+        when 'green' { colour-code('green') }
+        when 'amber' { colour-code('amber') }
         default      { '' }
     };
     $code eq '' ?? $text !! "{$code}{$text}{OFF}";

@@ -56,7 +56,7 @@ sub needs-you($c --> Bool) is export {
 }
 
 sub filter-word(Str $f --> Str) {
-    given $f { when 'active' { 'active runs' } when 'needs' { 'runs that need you' } default { 'every run' } }
+    given $f { when 'active' { 'active runs' }; when 'needs' { 'runs that need you' }; default { 'every run' } }
 }
 
 class Crew is export {
@@ -79,6 +79,9 @@ class Crew is export {
     method name(--> Str) { (%!run<agent><displayName> // %!run<agent><name> // '?').uc.substr(0, 6) }
     method display(--> Str) { %!run<agent><displayName> // %!run<agent><name> // '?' }
     method byline(--> Str) { %!run<agent><byline> // '' }
+    #| The style the agent's name wears: its own accent, as 123 shows the
+    #| same agent, else the amber 123 falls back to.
+    method accent(--> Str) { my $c = (%!run<agent><color> // '').Str; $c ~~ / ^ '#' <xdigit> ** 6 $ / ?? $c !! 'wait' }
     #| The harness the run is on: the one the runtime chose, else the one asked for.
     method harness(--> Str) { $!state.harness || ((%!run<harness> // {})<requested> // '') }
     #| The harness by its name, so 'Claude Code' is never read as the model.
@@ -194,8 +197,10 @@ sub met(Crew $c --> Str) {
 }
 
 #| A run's state as a mark, a word and a tone: the deck's STATE column.
-#| The beat strikes once in four ticks while events arrive, and stops when
-#| they have not for BEAT-QUIET seconds.
+#| The marks are the family's: ◉ is a run at work, as 123 marks what is
+#| being done now, and it blinks to ◌ once in four ticks while events
+#| arrive; the beat stops when they have not for BEAT-QUIET seconds.  A
+#| tick is done, a question waits on a person, a cross did not happen.
 sub crew-line(Crew $c, Int $tick, Bool :$narrow = False --> List) is export {
     my $s = $c.state;
     my $quiet = $s.last-at ne '' ?? (now - ((try DateTime.new($s.last-at).Instant) // now)) !! 0;
@@ -206,13 +211,13 @@ sub crew-line(Crew $c, Int $tick, Bool :$narrow = False --> List) is export {
             my $beat = $quiet < BEAT-QUIET && $tick % 4 == 0;
             # a host whose heartbeat stopped is said so; liveness still decides lost
             my $hb = $c.heartbeat-age;
-            return ('•', "no heartbeat for {$hb}s", 'wait') if $hb > HEARTBEAT-STALE && ($c.live<phase> // '') eq 'running';
+            return ('◌', "no heartbeat for {$hb}s", 'wait') if $hb > HEARTBEAT-STALE && ($c.live<phase> // '') eq 'running';
             my $word = $quiet > QUIET-WARN ?? "quiet for {ago($s.last-at)}" !! $s.activity;
             $word ~= " · $ctl" if $ctl ne '';
-            return ($beat ?? '●' !! '•', $word, $ctl.contains('unconfirmed') || $quiet > QUIET-WARN ?? 'wait' !! 'ok');
+            return ($beat ?? '◌' !! '◉', $word, $ctl.contains('unconfirmed') || $quiet > QUIET-WARN ?? 'wait' !! 'now');
         }
         when 'held'     { return ('‖', 'held' ~ ($ctl ne '' ?? " · $ctl" !! ''), 'wait') }
-        when 'stopping' { return ('●', 'stopping' ~ ('·' x (1 + $tick % 3)), 'wait') }
+        when 'stopping' { return ('◉', 'stopping' ~ ('·' x (1 + $tick % 3)), 'wait') }
         when 'lost'     { return ('✗', 'lost: ' ~ ($c.live<why> // 'host gone'), 'bad') }
         when 'ended' {
             my $o = $c.outcome;
@@ -264,17 +269,18 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
             my ($mark, $, $tone) = crew-line($cr, $m.tick, :narrow);
             my $label = "{$cr.short} {$cr.name}{$i != $m.sel && $cr.unread ?? '+' ~ $cr.unread !! ''} ";
             if $c + text-width($label) + 2 > $cols - 4 { $cv.put(0, $c, "+{@crew - $i}", 'dim'); last }
-            my $st = $i == $m.sel ?? 'sel+bold' !! '';
-            $c = $cv.put(0, $c, ($i == $m.sel ?? '▶' !! ' ') ~ $label, $st);
+            my $st = ($i == $m.sel ?? 'sel+bold+' !! 'bold+') ~ $cr.accent;
+            $c = $cv.put(0, $c, ($i == $m.sel ?? '▸' !! ' ') ~ $label, $st);
             $c = $cv.put(0, $c, $mark, $tone);
             $c = $cv.put(0, $c, ' ');
         }
-        $cv.put(1, 0, '─' x $cols, 'dim');
+        $cv.put(1, 0, '─' x $cols, 'rule');
         $row = 2;
         my $sc = $m.selected;
         if $sc.defined {
             my $right = "{met($sc)} · {ago($sc.state.last-at)}";
-            $cv.put($row, 1, "{$sc.name} {$sc.short}{$sc.tag ne '' ?? ' · ' ~ $sc.tag !! ''} · {$sc.request}", 'bold', :max($cols - text-width($right) - 3));
+            my $nc = $cv.put($row, 1, $sc.name, 'bold+' ~ $sc.accent);
+            $cv.put($row, $nc, " {$sc.short}{$sc.tag ne '' ?? ' · ' ~ $sc.tag !! ''} · {$sc.request}", 'bold', :max($cols - $nc - text-width($right) - 2));
             $cv.put($row, $cols - text-width($right) - 1, $right, 'dim');
             $row++;
         }
@@ -289,7 +295,7 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         my $c = $cv.put(0, 0, "{icon()} 321 MISSION CONTROL", 'brand');
         $cv.put(0, $c + 3, $sum, 'dim', :max($cols - $c - 14));
         $cv.put(0, $cols - 9, $time, 'dim');
-        $cv.put(1, 0, '─' x $cols, 'dim');
+        $cv.put(1, 0, '─' x $cols, 'rule');
         $row = 2;
         $row = draw-deck($cv, $m, @crew, $row, $rows, $cols, $empty) unless $rail;
     }
@@ -302,10 +308,10 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         my $ew = 40;
         my $mid = $rw + 2;
         my $mw = $cols - $ew - 1 - $mid - 1;
-        for $row ..^ $foot -> $r { $cv.put($r, $rw, '│', 'dim'); $cv.put($r, $cols - $ew - 1, '│', 'dim') }
+        for $row ..^ $foot -> $r { $cv.put($r, $rw, '│', 'rule'); $cv.put($r, $cols - $ew - 1, '│', 'rule') }
         draw-rail($cv, $m, @crew, $row, $foot, $rw, $empty);
         if $sc.defined {
-            my $c = $cv.put($row, $mid, $sc.display, 'bold', :max($mw));
+            my $c = $cv.put($row, $mid, $sc.display, 'bold+' ~ $sc.accent, :max($mw));
             $c = $cv.put($row, $c, ", {$sc.byline}", '', :max($mid + $mw - $c)) if $sc.byline ne '';
             $cv.put($row, $c, "  on {harness-name($sc.harness)}", 'dim', :max($mid + $mw - $c)) if $sc.harness ne '';
             draw-comms($cv, $sc, $row + 1, $foot, $mid, $mw);
@@ -321,9 +327,12 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
     }
 
     # --- the input line and the footer
-    $cv.put($foot, 0, '─' x $cols, 'dim');
+    $cv.put($foot, 0, '─' x $cols, 'rule');
     my ($prompt, $hint) = prompt-and-hint($m, $cols);
-    my $pc = $cv.put($foot + 1, 1, $prompt, 'bold');
+    # the arrow before the cursor is where the person is: the focus blue
+    my $pc = $prompt.ends-with('❯')
+        ?? $cv.put($foot + 1, $cv.put($foot + 1, 1, $prompt.chop, 'bold'), '❯', 'now')
+        !! $cv.put($foot + 1, 1, $prompt, 'bold');
     $cv.put($foot + 1, $pc, ' ' ~ input-view($m, $cols - $pc - 2));
     # a flash never hides what a question needs to say
     my $flash = (now.Num - $m.flash-at < 6 && $m.mode eq 'input' | 'nav' | 'find') ?? $m.flash !! '';
@@ -372,17 +381,17 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
         my ($mark, $word, $tone) = crew-line($cr, $m.tick, :narrow(!$wide));
         my $sel = $i == $m.sel;
         $word ~= " · {$cr.unread} new" if !$sel && $cr.unread;
-        my $c = $cv.put($row, 0, $sel ?? '▶ ' !! '  ', $sel ?? 'bold' !! '');
+        my $c = $cv.put($row, 0, $sel ?? '▸ ' !! '  ', $sel ?? 'bold' !! '');
         $c = $cv.put($row, $c, pad($cr.short, @w[0]), $sel ?? 'bold' !! '');
         # the agent first; the harness it runs on beside it, quieter
-        $c = $cv.put($row, $c, pad($cr.name, @w[1] - 1) ~ ' ', $sel ?? 'bold' !! '');
+        $c = $cv.put($row, $c, pad($cr.name, @w[1] - 1) ~ ' ', ($sel ?? 'bold+' !! '') ~ $cr.accent);
         if $wide {
             $cv.put($row, $c, fit($cr.tag, @w[2] - 1), 'dim');
             $c += @w[2];
         }
         $c = $cv.put($row, $c, pad($cr.request, @w[3] - 1) ~ ' ', $sel ?? 'bold' !! '');
         my $sc = $cv.put($row, $c, $mark ~ ' ', $tone);
-        $cv.put($row, $sc, fit($word, @w[4] - 3), $tone eq 'ok' ?? '' !! $tone);
+        $cv.put($row, $sc, fit($word, @w[4] - 3), $tone eq 'ok' | 'now' ?? '' !! $tone);
         $c += @w[4];
         $c = $cv.put($row, $c, pad(met($cr), @w[5]), 'dim');
         $c = $cv.put($row, $c, pad(ago($cr.state.last-at), @w[6]), 'dim');
@@ -398,11 +407,11 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
         $cv.put($row, 2, $empty, 'dim');
         $row++;
     }
-    $cv.put($row, 0, '─' x $cols, 'dim');
+    $cv.put($row, 0, '─' x $cols, 'rule');
     $row++;
     my $sc = $m.selected;
     if $sc.defined {
-        my $c = $cv.put($row, 1, $sc.display, 'bold');
+        my $c = $cv.put($row, 1, $sc.display, 'bold+' ~ $sc.accent);
         $c = $cv.put($row, $c, ", {$sc.byline}") if $sc.byline ne '';
         my $right = "{$sc.short}{$sc.harness ne '' ?? ' · on ' ~ harness-name($sc.harness) !! ''} · {$sc.state.attempts > 1 ?? "attempt {$sc.state.attempts} · " !! ''}{($sc.run<workspace> // '') || 'no workspace'}";
         $cv.put($row, ($c + 4) max ($cols - text-width($right) - 1), $right, 'dim', :max($cols - $c - 5));
@@ -421,10 +430,11 @@ sub draw-rail(Canvas $cv, Model $m, @crew, Int $top, Int $bottom, Int $w, Str $e
         my $sel = $i == $m.sel;
         my ($mark, $word, $tone) = crew-line($cr, $m.tick, :narrow);
         $word ~= " · {$cr.unread} new" if !$sel && $cr.unread;
-        my $c = $cv.put($r, 0, $sel ?? '▶ ' !! '  ', $sel ?? 'bold' !! '');
-        $c = $cv.put($r, $c, "{$cr.short} " ~ pad($cr.name, 7), $sel ?? 'bold' !! '');
+        my $c = $cv.put($r, 0, $sel ?? '▸ ' !! '  ', $sel ?? 'bold' !! '');
+        $c = $cv.put($r, $c, "{$cr.short} ", $sel ?? 'bold' !! '');
+        $c = $cv.put($r, $c, pad($cr.name, 7), ($sel ?? 'bold+' !! '') ~ $cr.accent);
         $c = $cv.put($r, $c, $mark ~ ' ', $tone);
-        $cv.put($r, $c, fit($word, $w - $c - 1), $tone eq 'ok' ?? 'dim' !! $tone);
+        $cv.put($r, $c, fit($word, $w - $c - 1), $tone eq 'ok' | 'now' ?? 'dim' !! $tone);
         $cv.put($r + 1, 6, fit(($cr.tag ne '' ?? "{$cr.tag} · " !! '') ~ $cr.request, $w - 7), 'dim');
         if $sel { $cv.tint($r, 0, $w, 'sel'); $cv.tint($r + 1, 0, $w, 'sel') }
         $r += 2;
@@ -583,7 +593,7 @@ sub comms-lines(Crew $c, Int $w, Bool :$narrow = False, :@starts --> List) is ex
                 my $room = $w - $time-w - $who-w - ($mark ne '' ?? text-width($mark) + 2 !! 0);
                 my @wr = wrap($l.text, $room max 10);
                 for @wr.kv -> $i, $part {
-                    my @row = [' ' ~ pad($i ?? '' !! $t, $time-w - 1), 'dim'], [pad($i ?? '' !! $who, $who-w), 'bold'];
+                    my @row = [' ' ~ pad($i ?? '' !! $t, $time-w - 1), 'dim'], [pad($i ?? '' !! $who, $who-w), $l.who eq 'you' ?? 'bold' !! 'bold+' ~ $c.accent];
                     if $mark ne '' && $i == 0 { @row.push([pad($part, $room), '']); @row.push(['  ' ~ $mark, $l.tone || 'dim']) }
                     else { @row.push([$part, '']) }
                     @out.push(@row);

@@ -1,0 +1,73 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::Palette;
+
+# The family palette: the colours 123 and 321 share, said as deep as the
+# terminal can show them, the 123 CLI's named sixteen underneath.
+
+sub at(%env, &code) {
+    temp %*ENV;
+    %*ENV<COLORTERM>:delete; %*ENV<TERM>:delete;
+    %*ENV{.key} = .value for %env;
+    code();
+}
+
+subtest 'depth comes from the terminal' => {
+    at({ COLORTERM => 'truecolor' }, { is colour-depth(), 24, 'COLORTERM=truecolor is 24 bits' });
+    at({ COLORTERM => '24bit', TERM => 'xterm' }, { is colour-depth(), 24, 'and so is 24bit, whatever TERM says' });
+    at({ TERM => 'xterm-256color' }, { is colour-depth(), 8, 'TERM 256color is 256 colours' });
+    at({ TERM => 'xterm' }, { is colour-depth(), 4, 'TERM xterm is the named sixteen' });
+    at({}, { is colour-depth(), 4, 'and so is no TERM at all' });
+}
+
+subtest 'the sixteen are what the 123 CLI prints' => {
+    at({ TERM => 'xterm' }, {
+        is colour-sgr('blue'),  '34', 'blue';
+        is colour-sgr('green'), '32', 'green';
+        is colour-sgr('amber'), '33', 'amber';
+        is colour-sgr('red'),   '31', 'red';
+        is colour-sgr('hairline'), '2', 'a hairline is dim';
+        is colour-sgr('sel'), '7', 'the selection is reverse video';
+        is colour-code('blue'), "\e[34m", 'a code is the escape around it';
+    });
+}
+
+subtest 'deeper terminals get the 123 TUI shades' => {
+    at({ COLORTERM => 'truecolor' }, {
+        is colour-sgr('blue'),  '38;2;90;184;255', 'blue is #5ab8ff';
+        is colour-sgr('green'), '38;2;90;168;120', 'green is #5aa878';
+        is colour-sgr('amber'), '38;2;224;160;64', 'amber is #e0a040';
+        is colour-sgr('red'),   '31', 'red stays the terminal\'s own';
+        is colour-sgr('hairline'), '38;2;26;36;56', 'a hairline is the 123 TUI\'s';
+        is colour-sgr('sel'), '48;2;42;90;136;38;2;208;232;255', 'the selection is white on the title bar\'s blue';
+    });
+    at({ TERM => 'screen-256color' }, {
+        is colour-sgr('blue'),  '38;5;75', 'blue, the nearest of 256';
+        is colour-sgr('green'), '38;5;72', 'green';
+        is colour-sgr('amber'), '38;5;179', 'amber';
+        is colour-sgr('red'),   '31', 'red';
+        is colour-sgr('sel'), '48;5;24;38;5;195', 'the selection';
+    });
+}
+
+subtest 'a name that is not a colour is nothing' => {
+    is colour-sgr('mauve'), '', 'no parameters';
+    is colour-code('mauve'), '', 'no code';
+    is colour-hex('mauve'), '', 'no hex';
+}
+
+subtest "an agent's accent is read as 123 reads it" => {
+    at({ COLORTERM => 'truecolor' }, { is colour-sgr('#c0552e'), '38;2;192;85;46', 'the hex itself at 24 bits' });
+    at({ TERM => 'xterm-256color' }, { is colour-sgr('#c0552e'), '38;5;130', 'the nearest of the cube at 256' });
+    at({ TERM => 'xterm' }, { is colour-sgr('#c0552e'), '33', 'amber on sixteen, as 123 falls back' });
+    is colour-hex('#c0552e'), 'c0552e', 'and its digits for the cursor';
+    is colour-sgr('#c055'), '', 'a short hex is not a colour';
+}
+
+subtest 'the cursor takes the blue of the mark' => {
+    is colour-hex('blue'), '5ab8ff', 'as six hex digits for the terminal';
+    is colour-hex('red'), '', 'red has no shade of its own';
+}
+
+done-testing;

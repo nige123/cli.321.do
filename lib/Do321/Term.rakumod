@@ -7,12 +7,14 @@ unit module Do321::Term;
 #| a crash never leaves a person typing into a blind screen.
 
 use NativeCall;
+use Do321::Palette;
 
 sub tcgetattr(int32, Buf --> int32) is native {*}
 sub tcsetattr(int32, int32, Buf --> int32) is native {*}
 sub cfmakeraw(Buf) is native {*}
 sub ioctl(int32, uint64, Buf --> int32) is native {*}
 sub c-read(int32, Buf, size_t --> ssize_t) is native is symbol('read') {*}
+sub c-poll(Buf, uint64, int32 --> int32) is native is symbol('poll') {*}
 sub c-wcwidth(int32 --> int32) is native is symbol('wcwidth') {*}
 sub setlocale(int32, Str --> Str) is native {*}
 
@@ -88,9 +90,11 @@ sub wrap(Str $text, Int $w --> List) is export {
 
 # ------------------------------------------------------------ styles
 
-#| A style is a set of names joined by '+': brand, bold, dim, ok, wait,
-#| bad, sel, rev.  Colour only where the terminal and NO_COLOR allow it;
-#| the selection stays visible without colour (reverse video).
+#| A style is a set of names joined by '+': brand, bold, dim, now, ok,
+#| wait, bad, rule, sel, rev, or an agent's own accent as #rrggbb.  The
+#| colours are the family's (Do321::Palette), only where the terminal and
+#| NO_COLOR allow them; the selection stays visible without colour
+#| (reverse video).
 sub sgr(Str $style, Bool $colour --> Str) is export {
     return "\e[0m" if $style eq '';
     my @c = '0';
@@ -99,15 +103,24 @@ sub sgr(Str $style, Bool $colour --> Str) is export {
             when 'bold' { @c.push('1') }
             when 'dim'  { @c.push('2') }
             when 'rev'  { @c.push('7') }
-            when 'brand' { @c.push($colour ?? '1;38;5;75' !! '1') }
-            when 'ok'   { @c.push('32') if $colour }
-            when 'wait' { @c.push('33') if $colour }
-            when 'bad'  { @c.push('31') if $colour }
-            when 'sel'  { @c.push($colour ?? '48;5;236' !! '7') }
+            when 'brand' { @c.push($colour ?? '1;' ~ colour-sgr('blue') !! '1') }
+            when 'now'  { @c.push(colour-sgr('blue')) if $colour }
+            when 'ok'   { @c.push(colour-sgr('green')) if $colour }
+            when 'wait' { @c.push(colour-sgr('amber')) if $colour }
+            when 'bad'  { @c.push(colour-sgr('red')) if $colour }
+            when 'rule' { @c.push($colour ?? colour-sgr('hairline') !! '2') }
+            when 'sel'  { @c.push($colour ?? colour-sgr('sel') !! '7') }
+            when .starts-with('#') { @c.push(colour-sgr($s)) if $colour }
         }
     }
     "\e[" ~ @c.join(';') ~ 'm';
 }
+
+#| The terminal's own cursor in the family blue (OSC 12), and back to
+#| its own colour (OSC 112) on leaving.  Terminals that do not know the
+#| sequence ignore it.
+sub cursor-colour-on(--> Str) is export { "\e]12;#{colour-hex('blue')}\a" }
+sub cursor-colour-off(--> Str) is export { "\e]112\a" }
 
 # ------------------------------------------------------------ the buffer
 
@@ -204,10 +217,10 @@ sub decode-keys(Blob $b --> List) is export {
                 my $params = $b.subbuf($i + 2, $j - $i - 2).decode('latin1');
                 my $final = $b[$j].chr;
                 my $name = do given $final {
-                    when 'A' { 'up' } when 'B' { 'down' } when 'C' { 'right' } when 'D' { 'left' }
-                    when 'H' { 'home' } when 'F' { 'end' } when 'Z' { 'shift-tab' }
-                    when '~' { given $params { when '5' { 'pgup' } when '6' { 'pgdn' } when '3' { 'delete' }
-                                               when '1' | '7' { 'home' } when '4' | '8' { 'end' } default { '' } } }
+                    when 'A' { 'up' }; when 'B' { 'down' }; when 'C' { 'right' }; when 'D' { 'left' };
+                    when 'H' { 'home' }; when 'F' { 'end' }; when 'Z' { 'shift-tab' };
+                    when '~' { given $params { when '5' { 'pgup' }; when '6' { 'pgdn' }; when '3' { 'delete' };
+                                               when '1' | '7' { 'home' }; when '4' | '8' { 'end' }; default { '' } } }
                     default { '' }
                 };
                 @k.push(Key.new(:$name)) if $name ne '';
@@ -238,6 +251,7 @@ sub decode-keys(Blob $b --> List) is export {
 class Terminal is export {
     has Buf $!saved;
     has Bool $.active = False;
+    has Bool $!reading = False;
     has @!prev;
     has Bool $.colour = !(%*ENV<NO_COLOR> // '').chars;
     has Int $.rows = 24;
@@ -259,8 +273,11 @@ class Terminal is export {
         tcsetattr(0, 0, $raw);
         $!active = True;
         self.size;
-        # alternate screen, cursor hidden, bracketed paste on
+        # alternate screen, cursor hidden, bracketed paste on; the cursor
+        # in the family blue, the colour of the person's focus, where
+        # colour is on at all
         $*OUT.print("\e[?1049h\e[?25l\e[?2004h\e[2J");
+        $*OUT.print(cursor-colour-on()) if $!colour;
         $*OUT.flush;
         @!prev = ();
     }
@@ -268,6 +285,8 @@ class Terminal is export {
     method leave() {
         return unless $!active;
         $!active = False;
+        $!reading = False;
+        $*OUT.print(cursor-colour-off()) if $!colour;
         $*OUT.print("\e[0m\e[?2004l\e[?25h\e[?1049l");
         $*OUT.flush;
         tcsetattr(0, 0, $!saved) with $!saved;
@@ -290,12 +309,22 @@ class Terminal is export {
 
     method invalidate() { @!prev = () }
 
-    #| Read keys forever on a thread of their own, into a channel.
+    #| Read keys on a thread of their own, into a channel, until the
+    #| terminal is left.  The thread waits in poll, not in read: a thread
+    #| blocked in read holds the process two seconds at exit, and that is
+    #| the pause a person feels after /quit.
     method key-reader(Channel $ch) {
+        $!reading = True;
         start {
             my $pending = Buf.new;
             my $buf = Buf.allocate(4096);
-            loop {
+            # one struct pollfd: fd 0, events POLLIN
+            my $fds = Buf.new;
+            $fds.write-int32(0, 0, LittleEndian); $fds.write-int16(4, 1, LittleEndian); $fds.write-int16(6, 0, LittleEndian);
+            while $!reading {
+                my $ready = c-poll($fds, 1, 100);
+                next if $ready == 0;
+                last if $ready < 0;
                 my $n = c-read(0, $buf, 4096);
                 last if $n <= 0;
                 my $b = Buf.new($pending.list, $buf.subbuf(0, $n).list);
