@@ -85,7 +85,7 @@ my %full = CTRL-AUTHORITATIVE-CONTEXT, STRENGTH-ENFORCES, CTRL-FILESYSTEM-GUARD,
     ok !$a.prompts[0].contains('per-invariant report'), 'and the runtime adds no words about IZ4 of its own';
     ok $a.prompts[0].contains('put that report, in full, in your summary'), 'only where a report it is asked for belongs in this runtime';
     is $said.slurp, $report, 'the agent\'s last words were put to iz4 exactly';
-    ok @(%r<uncertain>).grep(*.contains('IZ4 nothing-deleted.shop.example.com Nothing is deleted.: uncertain')), 'what the report calls uncertain is on the receipt' or diag %r<uncertain>.raku;
+    ok @(%r<uncertain>).grep(*.contains('IZ4 nothing-deleted.shop.example.com may be broken: a row was deleted')), 'what the agent said may be broken is on the receipt' or diag %r<uncertain>.raku;
     ok $col.all.grep({ .<kind> eq EVENT-PROGRESS && (.<payload><text> // '').contains('IZ4 policy') }), 'the run says what it did';
     ok !validate-run-receipt(%r), 'the receipt validates' or diag validate-run-receipt(%r).Str;
 

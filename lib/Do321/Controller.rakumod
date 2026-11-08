@@ -325,7 +325,12 @@ sub verdict-from(Str $point, Str $out, Str $otherwise --> Verdict) is export {
     return unavailable($point, "iz4 answered an unknown result \"$result\"")
         unless is-in($result, [RESULT-PASS, RESULT-WARN, RESULT-BLOCK, RESULT-NEEDS-HUMAN]);
     my $reason = ($doc<reason> // '').Str;
-    my @uncertain = |@((($doc<evidence> // {})<report> // {})<uncertain> // []).grep(Str).map({ "IZ4 $_" });
+    # what the agent said may be broken, in its own line: iz4 0.41 names
+    # the list broken, an older iz4 called it uncertain.  Either way it
+    # goes on the receipt's uncertain list, never claimed settled
+    my $rep = ($doc<evidence> // {})<report> // {};
+    $rep = {} unless $rep ~~ Associative;
+    my @uncertain = (|@($rep<broken> // []), |@($rep<uncertain> // [])).grep(Str).map({ "IZ4 $_" });
     @uncertain.push("IZ4: $reason") if $result eq RESULT-WARN || $result eq RESULT-BLOCK;
     my $proposal = '';
     with $doc<proposed_invariant_change> -> $p {

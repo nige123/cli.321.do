@@ -78,7 +78,7 @@ is $iz4.answers.join(','), 'context,action,change,verify', 'and says which point
     temp %*ENV<STUB_SUMMARY_OUT> = $said.Str;
     my $vf = $iz4.verify($ws.Str, %( summary => "Done.\nInvariant: 5" ));
     is $vf.result, RESULT-PASS, 'verification passes';
-    ok $vf.uncertain.grep(*.contains('IZ4 nothing-deleted.shop.example.com Nothing is deleted.: uncertain')), 'what the report calls uncertain reaches the verdict';
+    ok $vf.uncertain.grep(*.contains('IZ4 nothing-deleted.shop.example.com may be broken: a row was deleted')), 'what the agent said may be broken reaches the verdict';
     ok $log.slurp.contains('verify --worktree --json --summary='), 'the agent\'s last words are handed to iz4 as a file of text';
     is $said.slurp, "Done.\nInvariant: 5", 'exactly as given';
     is $vf.parts.map(*<part>).join(','), 'structure,change,report', 'a compound answer keeps its parts';
@@ -167,6 +167,13 @@ ok !controller-named('nope').defined, 'and an unknown one is not invented';
         ok IZ4.new.verify($ws.Str, %()).ran, 'real iz4: verification runs';
     }
     else { skip 'no iz4 with the machine interface on PATH', 7 }
+}
+
+subtest 'an older iz4 called the list uncertain, and it still reaches the verdict' => {
+    my $v = verdict-from('verify', '{"schema":"iz4-check/2","result":"pass","reason":"ok","evidence":{"report":{"uncertain":["x: uncertain"]}}}', 'no');
+    ok $v.uncertain.grep(* eq 'IZ4 x: uncertain'), 'the old key is read';
+    $v = verdict-from('verify', '{"schema":"iz4-check/2","result":"warn","reason":"the work says x may be broken","evidence":{"report":{"broken":["\u2715 x may be broken: y. To fix: z."]}}}', 'no');
+    ok $v.uncertain.grep(*.starts-with('IZ4 ')).grep(*.contains('x may be broken: y')), 'and so is the new one';
 }
 
 done-testing;

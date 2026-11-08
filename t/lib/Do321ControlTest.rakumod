@@ -46,7 +46,7 @@ sub stub-iz4(--> Str) is export {
           [ "$2" = needs_human ] && extra=',"proposed_invariant_change":{"kind":"change","summary":"1 commitment change(s)","changes":[{"kind":"revised","id":"staff-decide.shop.example.com","text":"Staff decide."}],"agree_with":"iz4 approve --candidate=abc --base=HEAD","proposal_digest":"d1g"}'
           [ "$2" = needs_human ] || extra=',"proposed_invariant_change":null'
           rep=''
-          [ "$1" = verify ] && rep=',"report":{"uncertain":["nothing-deleted.shop.example.com Nothing is deleted.: uncertain"]},"parts":[{"part":"structure","result":"pass","detail":"well formed"},{"part":"change","result":"'"${STUB_CHANGE:-pass}"'","detail":"change"},{"part":"report","result":"'"${STUB_REPORT:-pass}"'","detail":"report"}]'
+          [ "$1" = verify ] && rep=',"report":{"broken":["nothing-deleted.shop.example.com may be broken: a row was deleted. To fix: restore it."]},"parts":[{"part":"structure","result":"pass","detail":"well formed"},{"part":"change","result":"'"${STUB_CHANGE:-pass}"'","detail":"change"},{"part":"report","result":"'"${STUB_REPORT:-pass}"'","detail":"report"}]'
           printf '{"schema":"iz4-check/2","tool":"iz4/stub","check":"%s","result":"%s","reason":"%s","invariants_considered":["nothing-deleted.shop.example.com"],"evidence":{"rule":"stub","gate":{"candidate":"%s"}%s}%s,"iz4":{"file":"x","sha256":"y"},"limits":"a stub establishes nothing"}\n' "$1" "$2" "$3" "${STUB_TREE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" "$rep" "$extra"
           case "$2" in needs_human) exit 2 ;; block) exit 3 ;; *) exit 0 ;; esac
         }
