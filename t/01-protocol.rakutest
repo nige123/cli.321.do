@@ -163,7 +163,7 @@ my %NESTED =
     Correlation => { refs => 'Ref' }, Context => { attachments => 'Attachment' }, Grants => { limits => 'Limits' },
     Authority => { may => 'AuthorityGrant' }, Approval => { proposal => 'DeploymentProposal' },
     WorkDirective => { issuer => 'Issuer', payload => 'DirectivePayload' },
-    RunReceipt => { issuer => 'Issuer', correlation => 'Correlation', continues => 'Continuation', agent => 'AgentRef', harness => 'HarnessInfo',
+    RunReceipt => { issuer => 'Issuer', correlation => 'Correlation', continues => 'Continuation', follows => 'RunLink', agent => 'AgentRef', harness => 'HarnessInfo',
         attempts => 'Attempt', directives => 'DirectiveSummary', instructionHistory => 'HistoryRef', events => 'EventSummary',
         conditions => 'ConditionProof', evidence => 'Evidence', cost => 'Cost', stop => 'StopInfo', denied => 'DenialInfo', signature => 'Signature' },
     Attempt => { cost => 'Cost' }, DirectiveSummary => { rejected => 'RejectedDirective', gaps => 'SequenceGap' },

@@ -329,6 +329,14 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
     # --- the input line and the footer
     $cv.put($foot, 0, '─' x $cols, 'rule');
     my ($prompt, $hint) = prompt-and-hint($m, $cols);
+    if $m.mode eq 'confirm' && text-width($prompt) > $cols - 2 {
+        # a long question begins on the rule above the input line and ends
+        # on it, so the end, which asks, is never cut
+        my ($first, $rest) = split-at-width($prompt, $cols - 2);
+        $cv.put($foot, 0, ' ' x $cols);
+        $cv.put($foot, 1, $first, 'bold');
+        $prompt = $rest;
+    }
     # the arrow before the cursor is where the person is: the focus blue
     my $pc = $prompt.ends-with('❯')
         ?? $cv.put($foot + 1, $cv.put($foot + 1, 1, $prompt.chop, 'bold'), '❯', 'now')
@@ -525,6 +533,7 @@ sub draw-comms(Canvas $cv, Crew $sc, Int $top, Int $bottom, Int $left, Int $widt
 }
 
 sub input-view(Model $m, Int $w --> Str) {
+    return '' if $w < 2;
     my $t = $m.mode eq 'input' | 'find' ?? $m.input !! '';
     $t = $t.subst("\n", '⏎', :g);
     text-width($t) > $w ?? '…' ~ $t.substr(* - ($w - 1)) !! $t;
@@ -755,7 +764,10 @@ sub run-line(Model $m, Str $line) is export {
             my $c = $m.selected;
             return $m.tell('no run is selected; /start begins one') unless $c.defined;
             unless $c.phase eq 'running' | 'held' | 'starting' {
-                return $m.tell("{$c.name} {$c.short} has {$c.phase eq 'lost' ?? 'been lost' !! 'ended'}; /restart runs it again");
+                # the run is over, so the words begin the agent's next one:
+                # same agent, same workspace, its conversation carried on
+                return $m.tell("{$c.name} {$c.short} has been lost; /restart runs its request again") if $c.phase eq 'lost';
+                return follow-up($m, $c, %w<words>, $clear);
             }
             my $id = try send-directive($c.rd, 'steer', :text(%w<words>), :client('mission-control'));
             if $! { $m.tell("not sent: {$!.message}"); return }
@@ -826,6 +838,25 @@ sub run-line(Model $m, Str $line) is export {
         }
         when 'quit' { $m.quit = True }
     }
+}
+
+#| Words to an agent whose run has ended: a new run of the same agent in
+#| the same workspace, going on from the ended run's receipt, so the
+#| agent answers with what it did in mind.  No question first: the words
+#| are the person's own, the run has its own budget, and no approval
+#| carries over.
+sub follow-up(Model $m, Crew $c, Str $words, &clear) {
+    my %run = $c.run;
+    my $name = %run<agent><name> // '';
+    return $m.tell("{$c.name} {$c.short} has ended; its run names no agent to ask") if $name eq '';
+    clear();
+    $m.tell("asking {$c.display}…");
+    my ($rd, $err) = launch-run($name, $words, :via('mission-control'), :follows($c.rd),
+        :workspace((%run<workspace> // '').Str), :harness(((%run<harness> // {})<requested> // '').Str));
+    with $err { $m.tell("not asked: $_"); return }
+    $m.filter = 'all'; $m.scan;
+    $m.sel = $m.visible.first({ .id eq $rd.id }, :k) // $m.sel;
+    $m.tell("{$c.display} {$rd.short} goes on from {$c.short}; it answers here");
 }
 
 #| What '/' and the start of a word offer, for the line under the input.
@@ -967,6 +998,10 @@ sub run-deck(Str :$focus = '' --> Int) is export {
     my $t = Terminal.new;
     my $log = TuiLog.new.open;
     $m.log = $log;
+    # a warning from anything the screen calls goes to the log, never
+    # across the screen
+    my $*ERR = (try open(tui-log-path(), :a)) // $*ERR;
+    LEAVE { try $*ERR.close if $*ERR !=== $PROCESS::ERR }
     $t.size;                                   # the real size, not the defaults, in the log
     $log.note("open {$t.cols}x{$t.rows}, {+$m.crew} runs{$focus ne '' ?? ', on ' ~ $focus !! ''}");
     # what the person sees change after a key: the mode, the run, the view, a question

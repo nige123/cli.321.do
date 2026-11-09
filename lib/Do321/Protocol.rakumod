@@ -524,11 +524,11 @@ sub validate-work-package(%w --> Problems) is export {
         $c.add('capabilities.granted', 'is required (an empty list is allowed)');
     }
     $c.vocab('capabilities.granted', @(%w<capabilities><granted> // []), capabilities());
-    my %l = %w<capabilities><limits>;
-    $c.add('capabilities.limits.maxUsd', 'must not be negative') if %l<maxUsd> < 0;
-    $c.add('capabilities.limits.maxTurns', 'must not be negative') if %l<maxTurns> < 0;
-    $c.add('capabilities.limits.timeout', 'must be a Go duration') if %l<timeout> ne '' && !is-duration(%l<timeout>);
-    $c.one-of('capabilities.limits.network', %l<network>, NETWORK-NONE, NETWORK-PROVIDER-ONLY, NETWORK-OPEN) if %l<network> ne '';
+    my %l = %w<capabilities><limits> ~~ Associative ?? %w<capabilities><limits> !! {};
+    $c.add('capabilities.limits.maxUsd', 'must not be negative') if (%l<maxUsd> // 0) < 0;
+    $c.add('capabilities.limits.maxTurns', 'must not be negative') if (%l<maxTurns> // 0) < 0;
+    $c.add('capabilities.limits.timeout', 'must be a Go duration') if (%l<timeout> // '') ne '' && !is-duration(%l<timeout>);
+    $c.one-of('capabilities.limits.network', %l<network>, NETWORK-NONE, NETWORK-PROVIDER-ONLY, NETWORK-OPEN) if (%l<network> // '') ne '';
     for @(%w<authority><may> // []).kv -> $i, %g { $c.require("authority.may[$i].capability", %g<capability>) }
     with %w<approval> -> %a {
         $c.require('approval.proposalRef', %a<proposalRef>);

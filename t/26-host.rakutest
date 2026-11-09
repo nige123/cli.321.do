@@ -173,6 +173,48 @@ subtest 'a run started again' => {
     is $rc, 3, 'and it stops like any other' or diag $out;
 }
 
+subtest 'words to an ended run begin its agent\'s next one' => {
+    my ($rd, $err) = launch-run('helper', 'what did you leave running?', :home($home), :follows(@runs[1]), :via('test'));
+    ok !$err.defined, 'a follow-up starts' or diag $err;
+    @runs.push($rd);
+    isnt $rd.id, @runs[1].id, 'as a run of its own';
+    is $rd.run<follows><runId>, @runs[1].id, 'which names the run it goes on from';
+    ok $rd.run<follows><receiptDigest>.starts-with('sha256:'), 'and the receipt it read, by digest';
+    is $rd.run<request>, 'what did you leave running?', 'the new words are its request';
+    ok $rd.dir.add('follows-receipt.json').e, 'with the receipt kept beside it for the runtime';
+    my %was = parse-json(@runs[1].package-file.slurp); my %now = parse-json($rd.package-file.slurp);
+    is-deeply %now<capabilities>, %was<capabilities>, 'the grants and limits are the ones the agent ran with';
+    is %now<placement>, %was<placement>, 'and so is the placement';
+    isnt %now<packageId>, %was<packageId>, 'in a package of its own';
+    ok wait-for({ events($rd).first({ .<kind> eq 'host_started' && .<payload><follows> eq @runs[1].id }) }), 'the new log says what it follows';
+    ok wait-for({ events($rd).first({ .<kind> eq 'attempt_started' && .<payload><resumed> }) }), 'the runtime resumed the agent\'s session';
+    my ($rc, $out) = mc('stop', $rd.short);
+    is $rc, 3, 'and it stops like any other' or diag $out;
+    ($rd, $err) = launch-run('helper', 'still there?', :home($home), :follows(@runs[0]), :via('test'));
+    ok $err.defined && $err.contains('steer'), 'a run still going is steered, not followed' or diag $err;
+
+    # a follow-up denied before it did anything: the next words go on
+    # from the run before it, grants and all
+    my $denied = run-dir(new-ulid(), $home);
+    private-dir($denied.dir); private-dir($denied.inbox);
+    my %pk = %now; %pk<packageId> = $denied.id; %pk<capabilities> = %( granted => [ |%was<capabilities><granted> ], limits => %() );
+    write-atomic($denied.package-file, encode-json(%pk));
+    my %dr = @runs[1].run; %dr<runId> = $denied.id; %dr<follows> = %( runId => @runs[1].id, receiptDigest => 'sha256:' ~ '0' x 64 );
+    write-atomic($denied.run-file, encode-json(%dr));
+    my %drc = %( |@runs[1].receipt, runId => $denied.id, packageId => $denied.id, status => 'denied', summary => 'denied: no installed adapter can enforce what this package requires',
+        denied => %( reason => 'no installed adapter can enforce what this package requires', details => [] ) );
+    %drc<stop>:delete;
+    %drc<receiptDigest> = receipt-digest(%drc);
+    write-atomic($denied.receipt-file, encode-json(%drc));
+    ($rd, $err) = launch-run('helper', 'and now?', :home($home), :follows($denied), :via('test'));
+    ok !$err.defined, 'words to a denied follow-up start a run' or diag $err;
+    @runs.push($rd);
+    is-deeply parse-json($rd.package-file.slurp)<capabilities>, %was<capabilities>, 'with the grants and limits of the run before the denial';
+    is $rd.run<follows><runId>, $denied.id, 'while naming the run it was typed at';
+    ($rc, $out) = mc('stop', $rd.short);
+    is $rc, 3, 'and it stops' or diag $out;
+}
+
 subtest 'a log past its cap keeps everything but the words' => {
     %*ENV<DO_321_BIN> = repo-root().add('testdata/fakeruntime-chatty/321').Str;
     %*ENV<DO_321_MC_LOG_CAP> = '600';

@@ -123,8 +123,23 @@ subtest 'keys: levels, the input line and confirmation' => {
     $mm.mode = 'input';
     handle-key($mm, Key.new(:name<char>, :text<x>));
     handle-key($mm, Key.new(:name<enter>));
-    ok $mm.flash.contains('has ended'), 'a message to an ended run is not sent, and says why';
+    ok $mm.flash.starts-with('not asked:'), 'words to an ended run begin its agent\'s next run, or say why not' or diag $mm.flash;
     is take-inbox($d).elems, 0, 'nothing reached its inbox';
+
+    $mm.sel = $mm.crew.first({ .id eq $c.id }, :k);
+    $mm.mode = 'input'; $mm.input = 'x'; $mm.cursor = 1;
+    handle-key($mm, Key.new(:name<enter>));
+    ok $mm.flash.contains('lost') && $mm.flash.contains('/restart'), 'a lost run has no receipt to go on from; /restart is the way';
+    is take-inbox($c).elems, 0, 'and nothing reached its inbox';
+
+    $mm.mode = 'confirm';
+    $mm.confirm = ['Run ADA J55\'s request again? It changed 2 files and ran 4 tools; the new run has its own budget, and no approval carries over.', 'restart-now'];
+    my $cv = render($mm, 30, 100);
+    my $text = $cv.text;
+    ok $text.contains('Run ADA') && $text.contains('carries over.'), 'a question longer than its row begins on the rule above and ends on the row' or diag $text;
+    $cv = render($mm, 30, 80);
+    ok $cv.text.contains('carries over.'), 'even at the deck\'s narrowest';
+    $mm.mode = 'input'; $mm.input = ''; $mm.cursor = 0;
 
     $mm.sel = $mm.crew.first({ .id eq $c.id }, :k);
     ok actions-for($mm).first(*<key> eq 'force'), 'a lost run offers Force stop';

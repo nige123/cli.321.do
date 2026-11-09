@@ -63,6 +63,8 @@ subtest 'hold and stop have lifecycles of their own' => {
     is ($s.phase, $s.outcome), ('ended', 'stopped'), 'ended, stopped';
     is $s.controls<S1><state>, 'confirmed', 'confirmed once the receipt exists';
     ok $s.lines.first(*.text.contains('stopped 1 process the agent left running')), 'what was swept is said';
+    my $end = $s.lines.first(*.who eq 'end');
+    is $end.text, 'stopped: going the wrong way', 'the outcome is said once, not twice';
 }
 
 subtest 'memory is bounded; the log is not' => {

@@ -94,6 +94,8 @@ sub fold-event(RunState $s, %e) is export {
             $s.activity = 'starting';
             say-line(:who<note>, :text("a new run of the request {%p<continues>} ran; that run's receipt is unchanged"), :tone<dim>)
                 if (%p<continues> // '') ne '';
+            say-line(:who<note>, :text("goes on from {%p<follows>.substr(*-3)}'s conversation (←→ to read it)"), :tone<dim>)
+                if (%p<follows> // '') ne '';
             say-line(:who<you>, :text(%p<request> // '')) if (%p<request> // '') ne '';
         }
         when 'directive_delivered' {
@@ -124,7 +126,9 @@ sub fold-event(RunState $s, %e) is export {
             $s.ended-at = $at;
             $s.activity = $s.outcome;
             my $tone = $s.outcome eq 'done' | 'no_change' ?? 'ok' !! $s.outcome eq 'blocked' ?? 'wait' !! 'bad';
-            say-line(:who<end>, :text("{$s.outcome}: {$s.summary}"), :$tone);
+            # a summary that begins with the outcome's own word is not said twice
+            my $said = $s.summary.starts-with($s.outcome ~ ':') ?? $s.summary.substr($s.outcome.chars + 1).trim !! $s.summary;
+            say-line(:who<end>, :text("{$s.outcome}: $said"), :$tone);
             for $s.controls.kv -> $id, %c { control($id, :state<confirmed>) if %c<kind> eq 'stop' }
         }
         # --- what the runtime records

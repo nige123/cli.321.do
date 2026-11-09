@@ -30,6 +30,18 @@ and any error with its backtrace. A single character being typed is
 logged as `typed`, never itself; a line sent is logged whole. Past 1 MB
 the log starts again, keeping one before as `tui.log.1`.
 
+Beside it, `~/.321/logs/cli.log` is 321's record of how it is used at the
+shell: one JSON line per command a person types, with the command word,
+its options and arguments, the form the answer took (screen, plain,
+brief, json), whether a terminal was there and how wide, the exit code,
+how long it took, and any usage help 321 had to show. A request to an
+agent, a steer or words to find are counted (`free`), never kept. The
+hooks a harness calls and the processes 321 runs for itself write
+nothing. It is yours alone, never sent anywhere; `DO_321_INTERACTIONS=0`
+keeps nothing, `DO_321_CLI_LOG` names another file. It is there so the
+people who shape 321 can read back where its words helped and where they
+got in the way.
+
 ## How a run is hosted
 
 `start` builds the work package through the CLI's own builder, so trust,
@@ -58,7 +70,7 @@ with their CPU and memory, the open control, the receipt.
 
 | Key | Does |
 |---|---|
-| Enter | sends what is typed to the selected run as a steer |
+| Enter | sends what is typed to the selected run: a steer while it works; once it has ended, the agent's next run, going on from that one |
 | Esc | between typing and moving among runs |
 | `v` | shows every run, the active ones, or the ones that need you |
 | Ctrl-F | finds words in the conversation; Enter again for the next older |
@@ -165,6 +177,18 @@ differs is not the host. A receipt always wins over `ended.json`.
 `stop` and `attach` exit 6 for a lost run. `lost` and exit 6 are
 Mission Control's own until they are agreed into the shared outcome
 vocabulary.
+
+## Talking to an agent whose run has ended
+
+The prompt stays on an ended run. Words typed there begin a new run of
+the same agent in the same workspace, and it goes on from the ended
+run's receipt: the runtime resumes the agent's harness session where the
+harness can (`session_continue`), so a question like "what did you
+change, and why?" is answered with that work in mind. It is a run of its
+own, with its own id and budget, a new package, and no approval carried
+over; its receipt names the run it follows (`follows`) and the receipt
+digest it read. Nothing asks first: the words are yours. A lost run has
+no receipt to go on from; `/restart` runs its request again.
 
 ## What hold and steer do today
 

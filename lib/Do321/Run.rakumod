@@ -51,6 +51,11 @@ class Options is export {
     #| this run continues.  Cost and attempt numbering carry forward; the
     #| old receipt is untouched and linked from the new one.
     has $.continue;
+    #| The terminal receipt of an earlier run of the same agent package
+    #| whose conversation this run goes on from: a new package (the
+    #| person's next words), its own budget, and the harness session
+    #| resumed where the harness can, so the agent remembers.
+    has $.follows;
     #| The package exactly as received.  The receipt's packageDigest is
     #| computed over these bytes canonicalised, never over a re-marshalled
     #| document, so the issuer can compare it with what it sent.
@@ -598,6 +603,12 @@ class Session is export {
             $!seed-session = @att.tail<sessionRef> if @att;
             @!history.push(doc('HistoryLine', kind => 'continues', continues => %!receipt<continues>));
         }
+        with $!opts.follows -> %prev {
+            %!receipt<follows> = doc('RunLink', runId => %prev<runId>, receiptId => %prev<receiptId>, receiptDigest => %prev<receiptDigest>);
+            my @att = @(%prev<attempts> // []);
+            $!seed-session = (@att.tail<sessionRef> // '') if @att;
+            @!history.push(doc('HistoryLine', kind => 'follows', follows => %!receipt<follows>));
+        }
         $!dir = DirectiveState.new(:session(self));
     }
 
@@ -671,6 +682,11 @@ class Session is export {
             return ('the continued receipt does not match its own digest', []) unless receipt-digest(%prev) eq %prev<receiptDigest>;
             return ('only a blocked, stopped or completed run can be continued', ['previous status ' ~ %prev<status>])
                 unless is-in(%prev<status>, [STATUS-BLOCKED, STATUS-STOPPED, STATUS-COMPLETED, STATUS-NO-CHANGE]);
+        }
+        with $!opts.follows -> %prev {
+            return ('the followed receipt does not match its own digest', []) unless receipt-digest(%prev) eq %prev<receiptDigest>;
+            return ('the followed receipt ran a different agent package', ["receipt {%prev<agent><digest>}, loaded {$!agent.digest}"])
+                if %prev<agent><digest> ne '' && %prev<agent><digest> ne $!agent.digest;
         }
         ('', []);
     }
@@ -751,7 +767,10 @@ class Session is export {
         self.apply-controllers;
 
         my $last = Outcome.new;
-        if $!seed-session ne '' && $!opts.continue.defined && $!opts.continue<harness><adapter> eq $!adapter.name && enforces(%live, FEAT-SESSION-CONTINUE) {
+        # the session is the earlier run's harness's: another harness
+        # cannot resume it, and one that cannot continue sessions starts anew
+        my $earlier = $!opts.continue // $!opts.follows;
+        if $!seed-session ne '' && $earlier.defined && $earlier<harness><adapter> eq $!adapter.name && enforces(%live, FEAT-SESSION-CONTINUE) {
             $last.session-ref = $!seed-session;
         }
         loop {
@@ -1248,6 +1267,10 @@ class Runner is export {
             without $chosen {
                 my @details = @$rejections.map(*.Str);
                 @details.push('required enforcement: ' ~ @reqs.map(*.feature).join(', ')) if @reqs;
+                # the one step that most often puts it right: a shell with
+                # the network shut needs a harness none installed is
+                @details.push('to run it here: grant the network, --network open at the shell or policy.limits.network in the trust file; shell.run never grants it by itself')
+                    if @reqs.first(*.feature eq FEAT-NETWORK-DENY);
                 return $s.deny('no installed adapter can enforce what this package requires', @details);
             }
             $ad = $chosen;

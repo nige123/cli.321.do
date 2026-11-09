@@ -113,6 +113,7 @@ sub deny(%wp, Registry $reg, Str $want) {
     deny(%wp, stub-registry(new-stub(False)), 'missing: repo.read');
     %wp = pkg-for($agent, 'anything'); %wp<capabilities><granted> = [CAP-REPO-READ, CAP-SHELL-RUN];
     deny(%wp, stub-registry(new-stub(False)), FEAT-NETWORK-DENY);
+    deny(%wp, stub-registry(new-stub(False)), '--network open');
     %wp = pkg-for($agent, 'anything'); %wp<expiresAt> = '2020-01-01T00:00:00Z';
     deny(%wp, stub-registry(new-stub(False)), 'expired');
     %wp = pkg-for($agent, 'anything'); %wp<agent><digest> = 'sha256:' ~ '1' x 64;
@@ -505,6 +506,31 @@ sub deny(%wp, Registry $reg, Str $want) {
     my %tampered = load('RunReceipt', %r1); %tampered<summary> = 'edited';
     my %r4 = runner(stub-registry(new-stub(True))).run($bg, %wp, $agent, Options.new(:continue(%tampered)));
     ok %r4<status> eq STATUS-DENIED && %r4<denied><reason>.contains('digest'), 'a tampered receipt cannot be continued';
+}
+
+# ---- a follow-up: the person's next words to the same agent ---------------------
+
+{
+    my $first = new-stub(True, :cost({ usd => 0.4, turns => 2 }));
+    my %wp = pkg-for($agent, 'build it', 'built'); %wp<capabilities><limits><network> = NETWORK-OPEN;
+    my %r1 = runner(stub-registry($first)).run($bg, %wp, $agent, Options.new);
+    is %r1<status>, STATUS-COMPLETED, 'the first run completes';
+    my $second = new-stub(True, :cost({ usd => 0.3, turns => 1 }));
+    my %next = pkg-for($agent, 'what did you change, and why?'); %next<capabilities><limits><network> = NETWORK-OPEN;
+    my %r2 = runner(stub-registry($second)).run($bg, %next, $agent, Options.new(:follows(%r1)));
+    check-receipt(%r2);
+    is %r2<status>, STATUS-COMPLETED, 'the follow-up completes' or diag %r2<summary>;
+    ok %r2<follows>.defined && %r2<follows><runId> eq %r1<runId> && %r2<follows><receiptDigest> eq %r1<receiptDigest>, 'the receipt names the run it goes on from' or diag %r2<follows>.raku;
+    nok %r2<continues>.defined, 'it is not a continuation: a different package';
+    is $second.attempts[0].session-ref, 'sess-1', 'the agent\'s session is resumed, so it remembers';
+    ok %r2<attempts>.elems == 1 && %r2<attempts>[0]<n> == 1, 'with attempts of its own';
+    ok 0.29 <= %r2<cost><usd> <= 0.31 && %r2<cost><turns> == 1, 'and a budget of its own' or diag %r2<cost>.raku;
+    my %tampered = load('RunReceipt', %r1); %tampered<summary> = 'edited';
+    my %r3 = runner(stub-registry(new-stub(True))).run($bg, %next, $agent, Options.new(:follows(%tampered)));
+    ok %r3<status> eq STATUS-DENIED && %r3<denied><reason>.contains('digest'), 'a tampered receipt cannot be followed';
+    my $fresh = new-stub(False);
+    runner(stub-registry($fresh)).run($bg, %next, $agent, Options.new(:follows(%r1)));
+    is $fresh.attempts[0].session-ref, '', 'a harness that cannot continue a session starts anew';
 }
 
 {

@@ -48,8 +48,15 @@ constant EXIT-LOST is export = 6;
 #| launched here carries no approval; an approval stays where a person
 #| gives one.  Returns (RunDir, error).
 sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-path = '', IO::Path :$home = home-dir(),
-               Str :$via = 'mission-control', :%continues, Str :$harness = '', Bool :$isolate = False --> List) is export {
+               Str :$via = 'mission-control', :%continues, RunDir :$follows, Str :$harness = '', Bool :$isolate = False --> List) is export {
     return (RunDir, 'say what the agent should do') if $request.trim eq '';
+    # a follow-up goes on from a receipt: a run still going has none
+    my $prev-bytes;
+    with $follows {
+        return (RunDir, "{.short} has no receipt yet; a run is talked to while it works with steer") unless .receipt-file.e;
+        $prev-bytes = try .receipt-file.slurp(:bin);
+        return (RunDir, "cannot read {.short}'s receipt: {$!.message}") if $!;
+    }
     # The harness is chosen here or left to the runtime, which picks the
     # first one able to enforce what the package needs.  Either way the
     # runtime checks it again: a choice never widens what is enforced.
@@ -89,6 +96,22 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
         drop-worktree(%isolation) if %isolation;
         return (RunDir, $why);
     }
+    # A follow-up is the same agent as it was running: the grants, limits
+    # and placement the followed package carried, not this shell's
+    # defaults, so a harness able to run that run can run this one.  The
+    # local ceiling still bounds them, here and again in the runtime.
+    with $follows {
+        my %was = followed-package($_, $home);
+        %wp<capabilities> = %was<capabilities> if %was<capabilities> ~~ Associative && (%was<capabilities><granted>:exists);
+        %wp<placement> = %was<placement> if (%was<placement> // '') ne '';
+        with $cfg.policy<capabilityCeiling> -> $ceiling {
+            for @(%wp<capabilities><granted> // []) -> $c {
+                return (RunDir, "local policy does not allow $c, which {.short} ran with (policy.capabilityCeiling in {$cfg.path})") unless $c (elem) @$ceiling;
+            }
+        }
+        my $ps = validate-work-package(%wp);
+        return (RunDir, "the follow-up package is not valid: $ps") if $ps;
+    }
 
     my $rd = try {
         private-dir(home-dir-of($home));
@@ -107,7 +130,9 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
     return (RunDir, ($!.message.contains('DO_321_HOME') || $!.message.contains('not safe to use') ?? '' !! 'cannot make the run directory: ') ~ $!.message) if $!;
     my %m = $agent.manifest;
     write-atomic($rd.package-file, to-wire('WorkPackage', %wp) ~ "\n", :durable);
+    write-atomic(follows-file($rd), $prev-bytes.decode, :durable) with $prev-bytes;
     my %run = schema => SCHEMA-RUN, runId => %wp<packageId>, attempt => 1, continues => (%continues ?? %continues !! Nil),
+        follows => ($follows.defined ?? %( runId => $follows.id, receiptDigest => digest-bytes($prev-bytes) ) !! Nil),
         agent => { id => $agent.id, name => $agent-name, version => (%m<version> // ''), displayName => (%m<displayName> // $agent-name),
                    byline => byline-of(%m) },
         request => $request, workspace => $ws, grants => [ |@(%wp<capabilities><granted>) ],
@@ -200,7 +225,26 @@ sub launch-package(IO::Path $file, Str :$workspace = '', Str :$continue = '', IO
 }
 
 #| Where a hosted continuation keeps the receipt it goes on from.
+#| The package a follow-up takes its grants from: the followed run's, or
+#| when that run was denied before it did anything, the nearest run back
+#| along the chain that was not, so one refusal does not shape every run
+#| after it.  Empty when no run of the chain can say.
+sub followed-package(RunDir $r, IO::Path $home --> Hash) {
+    my $at = $r;
+    for ^32 {
+        my %rc = $at.receipt;
+        my %pk = (read-json-file($at.package-file) // {}).Hash;
+        return %pk if (%rc<status> // '') ne STATUS-DENIED && %pk<capabilities> ~~ Associative;
+        my $prev = ((($at.run<follows> // {}) ~~ Associative ?? $at.run<follows> !! {})<runId> // '').Str;
+        return {} if $prev eq '' || !valid-run-id($prev);
+        $at = run-dir($prev, $home);
+        return {} unless $at.dir.e;
+    }
+    {};
+}
+
 sub continued-file(RunDir $r --> IO::Path) { $r.dir.add('continued-receipt.json') }
+sub follows-file(RunDir $r --> IO::Path) { $r.dir.add('follows-receipt.json') }
 
 #| How the crew list names an agent a package refers to by id: its
 #| local package's own words when it is installed here, the id's last
@@ -340,7 +384,8 @@ sub host-main(Str $dir --> Int) is export {
         try write-atomic($r.status-file, encode-json-pretty(%d) ~ "\n");
     }
     record('host', 'host_started', %( pid => my-pid(), request => %run<request> // '', agent => %run<agent><id> // '', subreaper => $reaper,
-        continues => (%run<continues> ~~ Associative ?? %run<continues><runId> // '' !! '') ));
+        continues => (%run<continues> ~~ Associative ?? %run<continues><runId> // '' !! ''),
+        follows => (%run<follows> ~~ Associative ?? %run<follows><runId> // '' !! '') ));
 
     # The runtime, as its own child, told to go when the host goes.
     my @pre = </usr/bin/setpriv /bin/setpriv>.first(*.IO.x) ?? (</usr/bin/setpriv /bin/setpriv>.first(*.IO.x), '--pdeathsig', 'TERM', '--') !! ();
@@ -355,6 +400,7 @@ sub host-main(Str $dir --> Int) is export {
     my $ws = (%run<workspace> // '').Str;
     @argv.append('--workspace', $ws) if $ws ne '' && $ws ne ((%wp<workspace> // {})<path> // '').Str;
     @argv.append('--continue', continued-file($r).Str) if continued-file($r).e;
+    @argv.append('--follows', follows-file($r).Str) if follows-file($r).e;
     my $proc = Proc::Async.new(:w, |@argv);
     my $receipt-seen = False;
     $proc.stdout.lines.tap(-> $line {

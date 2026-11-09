@@ -89,13 +89,14 @@ define 'ProtocolError', (schema => 'str', code => 'str', message => 'str', line 
 define 'RunReceipt', (
     schema => 'str', receiptId => 'str', packageId => 'str', supersedesPackageId => 'str?', runId => 'str',
     issuer => 'obj:Issuer', correlation => 'obj:Correlation', packageDigest => 'str', conditionsDigest => 'str',
-    continues => 'ptr:Continuation?', agent => 'obj:AgentRef', harness => 'obj:HarnessInfo',
+    continues => 'ptr:Continuation?', follows => 'ptr:RunLink?', agent => 'obj:AgentRef', harness => 'obj:HarnessInfo',
     attempts => 'list:Attempt', directives => 'obj:DirectiveSummary', instructionHistory => 'obj:HistoryRef',
     events => 'obj:EventSummary', startedAt => 'str', endedAt => 'str', status => 'str', summary => 'str?',
     blockedOn => 'str?', blockedEvidence => 'str?', conditions => 'list:ConditionProof', evidence => 'obj:Evidence', cost => 'obj:Cost',
     stop => 'ptr:StopInfo?', denied => 'ptr:DenialInfo?', uncertain => 'strs?', receiptDigest => 'str',
     signature => 'ptr:Signature?');
 define 'Continuation', (runId => 'str', receiptId => 'str', receiptDigest => 'str', attempts => 'int');
+define 'RunLink', (runId => 'str', receiptId => 'str', receiptDigest => 'str');
 define 'HarnessInfo', (adapter => 'str', version => 'str?', procedure => 'str?', sessionRefs => 'strs?');
 define 'Attempt', ( n => 'int', adapter => 'str', startedAt => 'str', endedAt => 'str', endReason => 'str',
     sessionRef => 'str?', cost => 'obj:Cost');
@@ -148,7 +149,7 @@ define 'AdapterPolicy', (preferred => 'strs?', denied => 'strs?');
 
 # the instruction history line
 define 'HistoryLine', ( kind => 'str', package => 'ptr:WorkPackage?', directive => 'ptr:WorkDirective?',
-    continues => 'ptr:Continuation?', disposition => 'str?', attempt => 'int?', instructions => 'strs?',
+    continues => 'ptr:Continuation?', follows => 'ptr:RunLink?', disposition => 'str?', attempt => 'int?', instructions => 'strs?',
     sessionRef => 'str?', endReason => 'str?');
 
 #| The field names a shape declares, in order (for the schema tests).
