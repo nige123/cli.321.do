@@ -1071,7 +1071,8 @@ class ClaudeCode does Adapter is export {
             try $proc.kill(SIGTERM);
             await Promise.anyof($done, Promise.in($!kill-wait));
             try $proc.kill(SIGKILL) unless $done.status ~~ Kept;
-            await $done;
+            # the wait for the end is the await below: a bare await here would
+            # sink the Proc, and a Proc that ended badly throws when sunk
         }
         my $result = await $done;
         my $exit = $result.defined ?? $result.exitcode !! -1;

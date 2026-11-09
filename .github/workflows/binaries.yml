@@ -14,7 +14,7 @@ on:
 permissions:
   contents: write
 env:
-  RAKUPP_VERSION: v5.5.0
+  RAKUPP_VERSION: v5.6.3
 jobs:
   build:
     name: build ${{ matrix.target }}
