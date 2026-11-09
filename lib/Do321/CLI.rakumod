@@ -39,7 +39,7 @@ use Do321::History :read;
 use Do321::Complete;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.5.0';
+constant VERSION is export = '0.5.1';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
