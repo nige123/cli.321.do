@@ -244,7 +244,8 @@ sub run-bounded(Str $bin, @argv, :%env, Numeric :$timeout, Int :$max-out, Int :$
         try $proc.kill(SIGTERM);
         await Promise.anyof($done, Promise.in(5));
         try $proc.kill(SIGKILL) unless $done.status ~~ Kept;
-        await $done;
+        # the wait for the end is the await below: a bare await here would
+        # sink the Proc, and a Proc that ended badly throws when sunk
     }
     my $result = await $done;
     my $code = $result.defined ?? $result.exitcode !! -1;
@@ -376,8 +377,15 @@ sub summarise(Str $op, $data --> Str) is export {
                 next unless $s ~~ Associative;
                 my $name = $s<name> ~~ Str ?? $s<name> !! '';
                 my $ubic = $s<ubic> ~~ Str ?? $s<ubic> !! '';
-                my $state = ($s<running> ~~ Bool && $s<running>) ?? 'running' !! 'not running';
-                @parts.push("$name $state ($ubic)");
+                my $pid = $s<pid> ~~ Int ?? $s<pid> !! 0;
+                # dp calls a service running only when its process is up
+                # and its port answers; the two halves are said apart, so
+                # "not running" is never written beside "running (pid N)"
+                my $state = do if $s<running> ~~ Bool && $s<running> { $pid ?? "running (pid $pid)" !! 'running' }
+                    elsif $pid && $s<portOk> ~~ Bool && !$s<portOk> { "up (pid $pid) but port {$s<port> // '?'} does not answer" }
+                    elsif $pid { "up (pid $pid), not yet answering" }
+                    else { "not running ($ubic)" };
+                @parts.push("$name $state");
             }
             @parts .= sort;
             return 'no services matched' unless @parts;

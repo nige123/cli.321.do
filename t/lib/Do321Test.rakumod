@@ -5,6 +5,10 @@ unit module Do321Test;
 #| point the suite at a compiled 321 (a Raku++ binary) and CI tests the
 #| executable it ships, not the source it came from.
 
+# the suite's own commands are not a person typing: nothing is kept of
+# them unless a test asks (DO_321_INTERACTIONS=1 in its own environment)
+%*ENV<DO_321_INTERACTIONS> //= '0';
+
 my @cleanup;
 END { for @cleanup -> $d { try rm-rf($d) } }
 

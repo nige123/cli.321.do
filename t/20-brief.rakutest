@@ -58,7 +58,7 @@ ok $out.lines.tail ~~ / ^ 'done' \t <[0..9 A..Z]> ** 26 \t .* \t \S+ 'receipt.js
 ok $out.lines[0] ~~ / ^ \w+ \t /, 'each event is a record of its kind and its words' or diag $out;
 ok $out.lines.grep(*.starts-with("procedure_selected\tprocedure note (no model)")).elems == 1, 'with the words a person would have read' or diag $out;
 
-for ('status',), ('agents',), ('trust', 'show'), ('trust', 'check'), ('doctor',), ('harness', 'detect'), ('iz4', 'status'),
+for ('status',), ('agents',), ('trust', 'show'), ('trust', 'check'), ('trust', 'network'), ('doctor',), ('harness', 'detect'), ('iz4', 'status'),
     ('packages', 'validate', fixture('example.test/helper').Str), ('packages', 'digest', fixture('local/helper').Str), ('packages', 'builtin', 'prompt') -> @cmd {
     ($rc, $out, $err) = cli('--brief', |@cmd);
     is $rc, 0, "321 --brief {@cmd.join(' ')} exits 0" or diag $err;

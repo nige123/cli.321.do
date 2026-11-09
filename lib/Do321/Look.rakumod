@@ -137,19 +137,22 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
         # the quiet line under a title, a byline among them: furniture, so
         # it recedes
         elsif $l ~~ / ^ ('    ' \S .* \h ['·' | '-'] \h .*) $ / { $l = "{DIM}{$0}{OFF}" }
-        # what comes next
-        elsif $l ~~ / ^ ('next:' | 'then:') (.*) $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~$1)}" }
+        # what comes next: the person's focus, so the family blue
+        elsif $l ~~ / ^ ('next:' | 'then:') (.*) $ / { $l = "{$b}{BOLD}{$0}{OFF}{emphasise(~$1)}" }
+        # something that did not happen, said by 321 itself: red, whole
+        elsif $l ~~ / ^ '321' [\h <-[:\s]>+]? ':' \h / { $l = "{red()}{$l}{OFF}" }
         # comments, dimmed
         elsif $l ~~ / ^ \h* '#' / { $l = "{DIM}{$l}{OFF}" }
         # the marks; a run's last word after one is bold
         elsif $l ~~ / ^ (\h*) ('✓' | '+') (\h .*) $ / { $l = "{$0}{green()}{$1}{OFF}{verdict(~$2)}" }
-        elsif $l ~~ / ^ (\h*) ('✗' | 'x') (\h .*) $ / { $l = "{$0}{red()}{$1}{OFF}{verdict(~$2)}" }
+        elsif $l ~~ / ^ (\h*) ('✗' | 'x') (\h .*) $ / { $l = "{$0}{red()}{$1}{$2}{OFF}" }
         elsif $l ~~ / ^ (\h*) '?' (\h .*) $ / { $l = "{$0}{amber()}?{OFF}{verdict(~$1)}" }
         elsif $l ~~ / ^ (\h*) ('·' | '-') (\h 'stopped' .*) $ / { $l = "{$0}{$1}{verdict(~$2)}" }
         # the line that says everything holds
         elsif $l ~~ / ^ ('All ' \w+) (':' .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }
-        # a command a person can type, on its own line or heading a column
-        elsif $l ~~ / ^ (\h+ [ \S+ '=' \S* \h+ ]* '321' [\h <-[\h]>+]+?) (\h ** 2..* .*)? $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~($1 // ''))}" }
+        # a command a person can type, on its own line or heading a
+        # column: what they do next, so the family blue
+        elsif $l ~~ / ^ (\h+ [ \S+ '=' \S* \h+ ]* '321' [\h <-[\h]>+]+?) (\h ** 2..* .*)? $ / { $l = "{$b}{$0}{OFF}{emphasise(~($1 // ''))}" }
         # a labelled row: the label in bold
         elsif $l ~~ / ^ (<[a..z A..Z]> <[a..z A..Z \-]> ** 0..12 [\h <[a..z A..Z]>+]? ':') (\h+ .*) $ / { $l = "{BOLD}{$0}{OFF}{emphasise(~$1)}" }
         else { $l = emphasise($l) }
@@ -167,11 +170,12 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
 #| to remember.
 class Air is IO::Handle {
     has IO::Handle $.inner is required;
+    has Bool $.air = True;          # standard error is dressed, never aired
     has Bool $!started = False;
     has Str  $!tail = '';
     method WRITE(Blob:D $data --> True) {
         my $s = $data.decode;
-        unless $!started { $!started = True; $!inner.print("\n") unless $s.starts-with("\n") }
+        unless $!started { $!started = True; $!inner.print("\n") if $!air && !$s.starts-with("\n") }
         $!tail = ($!tail ~ $s).substr(* - 2 max 0);
         $!inner.print(pretty($s, :on));
         True;
@@ -179,7 +183,7 @@ class Air is IO::Handle {
     #| Something else has already opened the screen (a header on standard
     #| error): the first write here adds no air of its own.
     method begun() { $!started = True }
-    method settle() { $!inner.print("\n") if $!started && !$!tail.ends-with("\n\n"); $!inner.flush }
+    method settle() { $!inner.print("\n") if $!air && $!started && !$!tail.ends-with("\n\n"); $!inner.flush }
     method flush() { $!inner.flush }
     method t() { $!inner.t }
 }
@@ -217,6 +221,13 @@ my $air;
 sub install-air() is export {
     adopt-old-names();
     adopt-plain-flag(@*ARGS);
+    # what 321 says went wrong, and the way on, wear the same dress on
+    # standard error: red for what did not happen, blue for what to do
+    if pretty-on-err() {
+        my $e = Air.new(:inner($*ERR), :!air);
+        $e.encoding('utf8');
+        $*ERR = $e;
+    }
     return unless air-on();
     $air = Air.new(:inner($*OUT));
     $air.encoding('utf8');

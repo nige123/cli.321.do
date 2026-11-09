@@ -49,7 +49,10 @@ my ($dp, $log) = engine();
 my $res = $dp.run($bg, 'status', { target => 'live' });
 ok $res.ok && $res.data.defined, 'status runs and parses a document';
 my $s = summarise('status', $res.data);
-ok $s.contains('alpha.web running') && $s.contains('beta.web not running'), 'status summary' or diag $s;
+ok $s.contains('alpha.web running (pid 101)') && $s.contains('beta.web not running (off)'), 'status summary' or diag $s;
+my $half = summarise('status', { services => [ %( name => 'gamma.api', ubic => 'running (pid 7)', pid => 7, port => 3900, portOk => False, running => False ), ] });
+ok $half.contains('gamma.api up (pid 7) but port 3900 does not answer') && !$half.contains('not running'),
+    'a process up behind a dead port is said as that, never as not running beside running' or diag $half;
 $res = $dp.run($bg, 'plan', { service => 'alpha.web', target => 'live', revision => '0f94b03' });
 ok $res.ok && $res.data<status> eq 'planned', 'plan runs';
 is $res.data<revision><sha>, '0f94b03', 'the requested revision is bound';

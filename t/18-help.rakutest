@@ -113,7 +113,7 @@ subtest 'a slip gets one line back, not a wall' => {
     like cli(IO::Path, 'help', 'statu')[2], / 'Did you mean: 321 help status' /, 'a slip of the fingers is met with the command meant';
     ($rc, $out, $err) = cli(IO::Path, 'status', '--bogus');
     is $rc, EXIT-USAGE, 'a command called wrongly fails';
-    like $err, / ^ '321 status: ' \N+ \n \n ['❮▣❯' | '<#>'] ' 321 status:' /, 'with one line saying what, then its own help';
+    like $err, / ^ ['✗' | 'x'] ' 321 status: ' \N+ \n \n ['❮▣❯' | '<#>'] ' 321 status:' /, 'with one marked line saying what, then its own help';
     ok $err.lines.elems <= 18, 'and nothing more';
     nok $err.contains('321 agents'), 'not every command there is';
     ($rc, $out, $err) = cli(IO::Path, 'packages');
@@ -271,12 +271,13 @@ subtest 'pretty dresses output for a terminal only' => {
     my $on = pretty($plain, :on);
     like $on, /"\e[" .* '❮▣❯' "\e[0m" "\e[1m" ' 321 status:' "\e[0m"/, 'on, the header is a blue icon and a bold name';
     like $on, /"\e[1m" 'here:' "\e[0m"/, 'a row label is bold';
-    like $on, /"\e[1m" '  321 agents' "\e[0m" '       who'/, 'a command heading a column is bold and the words are left alone';
-    like $on, /"\e[1m" 'next:' "\e[0m"/, 'next is bold';
-    like $on, /"\e[1m" '       321 helper status' "\e[0m"/, 'and so is the command beneath it';
-    my ($green, $red) = colour-code('green'), colour-code('red');
+    my ($green, $red, $blue) = colour-code('green'), colour-code('red'), colour-code('blue');
+    like $on, /$blue '  321 agents' "\e[0m" '       who'/, 'a command heading a column is the focus blue and the words are left alone';
+    like $on, /$blue "\e[1m" 'next:' "\e[0m"/, 'next is blue: what the person does';
+    like $on, /$blue '       321 helper status' "\e[0m"/, 'and so is the command beneath it';
     like $on, /$green '✓' "\e[0m"/, 'a tick is the family green';
-    like $on, /$red '✗' "\e[0m"/, 'a cross is red';
+    like $on, /$red '✗ 2. no' "\e[0m"/, 'a cross and its words are red, whole';
+    like pretty("321 trust: there is no 'trust network'\n", :on), /^ $red '321 trust: ' .* "\e[0m" \n $/, 'what 321 itself could not do is red, whole';
     like $on, /"\e[2m" '# a comment' "\e[0m"/, 'a comment is dimmed';
     like $on, /"\e[1m" 'completed' "\e[0m"/, 'the last word of a run is bold';
     like $on, /"\e[1m" 'All clear' "\e[0m"/, 'and so is the line that says everything holds';
@@ -287,6 +288,19 @@ subtest 'pretty dresses output for a terminal only' => {
 
     my ($rc, $out, $err) = cli(IO::Path, 'help');
     unlike $out, /"\e["/, 'into a pipe, 321 writes no colour at all';
+    my ($rcE, $outE, $errE) = cli(IO::Path, 'trust', 'bogus', :env(%( DO_321_COLOR => '1' )));
+    like $errE, /$red '✗ 321 trust: there is no' .* "\e[0m"/, 'on a terminal an error is red' or diag $errE;
+    like $errE, /$blue '  321 trust show' "\e[0m"/, 'and the way on, beneath it, is blue' or diag $errE;
+    ($rcE, $outE, $errE) = cli(IO::Path, 'trust', 'bogus');
+    unlike $errE, /"\e["/, 'into a pipe, an error is words alone';
+    ok $errE.starts-with("✗ 321 trust: there is no 'trust bogus'\n"), 'and begins with the mark and the words' or diag $errE;
+    my %den = status => 'denied', denied => %( reason => 'no installed adapter can enforce what this package requires',
+        details => ['claude_code: cannot enforce network_deny (shell.run is granted)', 'required enforcement: network_deny'] );
+    my $nx = next-after-run(%den, :invocation('321 b1ll say hello'), :prefix('321 b1ll'));
+    ok $nx.contains('321 --network open b1ll say hello') && $nx.contains('321 trust network open'), 'a denial for the network names the grant to give' or diag $nx;
+    my %st = status => 'completed', evidence => %( toolCalls => [ %( tool => 'dp', op => 'status', ok => True, params => %( service => '123.api', target => 'live' ) ), ] );
+    $nx = next-after-run(%st, :invocation('321 1da status 123.api live'), :prefix('321 1da'));
+    ok $nx.contains('321 1da plan 123.api live') && !$nx.contains('<service>'), 'a status with both named offers the plan for that very service' or diag $nx;
     unlike $out ~ $err, / ^ "\n\n" /, 'and no extra air';
     my ($rc2, $dressed) = cli(IO::Path, 'help', :env(%( DO_321_COLOR => '1' )));
     like $dressed, /"\e[1m"/, 'DO_321_COLOR=1 keeps the dress into a pipe';

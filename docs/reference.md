@@ -45,7 +45,10 @@ seat packages, not to the runtime.
 
 Everything the runtime will run is configured by an administrator in
 `~/.321/trust.json` (`DO_321_TRUST` overrides the path). See
-`schemas/trust-config.v1.json`.
+`schemas/trust-config.v1.json`. `321 trust network open` (or `none`,
+`provider_only`) writes `policy.limits.network`, the network every run
+started on this machine gets unless `--network` says otherwise for one
+run; with no value it says what stands.
 
 ```json
 {

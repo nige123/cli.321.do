@@ -136,9 +136,9 @@ sub topics(--> List) is export {
       'An introduction in the package\'s own words: what it is for, its personality, how it speaks and how it decides, what each skill it carries says it does, what it asks to be allowed and what it refuses, and the trust it holds here. A run gets only what that, your grants and this machine\'s policy agree on. In a pipe, --brief gives id, version, level, byline and role.',
       '321 whois <agent>', :shown('whois <agent>')),
     t('trust', 'Agents and trust', 'the trust file: what may run here',
-      ['321 trust show', '321 trust check'],
-      '~/.321/trust.json (or --trust FILE) names every package that may run: a publisher\'s pinned package, checked by digest and signature; one pinned as development, digest only; or a local path. Short names are aliases you choose. check loads every one and says which fail. Without a trust file, --package-dir DIR runs an unsigned local package.',
-      '321 trust check'),
+      ['321 trust show', '321 trust check', '321 trust network [none|provider_only|open]'],
+      '~/.321/trust.json (--trust FILE names another) says what may run: a publisher\'s pinned package, checked by digest and signature; one pinned as development, digest only; or a local path. Short names are aliases. check loads every one and says which fail; network says, or sets, the network every run started here gets. --package-dir DIR runs an unsigned package.',
+      '321 trust network open'),
     t('packages', 'Agents and trust', 'check, digest and read agent packages',
       ['321 packages validate DIR', '321 packages digest DIR [--write]', '321 packages show ID', '321 packages builtin prompt'],
       'A package is a directory with agent.json, a DIGEST and optionally a SIGNATURE. Loading one never runs anything in it and installs nothing. builtin prompt writes the built-in prompt-only package and prints its path: into a pipe, the path alone.',
@@ -367,7 +367,10 @@ sub next-after-run(%r, Str :$invocation, Str :$prefix, Str :$workspace = '', Boo
                 ?? next-text('if this plan is what you want deployed, type the go; typing it is your approval', "$prefix go $service $target")
                 !! next-text("nothing will deploy from here: $target is not in DP_EXECUTE on this machine", "DP_EXECUTE=$target $prefix go $service $target");
         }
-        if @calls.grep({ .<tool> eq 'dp' && .<op> eq 'status' && .<ok> }) {
+        with @calls.first({ .<tool> eq 'dp' && .<op> eq 'status' && .<ok> }) -> %st {
+            # both already named: the plan for that very service is one word away
+            my ($svc, $tgt) = ((%st<params> // {})<service> // '', (%st<params> // {})<target> // '');
+            return next-text("an exact plan for $svc on $tgt, when you want one", "$prefix plan $svc $tgt") if $svc ne '' && $tgt ne '';
             return next-text('name a service and a target to get an exact plan', "$prefix plan <service> <target>");
         }
         return next-text('ask the next thing the same way', "$prefix <request...>");
@@ -389,6 +392,11 @@ sub next-after-run(%r, Str :$invocation, Str :$prefix, Str :$workspace = '', Boo
         return next-text('fix what the ! lines name, then ask again', $invocation);
     }
     if $status eq 'denied' {
+        my @why = @((%r<denied> // {})<details> // []);
+        if @why.grep(*.contains('network_deny')) && $invocation.starts-with('321 ') {
+            return next-text('grant the run its own network; shell.run never implies it (321 trust network open makes it standing)',
+                $invocation.subst(/ ^ '321 ' /, '321 --network open '));
+        }
         return next-text('see what this machine enforces against what the package needs', '321 doctor');
     }
     if $status eq 'stopped' {

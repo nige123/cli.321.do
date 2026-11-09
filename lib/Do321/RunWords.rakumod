@@ -49,7 +49,8 @@ sub run-words-starting(Str $prefix, Bool :$screen = True --> List) is export {
 #| run (a name, or '' for the one you are on), words (the request, the
 #| steer or what to find, word for word), harness, isolate, workspace,
 #| force, yes, view; or error, saying what is wrong in one line.
-sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export {
+#| Also under the :parse tag, for a module that wants the parser alone.
+sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export(:DEFAULT, :parse) {
     my %r = verb => $verb, run => '', words => '', harness => '', isolate => False, workspace => '',
             force => False, yes => False, view => '', package => '', continue => '', json => False, brief => False;
     my $w = run-word($verb);

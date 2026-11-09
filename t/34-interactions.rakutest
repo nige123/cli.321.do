@@ -1,0 +1,70 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Interactions;
+
+# 321's record of how it is used: one line per command a person types,
+# the person's own prose counted and never kept, nothing for a hook.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+my %env = DO_321_HOME => $home.Str, DO_321_INTERACTIONS => '1';
+
+sub lines(--> List) { read-interactions($home) }
+
+subtest 'a command typed is one line, in full' => {
+    my ($rc, $out, $err) = x321('help', :%env);
+    is $rc, 0, 'help answers';
+    my @l = lines();
+    is @l.elems, 1, 'one line kept';
+    my %r = @l[0];
+    is %r<command>, 'help', 'the command word';
+    is %r<exit>, 0, 'how it ended';
+    is %r<form>, 'plain', 'the form the answer took (a pipe here)';
+    is %r<tty>, False, 'and that no terminal was there';
+    ok %r<at> ~~ / ^ \d**4 '-' /, 'when';
+    ok %r<ms> ~~ Int, 'and how long';
+    is %r<note>, '', 'no note when nothing had to be explained';
+    ok (interactions-path($home).mode +& 0o077) == 0, 'the file is the person\'s alone';
+}
+
+subtest 'a usage slip is noted in 321\'s own words' => {
+    my ($rc, $out, $err) = x321('status', '--nonsense', :%env);
+    isnt $rc, 0, 'refused';
+    my %r = lines().tail;
+    is %r<command>, 'status', 'the command';
+    is-deeply %r<args>, ['--nonsense'], 'what was typed after it';
+    like %r<note>, /^ 'usage status: '/, 'and which help 321 had to show';
+}
+
+subtest 'the person\'s own words are counted, never kept' => {
+    x321('helper', 'write', 'a', 'tiny', 'poem', 'about', 'cats', :%env);
+    my %r = lines().tail;
+    is %r<command>, 'agent', 'a request to an agent';
+    is %r<agent>, 'helper', 'names the agent';
+    is %r<free>, 6, 'and counts the request';
+    is-deeply %r<args>, [], 'keeping none of it';
+    nok interactions-path($home).slurp.contains('poem'), 'not a word of it is on disk';
+    x321('--json', 'start', '--harness', 'fake', 'helper', 'and', 'again', :%env);
+    %r = lines().tail;
+    is %r<command>, 'start', 'a run started for later';
+    is-deeply %r<args>, ['--harness', 'fake'], 'keeps its options';
+    is %r<agent>, 'helper', 'and the agent';
+    is %r<free>, 2, 'and counts the request';
+    is %r<form>, 'json', 'in the form asked for';
+    is-deeply %r<options>, ['--json'], 'with the options said before the word';
+}
+
+subtest 'nothing for a hook, and nothing when asked for nothing' => {
+    my $n = lines().elems;
+    x321('hook', 'claude_code', 'iz4', 'status_line', :in('{}'), :%env);
+    is lines().elems, $n, 'a hook a harness calls is not a person typing';
+    x321('help', :env(%( |%env, DO_321_INTERACTIONS => '0' )));
+    is lines().elems, $n, 'DO_321_INTERACTIONS=0 keeps nothing';
+    my $other = $home.add('elsewhere.log');
+    x321('help', :env(%( |%env, DO_321_CLI_LOG => $other.Str )));
+    ok $other.e && $other.lines.elems == 1, 'DO_321_CLI_LOG names another file';
+}
+
+done-testing;

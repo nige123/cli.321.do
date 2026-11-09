@@ -20,6 +20,8 @@ use Do321::Tool;
 use Do321::Adapter;
 use Do321::Codex;
 use Do321::Exercised;
+use Do321::Interactions;
+use Do321::RunWords :parse;     # the parser alone: this module has a run-word of its own
 use Do321::Run;
 use Do321::Wire;
 use Do321::Hooks;
@@ -231,7 +233,60 @@ sub cmd-mission(Env $env, Global $g, @words --> Int) {
     MISSION(@argv);
 }
 
-sub cli-main(Env $env is copy --> Int) is export {
+#| Every command a person types goes through here: answered, then one
+#| line about it kept for the people who shape 321 (Do321::Interactions).
+#| The record never changes the answer.
+sub cli-main(Env $env --> Int) is export {
+    my $t0 = now;
+    my $code = cli-run($env);
+    try { my %i = interaction-of($env, $code, now - $t0); record-interaction(interactions-home($env), %i) if %i }
+    $code;
+}
+
+sub interactions-home(Env $env --> IO::Path) {
+    $env.home ne '' ?? $env.home.IO !! (%*ENV<DO_321_HOME> ?? %*ENV<DO_321_HOME>.IO !! $*HOME.add('.321'));
+}
+
+#| What one invocation looked like, for the record: the command word and
+#| the options and arguments around it, with the person's own prose
+#| counted rather than kept.  Nothing for the hooks a harness calls or
+#| the processes 321 runs for itself: those are not a person typing.
+sub interaction-of(Env $env, Int $code, Duration $took --> Hash) {
+    my ($g, $rest) = try parse-global($env.args);
+    my @rest = $g.defined ?? @$rest !! @($env.args);
+    my $word = @rest ?? @rest[0] !! '';
+    return %() if $word eq 'hook' | 'host' | 'run';
+    my @args = @rest[1 .. *];
+    my $free = 0;
+    my $agent = '';
+    if $word eq '' { $word = '(nothing)' }
+    elsif $word eq 'start' | 'steer' {
+        my %r = parse-run-words($word, @args);
+        if !%r<error> && %r<words> ne '' {
+            $free = %r<words>.words.elems;
+            @args = @args.head(* - $free);
+        }
+        # the agent is named on its own; what remains is the options
+        if $word eq 'start' && (%r<agent> // '') ne '' { $agent = %r<agent>; @args = @args.head(* - 1) }
+    }
+    elsif !is-in($word, RESERVED) && $word !~~ /^ '-'/ {
+        $agent = $word; $word = 'agent';
+        $free = @args.elems; @args = ();
+    }
+    my @opts = $env.args.grep(*.starts-with('--')).grep({ !is-in($_, @args) }).unique;
+    my $tty = so (try $env.stdout.t);
+    my $form = ($g.defined && $g.json-out) || is-in('--json', $env.args) ?? 'json'
+            !! ($g.defined && $g.brief) || brief-on() ?? 'brief'
+            !! !$tty || (%*ENV<DO_321_COLOR> // '') eq '0' || is-in('--plain', $env.args) ?? 'plain'
+            !! 'screen';
+    my %rec = command => $word, options => @opts, args => @args.map(*.Str).List, free => $free,
+              form => $form, tty => $tty, exit => $code, ms => ($took * 1000).Int, note => take-interaction-note();
+    %rec<agent> = $agent if $agent ne '';
+    %rec<cols> = screen-width() if $tty;
+    %rec;
+}
+
+sub cli-run(Env $env is copy --> Int) {
     adopt-old-names();
     $env = Env.new(:stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :args($env.args), :trust-path($env.trust-path),
         :home($env.home), :adapters(default-registry($env.stderr)), :interactive($env.interactive), :signals($env.signals))
@@ -311,7 +366,8 @@ sub help-ctx(Env $env --> Hash) {
 #| A command called wrongly: one line saying what was wrong, then that
 #| command's own help, to standard error, and the usage exit.
 sub usage-error(Env $env, Str $topic, Str $line = '' --> Int) {
-    $env.stderr.say("321 $topic: $line") if $line ne '';
+    interaction-note("usage $topic" ~ ($line ne '' ?? ": $line" !! ''));
+    $env.stderr.say("{glyph('no')} 321 $topic: $line") if $line ne '';
     with topic($topic) { $env.stderr.print(help-topic($_, help-ctx($env))) }
     else { $env.stderr.print(help-for([$topic], help-ctx($env))[0]) }
     EXIT-USAGE;
@@ -622,6 +678,7 @@ sub cmd-run(Env $env, Global $g, @args --> Int) {
                 when '--history-dir' { %o<history-dir> = need() }
                 when '--adapter'     { %o<adapter> = need() }
                 when '--continue'    { %o<continue-from> = need() }
+                when '--follows'     { %o<follows-from> = need() }
                 default { X::Do321::Usage.new(message => "unknown option $name for run").throw }
             }
             Str;
@@ -1076,8 +1133,72 @@ sub cmd-trust(Env $env, Global $g, @args --> Int) {
             $w.say(all-well('loaded', "{@rows.elems} of {many-of(@rows.elems, 'agent')} named here load as pinned.")) if @rows;
             return 0;
         }
+        when 'network' { my $rc = trust-network($env, $g, $cfg, @args[1] // ''); return $rc }
     }
     usage-error($env, 'trust', "there is no 'trust $sub'");
+}
+
+#| `321 trust network [none|provider_only|open]`: the network every run
+#| started here gets unless --network says otherwise.  Said, or set: the
+#| one standing grant a person changes often enough to deserve a word.
+#| A wider network is said as what it widens, in words, before the file
+#| is named.
+sub trust-network(Env $env, Global $g, Config $cfg, Str $want --> Int) {
+    my $w = $env.stdout;
+    my $was = ((($cfg.policy // {})<limits> // {})<network> // '').Str;
+    my sub standing(Str $n --> Str) { $n eq '' ?? NETWORK-PROVIDER-ONLY ~ ' (the default)' !! $n }
+    my sub meaning(Str $n --> Str) {
+        given $n eq '' ?? NETWORK-PROVIDER-ONLY !! $n {
+            when NETWORK-OPEN { 'an agent may use the network as it works' }
+            when NETWORK-NONE { 'an agent reaches nothing, its model provider included' }
+            default { 'an agent reaches only its model provider; a shell it is granted cannot be kept off the network, so a run with shell.run needs a harness that can, or --network open' }
+        }
+    }
+    if $want eq '' {
+        if $g.brief { $w.say(brief-line('network', $was eq '' ?? NETWORK-PROVIDER-ONLY !! $was, $was eq '' ?? 'default' !! 'set', $cfg.display-path)); return 0 }
+        $w.say(header('trust network', standing($was)));
+        $w.say('');
+        $w.say($_) for flat row-lines('standing:', standing($was)), row-lines('means:', meaning($was)), row-lines('file:', $cfg.display-path);
+        $w.say('');
+        $w.say(next-text('widen it for every run started here, or narrow it', '321 trust network open'));
+        return 0;
+    }
+    return usage-error($env, 'trust', "network is none, provider_only or open, not '$want'")
+        unless is-in($want, [NETWORK-NONE, NETWORK-PROVIDER-ONLY, NETWORK-OPEN]);
+    if $want eq $was {
+        if $g.brief { $w.say(brief-line('network', $want, 'unchanged', $cfg.display-path)); return 0 }
+        $w.say(header('trust network', "$want already"));
+        $w.say('');
+        $w.say($_) for flat row-lines('standing:', $want), row-lines('means:', meaning($want)), row-lines('file:', $cfg.display-path);
+        return 0;
+    }
+    my %doc = $cfg.doc;
+    %doc<schema> = SCHEMA-TRUST-CONFIG if (%doc<schema> // '') eq '';
+    %doc<policy> = {} unless %doc<policy> ~~ Associative;
+    %doc<policy><limits> = {} unless %doc<policy><limits> ~~ Associative;
+    %doc<policy><limits><network> = $want;
+    my $path = ($cfg.path ne '' ?? $cfg.path !! default-trust-path().Str).IO;
+    my $err = try {
+        $path.parent.mkdir unless $path.parent.d;
+        $path.parent.chmod(0o700);
+        my $tmp = $path.parent.add($path.basename ~ ".$*PID.tmp");
+        $tmp.spurt(to-pretty('TrustConfig', %doc) ~ "\n");
+        $tmp.chmod(0o600);
+        $tmp.rename($path);
+        load-trust($path);      # what was written reads back
+        Str;
+    };
+    if $! { $env.stderr.say("321 trust: {$!.message}"); return EXIT-FAILED }
+    if $g.brief { $w.say(brief-line('network', $want, 'set', $path.Str)); return 0 }
+    my $agent = $cfg.aliases.keys.sort.head // '<agent>';
+    $w.say(header('trust network', "$want, was {standing($was)}"));
+    $w.say('');
+    $w.say($_) for flat row-lines('standing:', $want), row-lines('means:', meaning($want)), row-lines('file:', $path.Str);
+    $w.say('');
+    $w.say('Every run started here takes it: at the shell, with 321 start, and from Mission Control. One run is still narrowed with --network before the agent\'s name. A package another system issues carries its own.');
+    $w.say('');
+    $w.say(next-text('ask an agent, and it has the network', "321 $agent <request...>"));
+    0;
 }
 
 #| The standing policy in words, never as a document: what stands
