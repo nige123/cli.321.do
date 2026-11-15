@@ -179,6 +179,12 @@ sub say-started(%o, RunDir $r, Str $word --> Int) {
         .say for row-lines('', 'changes not yet committed there are not in it; the run never commits');
     }
     else { .say for row-lines('workspace:', %run<workspace> ne '' ?? "{%run<workspace>}; you commit, the agent only edits" !! 'none') }
+    # said from the same evidence its host waits on
+    my @behind = ahead-of($r);
+    if @behind {
+        .say for row-lines('waits:', "its turn; {queue-reason($r, @behind)}");
+        .say for row-lines('', "$ME resume {$r.short} starts it now; --isolate gives a run a worktree of its own");
+    }
     say '';
     say next-text('watch it, steer it or stop it', "$ME attach {$r.short}");
     EXIT-OK;
@@ -304,12 +310,17 @@ sub cmd-control(%o, Str $kind, @args --> Int) {
     my ($r, $err) = find-run(%w<run>);
     with $err { return usage($_) }
     my %l = liveness($r);
-    unless %l<phase> eq 'running' | 'held' | 'starting' {
+    unless %l<phase> eq 'running' | 'held' | 'starting' | 'queued' {
         say-result(%o, $r, 'unchanged', "it has {%l<phase> eq 'lost' ?? 'been lost' !! 'ended'}; nothing was sent", :verb($kind));
         return %l<phase> eq 'lost' ?? EXIT-LOST !! EXIT-OK;
     }
     my $id = try send-directive($r, $kind, :text(%w<words>), :reason("$kind with $ME $kind"), :client($ME));
     if $! { note "$ME: not sent: {$!.message}"; return EXIT-INTERNAL }
+    # a run waiting its turn keeps what is said to it until it starts
+    if %l<phase> eq 'queued' && $kind ne 'resume' {
+        say-result(%o, $r, 'kept', 'it is waiting its turn, and gets this when it starts', :verb($kind));
+        return EXIT-OK;
+    }
     my $tail = EventTail.new(:path($r.events-file));
     my $t0 = now;
     my $word = '';
@@ -325,6 +336,7 @@ sub cmd-control(%o, Str $kind, @args --> Int) {
               !! $word ne 'delivered' ?? ''
               !! $kind eq 'steer' ?? steer-note((%($r.run<harness> // {}))<requested> // '')
               !! $kind eq 'hold' ?? 'its current step ends now, and it waits; resume carries on'
+              !! %l<phase> eq 'queued' ?? 'it starts now, ahead of its turn'
               !! 'it carries on where it was held';
     say-result(%o, $r, $word ne '' ?? $word !! 'sent', $detail, :verb($kind));
     $word.starts-with('refused') ?? EXIT-USAGE !! EXIT-OK;

@@ -69,6 +69,7 @@ class WireOptions is export {
     has Str $.adapter = '';
     has Str $.continue-from = '';       # path of the terminal receipt this run continues
     has Str $.follows-from = '';        # path of the terminal receipt whose conversation this run goes on from
+    has Bool $.stop-first = False;      # a stop is on its way: attempt nothing before it
     has $.stdin;                        # a LineSource
     has $.stdout;                       # an IO::Handle
     has $.stderr;                       # an IO::Handle
@@ -292,7 +293,7 @@ sub serve(Cancel $ctx, WireOptions $opts --> Int) is export {
     }
 
     my %run-opts = directives => $directives, signals => $signals, sink => $out, run-id => $opts.run-id, history-dir => $opts.history-dir,
-        adapter => $opts.adapter, package-raw => $raw;
+        adapter => $opts.adapter, package-raw => $raw, stop-first => $opts.stop-first;
     if $opts.continue-from ne '' {
         my $prev = try read-receipt($opts.continue-from);
         if $! { $out.frame('ProtocolError', protocol-error('continue_unreadable', $!.message)); return EXIT-MALFORMED }

@@ -24,7 +24,12 @@ steer, hold, stop. [321.do](https://321.do)
 321 start <agent> <request...>  a run that keeps going when you close the terminal
 321 steer <run> <words...>      say something to it while it works
 321 stop <run>                  ask it to stop, and wait for its own word
+321 value                       what the work cost, and what it saved
 ```
+
+Agents get better with use: `321 help learning` covers work contexts,
+lessons you can try and take back, what came of each run, and skills
+from the registry.
 
 Inside Mission Control the same words start with a slash: `/start`,
 `/steer`, `/hold`, `/stop`. Anything else you type goes to the run you are on.

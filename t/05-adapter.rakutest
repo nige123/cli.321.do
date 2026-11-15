@@ -84,6 +84,10 @@ my $line = Q[{"type":"result","is_error":false,"result":"{\"status\":\"blocked\"
 my $s = parse-envelope($line);
 ok $s.defined && $s.blocked && $s.blocked-on eq 'which file?' && $s.summary eq 'need a file' && $s.session-ref eq 's' && $s.turns == 2, 'the envelope is read';
 is $s.denials.join(','), 'Bash,WebFetch,{"odd":1}', 'denials in every shape';
+nok $s.usage, 'a result that counts no tokens has none: not a count of nothing';
+my $u = parse-envelope(Q[{"type":"result","result":"ok","total_cost_usd":0.1,"num_turns":1,"usage":{"input_tokens":120,"output_tokens":30,"cache_read_input_tokens":5000,"cache_creation_input_tokens":0,"service_tier":"standard"}}]);
+is ($u.usage<input>, $u.usage<output>, $u.usage<cacheRead>, $u.usage<cacheWrite>), (120, 30, 5000, 0), 'tokens are read by kind, as the harness counted them';
+
 ok $s.conditions.elems == 1 && $s.conditions[0]<met>, 'conditions are carried';
 ok !parse-envelope('just prose').defined, 'prose is not an envelope';
 ok !parse-envelope('{"type":"assistant"}').defined, 'a non-result object is not an envelope';

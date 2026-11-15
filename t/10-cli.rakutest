@@ -138,6 +138,16 @@ sub cli(IO::Path $trust, *@args, :%env, Str :$in = '' --> List) {
     is sprintf('%o', $tp.mode +& 0o777), '600', 'the file stays private';
     ($rc, $out) = cli($tp, 'trust', 'network', 'open');
     ok $rc == 0 && $out.contains('open already'), 'setting it again changes nothing, and says so' or diag $out;
+    ($rc, $out) = cli($tp, 'trust', 'now');
+    ok $rc == 0 && $out.contains('no limit (the default)') && $out.contains('321 trust now 1'), 'trust now says what stands' or diag $out;
+    ($rc, $out) = cli($tp, 'trust', 'now', '1');
+    ok $rc == 0 && $out.contains('trust now: 1 at once, was no limit') && $out.contains('waits its turn'), 'trust now 1 sets it and says what it means' or diag $out;
+    is parse-json($tp.slurp)<policy><now>, 1, 'and the trust file carries it';
+    is parse-json($tp.slurp)<policy><limits><network>, 'open', 'beside what was there';
+    ($rc, $out, my $e9) = cli($tp, 'trust', 'now', 'lots');
+    ok $rc == 64 && $e9.contains("not 'lots'"), 'a word that is not a number is refused, and said' or diag $e9;
+    ($rc, $out) = cli($tp, 'trust', 'now', 'none');
+    ok $rc == 0 && !(parse-json($tp.slurp)<policy><now>:exists), 'none takes the limit away' or diag $out;
     ($rc, $out) = cli($tp, '--brief', 'trust', 'network');
     is $out.lines[0].split("\t")[0..2].join(' '), 'network open set', 'the record says the value and that it was set' or diag $out;
     ($rc, $out, my $err) = cli($tp, 'trust', 'network', 'sometimes');

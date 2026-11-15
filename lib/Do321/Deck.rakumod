@@ -25,6 +25,7 @@ use Do321::Harnesses;
 use Do321::RunWords;
 use Do321::TuiLog;
 use Do321::Controller;
+use Do321::Learn;
 
 #| A control with no acknowledgement in this long is called unconfirmed.
 constant ACK-TIMEOUT = 5;
@@ -66,6 +67,7 @@ class Crew is export {
     has %.run;
     has %.live is rw;
     has Num $.checked is rw = 0e0;
+    has Int $.scroll-max is rw = 0;   # how far up the conversation goes, as last drawn
     has Int $.scroll is rw = 0;       # comms lines scrolled up from the bottom; 0 follows live
     has Int $.seen is rw = 0;         # comms lines when the person last looked
     has %.sent;                       # directive id -> [kind, time sent, text] for what this screen sent
@@ -87,9 +89,20 @@ class Crew is export {
     #| The harness by its name, so 'Claude Code' is never read as the model.
     method tag(--> Str) { self.harness ne '' ?? harness-name(self.harness) !! '' }
     method request(--> Str) { (%!run<request> // '').subst(/\s+/, ' ', :g) }
+    #| Where the work came from, when something other than this machine
+    #| issued it: the issuer and the references it gave, in its own words
+    #| ('api.123.do: track nige.123.do, step 200').  '' for a run started
+    #| here; nothing is said that the package did not carry.
+    method origin(--> Str) {
+        my %i = %!run<issuer> ~~ Associative ?? %!run<issuer>.Hash !! {};
+        return '' if (%i<kind> // 'local') eq 'local' || (%i<id> // '') eq '';
+        my @refs = @(%!run<refs> // []).grep(Associative).grep({ (.<kind> // '') ne '' && (.<id> // '') ne '' })
+            .map({ "{.<kind>} {.<id>}" });
+        %i<id> ~ (@refs ?? ': ' ~ @refs.join(', ') !! '');
+    }
     method phase(--> Str) { $!state.phase eq 'ended' ?? 'ended' !! %!live<phase> // $!state.phase }
     method outcome(--> Str) { $!state.outcome ne '' ?? $!state.outcome !! (%!live<outcome> // '') }
-    method active(--> Bool) { so self.phase eq 'starting' | 'running' | 'held' | 'stopping' }
+    method active(--> Bool) { so self.phase eq 'starting' | 'queued' | 'running' | 'held' | 'stopping' }
     #| Conversation lines so far, those dropped from memory included.
     method total(--> Int) { $!state.lines.elems + $!state.dropped }
     method unread(--> Int) { (self.total - $!seen) max 0 }
@@ -118,6 +131,18 @@ class Crew is export {
     }
 }
 
+#| A run's zone on its agent's trackline.  Now is everything in hand:
+#| at work, held, starting, stopping, and a run that ended waiting on a
+#| person, which is the person's move until it is answered.
+sub track-zone($c, Bool :$answered = False --> Str) is export {
+    given $c.phase {
+        when 'queued' { 'next' }
+        when 'starting' | 'running' | 'held' | 'stopping' { 'now' }
+        when 'ended' { $c.outcome eq 'blocked' && !$answered ?? 'now' !! 'done' }
+        default { 'done' }
+    }
+}
+
 class Model is export {
     has IO::Path $.home = home-dir();
     has @.crew;
@@ -135,14 +160,37 @@ class Model is export {
     has Num $.scanned is rw = 0e0;
     has Str $.filter is rw = 'all';       # all | active | needs
     has Str $.draft is rw = '';           # the input line, kept while finding
+    has Bool $.want-editor is rw = False; # Ctrl-G asked for the draft in $EDITOR
+    has Bool $.evidence is rw = False;    # on tracklines: the run's evidence beside its conversation, when asked for
+    has Bool $.zoom is rw = False;        # on tracklines: the cursor's job alone, its conversation the rest
+    has Str $.layout is rw = 'table';     # table | lines: a row a run, or a trackline an agent
+
+    #| Where a draft waits while an editor has it: the person's alone.
+    method draft-file(--> IO::Path) { private-dir($!home.add('tmp')).add("draft-{$*PID}.md") }
 
     #| The runs the deck shows, under the filter.
     method visible(--> List) {
         given $!filter {
-            when 'active' { @!crew.grep(*.active).List }
-            when 'needs'  { @!crew.grep({ needs-you($_) }).List }
-            default       { @!crew.List }
+            when 'active' { self.ordered(@!crew.grep(*.active)) }
+            when 'needs'  { self.ordered(@!crew.grep({ needs-you($_) })) }
+            default       { self.ordered(@!crew) }
         }
+    }
+    #| The runs in the order the screen walks them: as the table lists
+    #| them, or, on tracklines, agent by agent and oldest first along
+    #| each line, so the arrows move through time and the lines hold still.
+    method ordered(@runs --> List) {
+        return @runs.List unless $!layout eq 'lines';
+        my %z = self.zones;
+        my %rank = done => 0, now => 1, next => 2;
+        @runs.sort({ $^a.name cmp $^b.name || %rank{%z{$^a.id}} <=> %rank{%z{$^b.id}} || $^a.id cmp $^b.id }).List;
+    }
+    #| Where each run sits on its agent's trackline: done, now or next.  A
+    #| run that waits on a person is still now, until another run goes on
+    #| from it: then it has been answered, and is done.
+    method zones(--> Hash) {
+        my %answered = @!crew.map({ |(((.run<continues> // {})<runId> // '') => True, ((.run<follows> // {})<runId> // '') => True) });
+        %( @!crew.map({ .id => track-zone($_, :answered(%answered{.id}.so)) }) );
     }
     method selected(--> Crew) { self.visible[$!sel] // Crew }
 
@@ -196,6 +244,11 @@ sub met(Crew $c --> Str) {
     $s >= 3600 ?? sprintf('%d:%02d:%02d', $s div 3600, ($s div 60) % 60, $s % 60) !! sprintf('%d:%02d', $s div 60, $s % 60);
 }
 
+#| Whether marks may move.  DO_321_MOTION=0 keeps every mark still: the
+#| words carry the state alone, as they must for a reader who cannot or
+#| would rather not follow a blink.
+sub motion(--> Bool) is export { (%*ENV<DO_321_MOTION> // '1') ne '0' }
+
 #| A run's state as a mark, a word and a tone: the deck's STATE column.
 #| The marks are the family's: ◉ is a run at work, as 123 marks what is
 #| being done now, and it blinks to ◌ once in four ticks while events
@@ -207,8 +260,10 @@ sub crew-line(Crew $c, Int $tick, Bool :$narrow = False --> List) is export {
     my $ctl = control-note($c);
     given $c.phase {
         when 'starting' { return ('·', 'starting', 'dim') }
+        # waiting its turn: nothing has run, and the word says behind whom
+        when 'queued'   { return ('▫', ($s.activity.starts-with('queued') ?? $s.activity !! 'queued') ~ ($ctl ne '' ?? " · $ctl" !! ''), 'dim') }
         when 'running' {
-            my $beat = $quiet < BEAT-QUIET && $tick % 4 == 0;
+            my $beat = motion() && $quiet < BEAT-QUIET && $tick % 4 == 0;
             # a host whose heartbeat stopped is said so; liveness still decides lost
             my $hb = $c.heartbeat-age;
             return ('◌', "no heartbeat for {$hb}s", 'wait') if $hb > HEARTBEAT-STALE && ($c.live<phase> // '') eq 'running';
@@ -217,7 +272,7 @@ sub crew-line(Crew $c, Int $tick, Bool :$narrow = False --> List) is export {
             return ($beat ?? '◌' !! '◉', $word, $ctl.contains('unconfirmed') || $quiet > QUIET-WARN ?? 'wait' !! 'now');
         }
         when 'held'     { return ('‖', 'held' ~ ($ctl ne '' ?? " · $ctl" !! ''), 'wait') }
-        when 'stopping' { return ('◉', 'stopping' ~ ('·' x (1 + $tick % 3)), 'wait') }
+        when 'stopping' { return ('◉', 'stopping' ~ (motion() ?? '·' x (1 + $tick % 3) !! ''), 'wait') }
         when 'lost'     { return ('✗', 'lost: ' ~ ($c.live<why> // 'host gone'), 'bad') }
         when 'ended' {
             my $o = $c.outcome;
@@ -247,7 +302,8 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
     my $cv = Canvas.new(:$rows, :$cols);
     return $cv if $rows < 6 || $cols < 30;
     my $strip = $cols < 80 || $rows < 22;
-    my $rail = !$strip && $cols >= 150;
+    my $lines = !$strip && $m.layout eq 'lines';
+    my $rail = !$strip && !$lines && $cols >= 150;
     my @all = $m.crew;
     my @crew = $m.visible;
     my $active = @all.grep(*.active).elems;
@@ -261,6 +317,11 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
     my $empty = @all ?? "No {filter-word($m.filter)} right now.  /view all shows every run."
                      !! 'No runs yet.  /start <agent> <request...> begins one; it keeps going when you close this screen.';
     my $row = 0;
+    # a large screen has a panel at the right: the key to the shapes, and
+    # the keys that act on the job under the cursor.  The work keeps the
+    # rest, and is drawn as if the screen ended where the panel begins.
+    my $pw = $lines && $cols >= PANEL-FROM && $rows >= 30 ?? PANEL-WIDTH !! 0;
+    my $w = $cols - ($pw ?? $pw + 1 !! 0);
 
     if $strip {
         # one line for the crew; the selected run's conversation takes the rest
@@ -280,7 +341,7 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         if $sc.defined {
             my $right = "{met($sc)} · {ago($sc.state.last-at)}";
             my $nc = $cv.put($row, 1, $sc.name, 'bold+' ~ $sc.accent);
-            $cv.put($row, $nc, " {$sc.short}{$sc.tag ne '' ?? ' · ' ~ $sc.tag !! ''} · {$sc.request}", 'bold', :max($cols - $nc - text-width($right) - 2));
+            $cv.put($row, $nc, " {$sc.short}{$sc.tag ne '' ?? ' · ' ~ $sc.tag !! ''}{$sc.origin ne '' ?? ' · from ' ~ $sc.origin !! ''} · {$sc.request}", 'bold', :max($cols - $nc - text-width($right) - 2));
             $cv.put($row, $cols - text-width($right) - 1, $right, 'dim');
             $row++;
         }
@@ -297,11 +358,15 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         $cv.put(0, $cols - 9, $time, 'dim');
         $cv.put(1, 0, '─' x $cols, 'rule');
         $row = 2;
-        $row = draw-deck($cv, $m, @crew, $row, $rows, $cols, $empty) unless $rail;
+        if $lines { $row = draw-tracks($cv, $m, @crew, $row, $rows, $w, $empty, :panel(?$pw)) }
+        elsif !$rail { $row = draw-deck($cv, $m, @crew, $row, $rows, $cols, $empty) }
     }
 
     # --- the conversation, above the input line and the footer
-    my $foot = $rows - 3;          # rule, input, footer rows
+    # the rule, the input area (it grows with what is typed), the footer
+    my %area = input-area($m, $rows, $cols);
+    my $ih = %area<height>;
+    my $foot = $rows - 2 - $ih;
     my $sc = $m.selected;
     if $rail {
         my $rw = 30;
@@ -319,12 +384,20 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         }
         else { $cv.put($row + 1, $mid, $empty, 'dim', :max($mw)) }
     }
+    elsif $lines && $m.evidence && $sc.defined && $w >= 100 && $foot - $row > 0 {
+        # the evidence, when a person asks to look: beside what the run says
+        my $ew = 40;
+        for $row ..^ $foot -> $r { $cv.put($r, $w - $ew - 1, '│', 'rule') }
+        draw-comms($cv, $sc, $row, $foot, 0, $w - $ew - 2);
+        draw-evidence($cv, $sc, $row, $foot, $w - $ew + 1, $ew - 1);
+    }
     elsif $sc.defined && $foot - $row > 0 {
-        draw-comms($cv, $sc, $row, $foot, 0, $cols - 1, :narrow($cols < 80));
+        draw-comms($cv, $sc, $row, $foot, 0, $w - 1, :narrow($cols < 80));
     }
     elsif !$sc.defined && $foot - $row > 2 && $strip {
         $cv.put($row + 1, 1, @all ?? $empty !! 'No runs yet.  /start begins one.', 'dim');
     }
+    draw-panel($cv, $m, 2, $foot, $w, $pw) if $pw;
 
     # --- the input line and the footer
     $cv.put($foot, 0, '─' x $cols, 'rule');
@@ -341,7 +414,13 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
     my $pc = $prompt.ends-with('❯')
         ?? $cv.put($foot + 1, $cv.put($foot + 1, 1, $prompt.chop, 'bold'), '❯', 'now')
         !! $cv.put($foot + 1, 1, $prompt, 'bold');
-    $cv.put($foot + 1, $pc, ' ' ~ input-view($m, $cols - $pc - 2));
+    for %area<lines>.kv -> $i, $line { $cv.put($foot + 1 + $i, %area<left>, $line) }
+    # an empty prompt says what it is for
+    if $m.layout eq 'lines' && $sc.defined && $m.input eq '' && $m.mode eq 'input' | 'nav' && !$strip {
+        $cv.put($foot + 1, %area<left>, $m.mode eq 'nav' ?? "↓ to say something to {$sc.display}" !! "say something to {$sc.display}, or / for a word", 'dim');
+    }
+    # rows scrolled out of the area are counted, never silently hidden
+    $cv.put($foot, $cols - 14, " +{%area<above>} above ", 'dim') if %area<above> && $cols > 30;
     # a flash never hides what a question needs to say
     my $flash = (now.Num - $m.flash-at < 6 && $m.mode eq 'input' | 'nav' | 'find') ?? $m.flash !! '';
     if $flash ne '' && text-width($flash) > $cols - 2 {
@@ -352,8 +431,223 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         $cv.put($foot, 1, $first, 'wait');
         $flash = $rest;
     }
-    $cv.put($foot + 2, 1, $flash ne '' ?? $flash !! $hint, $flash ne '' ?? 'wait' !! 'dim');
+    $cv.put($foot + 1 + $ih, 1, $flash ne '' ?? $flash !! $hint, $flash ne '' ?? 'wait' !! 'dim');
     $cv;
+}
+
+#| A run as a square on its agent's trackline.  Squares, because these
+#| are bots: 123 draws a person's steps as dots.  Each state has a mark
+#| of its own, so the line reads without colour: ■ done, ▪ no change,
+#| ⊟ stopped, ◧ waits on you, ⊠ did not happen, ▣ at work now (it
+#| throbs to ▢ and back for as long as it is worked on), ◫ held, □ next.  Returns the mark,
+#| its tone and its zone: done, now or next.
+sub track-mark(Crew $c, Int $tick, Bool :$answered = False --> List) is export {
+    my $zone = track-zone($c, :$answered);
+    # the shape says the state; the colour says where on the track it
+    # is: green for done, blue for now, orange for next.  One exception:
+    # what did not happen is red, so it is never read as done.
+    my $tone = %( done => 'ok', now => 'now', next => 'wait' ){$zone};
+    my $mark = do given $c.phase {
+        when 'queued'   { '□' }
+        when 'starting' { '▣' }
+        when 'held'     { '◫' }
+        when 'stopping' { '▣' }
+        # a job being worked on throbs, an even pulse, for as long as
+        # its host's heartbeat says it is there; a stale one holds still
+        when 'running'  { motion() && $c.heartbeat-age <= HEARTBEAT-STALE && $tick % 2 == 1 ?? '▢' !! '▣' }
+        when 'lost'     { $tone = 'bad'; '⊠' }
+        default {
+            given $c.outcome {
+                when 'done'      { '■' }
+                when 'no_change' { '▪' }
+                when 'stopped'   { '⊟' }
+                when 'blocked'   { '◧' }
+                default          { $tone = 'bad'; '⊠' }
+            }
+        }
+    };
+    ($mark, $tone, $zone);
+}
+
+constant TRACK-LEGEND is export = '■ done  ▪ no change  ⊟ stopped  ⊠ did not happen  ◧ waits on you  ▣ working  ◫ held  □ next';
+
+#| The tracklines: a row an agent, time running left to right.  What
+#| it has done leads up to NOW; everything it has in hand stands side
+#| by side between two blue bars, which line up down the screen as one
+#| band, so what is happening now is a column the eye runs down; what
+#| waits its turn follows.  Marks only: what a job is, is said for the
+#| one under the cursor, in the detail beneath.  The cursor is 321's
+#| own mark closed on a job.  Never more than two fifths of the screen;
+#| rows past that are counted, above and below.  Returns the next free row.
+sub draw-tracks(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $empty, Bool :$panel = False --> Int) {
+    my $row = $top;
+    my $sc = $m.selected;
+    my %zone = $m.zones;
+    my @names = @crew.map(*.name).unique;
+    my %of = @names.map(-> $n { $n => %( done => [], now => [], next => [] ) });
+    %of{.name}{%zone{.id}}.push($_) for @crew;
+    my $nw = (@names.map(*.chars).max // 4) max 4;
+    my $left = 2 + $nw + 2;
+    # room between the marks, so each reads as a thing of its own
+    my $step = $cols >= 100 ?? 4 !! 3;
+    # the band is as wide as the busiest agent needs, the same on every row
+    my $most = (@names.map({ %of{$_}<now>.elems }).max // 0) max 1;
+    my $cap = ((($cols - $left) div (2 * $step)) max 2) min 12;
+    my $slots = $most min $cap;
+    my $band-w = $step * $slots + ($step - 2) + ($most > $cap ?? 3 !! 0);
+    # a short memory: the last few things done, the rest counted.  The
+    # lines sit at the left and leave the rest of the row empty.
+    my $done-w = ((($cols - $left - $band-w - 2) div 3) max (3 * $step + 5)) min (8 * $step + 5);
+    my $bar = $left + $done-w;                 # the left bar
+    my $bar2 = $bar + $band-w + 1;             # the right bar
+    $cv.put($row, 2, 'CREW', 'dim');
+    $cv.put($row, $bar - 5, 'DONE', 'ok');
+    # NOW sits over the middle of the band
+    $cv.put($row, $bar + 1 + (($band-w - 3) div 2 max 0), fit('NOW', $band-w), 'now');
+    $cv.put($row, $bar2 + $step - 1, 'NEXT', 'wait');
+    # the key to the shapes: beside the headings where the screen is wide,
+    # else on a row of its own where it is tall
+    my $key-at = $cols - 1 - text-width(TRACK-LEGEND);
+    my $key-beside = !$panel && $key-at > $bar2 + 6 * $step + 8;
+    $cv.put($row, $key-at, TRACK-LEGEND, 'dim') if $key-beside;
+    $row++;
+    my $at = $sc.defined ?? (@names.first({ $_ eq $sc.name }, :k) // 0) !! 0;
+    my $max = ((($rows * 2) div 5) - 4) max 3;
+    my $fits = @names <= $max ?? @names.elems !! $max - 1;
+    my $first = @names <= $max ?? 0 !! ((($at - $fits + 1) max 0) min (@names - $fits));
+    # zoomed in: the cursor's row alone; the conversation has the rest
+    my $zoom = $m.zoom && $sc.defined && @names.elems > 0;
+    if $zoom { $first = $at; $fits = 1 }
+    # the cursor is 321's own mark closing on a job: ❮▣❯.  The square
+    # keeps its state's colour; the brackets wear the focus blue.
+    my sub square(Int $col, Crew $c) {
+        my ($mark, $tone) = track-mark($c, $m.tick, :answered(%zone{$c.id} eq 'done'));
+        my $on = $sc.defined && $c.id eq $sc.id;
+        $cv.put($row, $col, $mark, $on ?? "bold+$tone" !! $tone);
+        # bold while the arrows are on the lines; plain while the person
+        # is at the prompt, where it still says who the words go to
+        my $br = $m.mode eq 'nav' ?? 'bold+now' !! 'now';
+        if $on { $cv.put($row, $col - 1, '❮', $br); $cv.put($row, $col + 1, '❯', $br) }
+    }
+    # as many as fit, around the cursor's own, which is always on the line
+    my sub window(@all, Int $fit, Bool :$newest --> List) {
+        return @all.List if @all <= $fit;
+        my $k = $sc.defined ?? @all.first({ .id eq $sc.id }, :k) !! Int;
+        my $from = $newest ?? @all - $fit !! 0;
+        with $k { $from = $k if $k < $from; $from = $k - $fit + 1 if $k >= $from + $fit }
+        @all[$from ..^ ($from + $fit)].List;
+    }
+    for @names[$first ..^ ($first + $fits)] -> $name {
+        my %z = %of{$name};
+        $cv.put($row, 2, pad($name, $nw), ($sc.defined && $sc.name eq $name ?? 'bold+' !! '') ~ (@crew.first({ .name eq $name }).accent));
+        # done: the newest nearest now, the rest counted
+        my @shown = window(%z<done>, ($done-w - 5) div $step, :newest);
+        my $col = $bar - $step * @shown.elems;
+        $cv.put($row, $col - $step - "+{%z<done> - @shown}".chars, "+{%z<done> - @shown}", 'dim') if %z<done> > @shown;
+        for @shown -> $d { square($col, $d); $col += $step }
+        # now: side by side between the bars; a still point when there is none
+        $cv.put($row, $bar, '│', 'now');
+        $cv.put($row, $bar2, '│', 'now');
+        my @now = window(%z<now>, $slots);
+        $col = $bar + $step - 1;
+        for @now -> $n { square($col, $n); $col += $step }
+        $cv.put($row, $bar + $step - 1, '·', 'dim') unless @now;
+        $cv.put($row, $col, "+{%z<now> - @now}", 'dim') if %z<now> > @now;
+        # next: what waits its turn, oldest first, the rest counted
+        my @q = window(%z<next>, ((($cols - $bar2 - 7) div $step) max 1));
+        $col = $bar2 + $step - 1;
+        for @q -> $n { square($col, $n); $col += $step }
+        $cv.put($row, $col, "+{%z<next> - @q}", 'dim') if %z<next> > @q;
+        $row++;
+    }
+    if @names > $fits && !$zoom {
+        my ($above, $below) = $first, @names - $first - $fits;
+        $cv.put($row++, 2, ($above ?? "↑ $above above" !! '') ~ ($above && $below ?? '   ' !! '') ~ ($below ?? "↓ $below below" !! ''), 'dim');
+    }
+    unless @crew { $cv.put($row, 2, $_, 'dim', :max($cols - 3)) for wrap($empty, $cols - 3)[0]; $row++ }
+    if !$panel && !$key-beside && !$zoom && $rows >= 30 && $key-at >= 2 { $cv.put($row++, 2, TRACK-LEGEND, 'dim') }
+    $cv.put($row, 0, '─' x $cols, 'rule');
+    $row++;
+    if $sc.defined {
+        # the job under the cursor: what it is, then how it stands
+        my ($mark, $tone) = track-mark($sc, $m.tick, :answered(%zone{$sc.id} eq 'done'));
+        # its mark, without the cursor: the cursor is in one place only
+        my $c = $cv.put($row, 1, "$mark ", $tone);
+        $c = $cv.put($row, $c, $sc.display, 'bold+' ~ $sc.accent);
+        $c = $cv.put($row, $c, " {$sc.short}  ", 'bold');
+        # what can be done to it, by its own state: keys while the arrows
+        # are on the lines, the same things as words at the prompt
+        my %say = $m.mode eq 'nav'
+            ?? (hold => 'h hold', resume => 'r resume', go => 'r go now', stop => 's stop', restart => 'a again', force => 'f force stop')
+            !! (hold => '/hold', resume => '/resume', go => '/resume', stop => '/stop', restart => '/restart');
+        my $do = actions-for($m).map({ %say{.<key>} // Empty }).join('   ');
+        $do = '' if $panel || $cols - $c < text-width($do) + 24;
+        $cv.put($row, $c, fit($sc.request, $cols - $c - 1 - ($do ne '' ?? text-width($do) + 3 !! 0)), 'bold');
+        $cv.put($row, $cols - 1 - text-width($do), $do, $m.mode eq 'nav' ?? 'now' !! 'dim') if $do ne '';
+        $row++;
+        # what a person wants at a glance: how it stands, the time it has
+        # taken, what it has cost, and the harness it is on.  These are
+        # kept whole; the status takes the room that is left.
+        my ($, $word, $wt) = crew-line($sc, $m.tick, :narrow($cols < 110));
+        my $time = met($sc);
+        my $rest = ($time ne '' ?? " · $time" !! '')
+            ~ ($sc.state.cost-reported ?? " · {$sc.state.cost-text}" !! '')
+            ~ ($sc.harness ne '' ?? " · on {harness-name($sc.harness)}" !! '');
+        my $from = $sc.origin ne '' ?? " · from {$sc.origin}" !! '';
+        $c = $cv.put($row, 3, fit($word, ($cols - 4 - text-width($rest)) max 12), $wt eq 'ok' | 'now' ?? '' !! $wt);
+        $c = $cv.put($row, $c, fit($rest, $cols - $c - 1));
+        $cv.put($row, $c, fit($from, $cols - $c - 1), 'dim') if $cols - $c > 12;
+        $row++;
+    }
+    $row;
+}
+
+constant PANEL-FROM is export = 140;
+constant PANEL-WIDTH is export = 26;
+
+#| The panel at the right of a large screen: the key to the shapes, with
+#| the cursor's own picked out; what can be done to the job under the
+#| cursor, by its state; and how to move.  Keys while the arrows are on
+#| the lines, the same things as words at the prompt.
+sub draw-panel(Canvas $cv, Model $m, Int $top, Int $bottom, Int $at, Int $width) {
+    for $top ..^ $bottom -> $r { $cv.put($r, $at, '│', 'rule') }
+    my $left = $at + 2;
+    my $max = $width - 2;
+    my $row = $top;
+    my $sc = $m.selected;
+    my $nav = $m.mode eq 'nav';
+    my sub head(Str $t) { $cv.put($row++, $left, $t, 'dim') if $row < $bottom }
+    # a section's words begin in one column, past its widest key
+    my sub lines(@pairs, Str $ks, Str $ts, :&on) {
+        my $in = @pairs.map(*[0].chars).max + 2;
+        for @pairs -> ($k, $t) {
+            last if $row >= $bottom;
+            my $lit = &on.defined && on($k);
+            $cv.put($row, $left, $k, $lit ?? 'bold' !! $ks);
+            $cv.put($row++, $left + $in, fit($t, $max - $in), $lit ?? '' !! $ts);
+        }
+    }
+    my $mine = $sc.defined ?? track-mark($sc, 0, :answered($m.zones{$sc.id} eq 'done'))[0] !! '';
+    head('SHAPES');
+    lines(TRACK-LEGEND.split('  ').map({ .split(' ', 2).List }).List, 'dim', 'dim', :on({ $_ eq $mine }));
+    $row++;
+    if $sc.defined {
+        my %say = $nav
+            ?? (hold => ('h', 'hold'), resume => ('r', 'resume'), go => ('r', 'go now'), stop => ('s', 'stop'), restart => ('a', 'again'), force => ('f', 'force stop'))
+            !! (hold => ('/hold', ''), resume => ('/resume', ''), go => ('/resume', 'go now'), stop => ('/stop', ''), restart => ('/restart', ''));
+        my @do = actions-for($m).map({ %say{.<key>} // Empty });
+        if @do {
+            head('THIS JOB');
+            lines(@do, 'now', '');
+            $row++;
+        }
+    }
+    head('MOVE');
+    my @move = $nav
+        ?? $m.zoom ?? (('←→', 'its other jobs'), ('↓', 'say something'), ('Esc', 'every line'))
+                   !! (('←→', 'another job'), ('↑↓', 'another agent'), ('↓', 'say something'), ('Enter', 'zoom in'), ('e', 'evidence'), ('t', 'table'))
+        !! (('↑', 'the lines'), ('←→', 'another job'), ('Enter', 'send'));
+    lines(@move, '', 'dim');
 }
 
 #| The deck: a table of runs, never more than a third of the screen, then
@@ -421,7 +715,7 @@ sub draw-deck(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $
     if $sc.defined {
         my $c = $cv.put($row, 1, $sc.display, 'bold+' ~ $sc.accent);
         $c = $cv.put($row, $c, ", {$sc.byline}") if $sc.byline ne '';
-        my $right = "{$sc.short}{$sc.harness ne '' ?? ' · on ' ~ harness-name($sc.harness) !! ''} · {$sc.state.attempts > 1 ?? "attempt {$sc.state.attempts} · " !! ''}{($sc.run<workspace> // '') || 'no workspace'}";
+        my $right = "{$sc.short}{$sc.harness ne '' ?? ' · on ' ~ harness-name($sc.harness) !! ''} · {$sc.state.attempts > 1 ?? "attempt {$sc.state.attempts} · " !! ''}{$sc.origin ne '' ?? "from {$sc.origin} · " !! ''}{($sc.run<workspace> // '') || 'no workspace'}";
         $cv.put($row, ($c + 4) max ($cols - text-width($right) - 1), $right, 'dim', :max($cols - $c - 5));
     }
     $row + 1;
@@ -443,7 +737,7 @@ sub draw-rail(Canvas $cv, Model $m, @crew, Int $top, Int $bottom, Int $w, Str $e
         $c = $cv.put($r, $c, pad($cr.name, 7), ($sel ?? 'bold+' !! '') ~ $cr.accent);
         $c = $cv.put($r, $c, $mark ~ ' ', $tone);
         $cv.put($r, $c, fit($word, $w - $c - 1), $tone eq 'ok' | 'now' ?? 'dim' !! $tone);
-        $cv.put($r + 1, 6, fit(($cr.tag ne '' ?? "{$cr.tag} · " !! '') ~ $cr.request, $w - 7), 'dim');
+        $cv.put($r + 1, 6, fit(($cr.tag ne '' ?? "{$cr.tag} · " !! '') ~ ($cr.origin ne '' ?? "from {$cr.origin} · " !! '') ~ $cr.request, $w - 7), 'dim');
         if $sel { $cv.tint($r, 0, $w, 'sel'); $cv.tint($r + 1, 0, $w, 'sel') }
         $r += 2;
     }
@@ -467,6 +761,15 @@ sub evidence-rows(Crew $c --> List) is export {
     @r.push(['attempts', $s.attempts.Str, '']);
     @r.push(['tools', many-of($s.tools, 'call'), '']);
     @r.push(['cost', $s.cost-reported ?? "{$s.cost-text}, as the harness reported it" !! 'none reported yet', '']);
+    @r.push(['tokens', $s.tokens-text ne '' ?? $s.tokens-text !! 'not reported', $s.tokens-text ne '' ?? '' !! 'dim']);
+    # what the run was started knowing, and what has been said of it since
+    my %ap = runs-applied($c.rd.dir.parent.parent){$c.id} // {};
+    @r.push(['context', %ap<context>, '']) if (%ap<context> // '') ne '';
+    @r.push(['lessons', @(%ap<lessons>).join(', ') ~ ', given as advice', '']) if @(%ap<lessons> // []);
+    if $c.phase eq 'ended' {
+        my %oc = run-outcomes($c.rd.dir.parent.parent){$c.id} // {};
+        @r.push(['outcome', (%oc<outcome> // '') ne '' ?? "{%oc<outcome>}, said by {%oc<by> // '?'}" !! 'not yet said: 321 outcome ' ~ $c.short ~ ' accepted', (%oc<outcome> // '') ne '' ?? '' !! 'dim']);
+    }
     @r.push(['host', %h<pid> ?? "pid {%h<pid>}" ~ ($hb >= 0 ?? ", heartbeat {$hb}s ago" !! '') !! 'not started yet',
              $hb > HEARTBEAT-STALE && $c.active ?? 'wait' !! '']);
     my $u = $c.status<usage>;
@@ -476,6 +779,8 @@ sub evidence-rows(Crew $c --> List) is export {
         @r.push(['cpu, mem', sprintf('%.1fs, %d MB', ($u<cpuSeconds> // 0).Num, (($u<rssBytes> // 0) / 1_048_576).Int), '']);
     }
     @r.push(['workspace', ($c.run<workspace> // '') || 'none', '']);
+    # where the work came from: the issuer's own references, or this machine
+    @r.push(['from', $c.origin ne '' ?? $c.origin !! 'started here' ~ ((($c.run<launchedBy> // {})<via> // '') eq 'mission-control' ?? ', in Mission Control' !! ''), '']);
     # iz4's last word on that workspace, in its own words, as the status line shows it
     with iz4-last-line(($c.run<workspace> // '') ~~ Str ?? ($c.run<workspace> // '') !! '') -> $iz4 {
         @r.push(['iz4', $iz4.subst(/^ \S+ ' IZ4: '/, ''), $iz4.starts-with('◈') ?? 'ok' !! $iz4.starts-with('✗') ?? 'bad' !! 'wait']) if $iz4 ne '';
@@ -510,6 +815,7 @@ sub draw-comms(Canvas $cv, Crew $sc, Int $top, Int $bottom, Int $left, Int $widt
         $sc.scroll = ($total - (@starts[$i] // 0) - ($rows div 2)) max 0;
         $sc.find-at = Int;
     }
+    $sc.scroll-max = ($total - $rows) max 0;
     my $scroll = $sc.scroll min ($total - $rows max 0);
     $sc.scroll = $scroll;
     my $end = $total - $scroll;
@@ -532,20 +838,50 @@ sub draw-comms(Canvas $cv, Crew $sc, Int $top, Int $bottom, Int $left, Int $widt
     else { $sc.seen = $sc.total }
 }
 
-sub input-view(Model $m, Int $w --> Str) {
-    return '' if $w < 2;
-    my $t = $m.mode eq 'input' | 'find' ?? $m.input !! '';
-    $t = $t.subst("\n", '⏎', :g);
-    text-width($t) > $w ?? '…' ~ $t.substr(* - ($w - 1)) !! $t;
+#| The most rows the input area takes: it grows with what is typed, up
+#| to eight rows or a third of the screen, then scrolls with the cursor.
+sub input-max(Int $rows --> Int) is export { (($rows div 3) min 8) max 1 }
+
+#| What is typed, laid out in rows $w wide: broken where a row is full
+#| and where the person broke it (Alt-Enter).  Returns the rows shown
+#| (at most $max, the ones around the cursor), and the cursor's row and
+#| column among them.
+sub input-layout(Str $text, Int $cursor, Int $w, Int $max --> Hash) is export {
+    my $width = $w max 1;
+    my @lines = '';
+    my $col = 0;
+    my ($cr, $cc) = (0, 0);
+    my $i = 0;
+    for $text.comb -> $ch {
+        if $i == $cursor { ($cr, $cc) = (@lines.end, $col) }
+        $i++;
+        if $ch eq "\n" { @lines.push(''); $col = 0; next }
+        my $cw = text-width($ch);
+        if $col + $cw > $width { @lines.push(''); $col = 0 }
+        @lines[*-1] ~= $ch;
+        $col += $cw;
+    }
+    if $cursor >= $i { ($cr, $cc) = (@lines.end, $col) }
+    # a cursor past a full row waits at the start of the next
+    if $cc >= $width && $cr == @lines.end { @lines.push(''); $cr++; $cc = 0 }
+    my $top = @lines > $max ?? (($cr - $max + 1) max 0) min (@lines - $max) !! 0;
+    %( lines => @lines[$top ..^ (($top + $max) min @lines.elems)].List, row => $cr - $top, col => $cc, above => $top, total => @lines.elems );
 }
 
-#| Where the cursor goes: the end of the typed text on the input line.
+#| The input area for this frame: its width, its rows and the cursor.
+sub input-area(Model $m, Int $rows, Int $cols --> Hash) is export {
+    my ($prompt) = prompt-and-hint($m, $cols);
+    my $pc = 1 + text-width($prompt) + 1;
+    my $t = $m.mode eq 'input' | 'find' ?? $m.input !! '';
+    my %l = input-layout($t, $m.cursor, $cols - $pc - 1, $m.mode eq 'input' ?? input-max($rows) !! 1);
+    %( |%l, left => $pc, height => %l<lines>.elems );
+}
+
+#| Where the cursor goes: in the typed text, on whichever row it is.
 sub cursor-at(Model $m, Int $rows, Int $cols --> List) is export {
     return (-1, 0) unless $m.mode eq 'input' | 'find';
-    my ($prompt) = prompt-and-hint($m, $cols);
-    my $pre = $m.input.substr(0, $m.cursor).subst("\n", '⏎', :g);
-    my $col = 1 + text-width($prompt) + 1 + text-width($pre);
-    ($rows - 2, $col min ($cols - 1));
+    my %a = input-area($m, $rows, $cols);
+    ($rows - 1 - %a<height> + %a<row>, (%a<left> + %a<col>) min ($cols - 1));
 }
 
 sub prompt-and-hint(Model $m, Int $cols --> List) {
@@ -555,17 +891,31 @@ sub prompt-and-hint(Model $m, Int $cols --> List) {
         when 'confirm' { return ($m.confirm[0], 'y yes · any other key cancels') }
         when 'find' { return ('find ❯', "words in {$sc.defined ?? $sc.name ~ ' ' ~ $sc.short !! 'this run'}'s conversation   Enter older match · Esc back") }
         when 'nav' {
+            if $m.layout eq 'lines' && $sc.defined {
+                # the keys for the job itself are beside its title; these move
+                my @do;
+                my @rest = $m.zoom
+                    ?? ('↓ say something', '←→ its other jobs', 'Esc every line')
+                    !! $narrow ?? ('↓ say something', 'Enter zoom in', '←→↑ move', 'q leave')
+                               !! ('↓ say something', 'Enter zoom in', '←→ time', '↑ agents', 'e evidence', 'n new', '/ word', 't table', 'q leave');
+                return ("{$sc.name} {$sc.short} ❯", (|@do, |@rest).join($narrow ?? ' · ' !! '   '));
+            }
             return ('', $narrow
                 ?? '↑↓ run · s stop · h hold · r resume · n new · / word · q leave · Esc type'
-                !! '↑↓ run   s stop   h hold   r resume   a again   n new   / word   v view   q leave   Esc type');
+                !! '↑↓ run   s stop   h hold   r resume   a again   n new   / word   v view   t lines   q leave   Esc type');
         }
     }
     my $to = $sc.defined ?? "to {$sc.name} {$sc.short} ❯" !! '❯';
+    $to = "{$sc.name} {$sc.short} ❯" if $sc.defined && $m.layout eq 'lines';
     my $slash = slash-hint($m);
     return ($to, $slash) if $slash ne '';
+    if $m.layout eq 'lines' && $sc.defined {
+        return ($to, $narrow ?? 'Enter send · ↑ the lines · ←→ job · / words'
+                             !! 'Enter send   ↑ the lines   ←→ another job   Alt-Enter new line   /edit editor   / words: /start /stop …');
+    }
     ($to, $narrow
         ?? 'Enter send · / words · Esc keys · ←→ run'
-        !! 'Enter send   / words: /start /stop /hold /find …   Esc keys   ←→ run   PgUp/PgDn scroll');
+        !! 'Enter send   Alt-Enter new line   /edit editor   / words: /start /stop …   Esc keys   ←→ run');
 }
 
 #| A run's conversation as screen lines: each a list of [text, style].
@@ -642,6 +992,10 @@ sub actions-for(Model $m --> List) is export {
                 @a.push(%( key => 'resume', label => 'Resume', what => 'continues the conversation where it was held' ));
                 @a.push(%( key => 'stop', label => 'Stop', what => 'ends this run; the others keep running' ));
             }
+            when 'queued' {
+                @a.push(%( key => 'go', label => 'Go now', what => 'starts it now, ahead of its turn' ));
+                @a.push(%( key => 'stop', label => 'Stop', what => 'ends it before it starts; nothing will have run' ));
+            }
             when 'stopping' | 'starting' {
                 @a.push(%( key => 'stop', label => 'Stop', what => 'ends this run; the others keep running' ));
             }
@@ -661,18 +1015,29 @@ sub actions-for(Model $m --> List) is export {
     @a.List;
 }
 
+#| The same thing said at the shell, for a person learning the words:
+#| 'CLI: 321 stop K3F'.  Only for what the shell takes word for word
+#| (Do321::RunWords); DO_321_HINTS=0 leaves it out.
+sub cli-hint(Str $verb, Crew $c, Str $rest = '' --> Str) is export {
+    return '' if (%*ENV<DO_321_HINTS> // '1') eq '0';
+    my $w = run-word($verb);
+    return '' if !$w.defined || $w.screen-only;
+    " · CLI: 321 $verb {$c.short}" ~ ($rest ne '' ?? " $rest" !! '');
+}
+
 sub send-control(Model $m, Str $kind) {
     my $c = $m.selected // return;
     my $id = try send-directive($c.rd, $kind, :reason("$kind from Mission Control"), :client('mission-control'));
     if $! { $m.tell("not sent: {$!.message}"); return }
     $c.sent{$id} = [$kind, now.Num, ''];
-    $m.tell("{$kind} requested for {$c.name} {$c.short}");
+    $m.tell("{$kind} requested for {$c.name} {$c.short}" ~ cli-hint($kind, $c));
 }
 
 sub do-action(Model $m, Str $key) is export {
     my $c = $m.selected;
     given $key {
         when 'hold'   { send-control($m, 'hold') if $c.defined && $c.phase eq 'running' }
+        when 'go'     { send-control($m, 'resume') if $c.defined && $c.phase eq 'queued' }
         when 'resume' { send-control($m, 'resume') if $c.defined && $c.phase eq 'held' }
         when 'stop' {
             return unless $c.defined && $c.active;
@@ -712,6 +1077,25 @@ sub do-action(Model $m, Str $key) is export {
         when 'follow' { .scroll = 0 with $c }
         when 'quit'   { $m.quit = True }
     }
+}
+
+#| The same runs as a line an agent, or as a table a run; the cursor
+#| stays on the run it was on.
+sub set-layout(Model $m, Str $layout) is export {
+    my $keep = $m.selected;
+    $m.zoom = False;
+    $m.layout = $layout;
+    $m.sel = $m.visible.first({ $keep.defined && .id eq $keep.id }, :k) // 0;
+    $m.tell($layout eq 'lines' ?? 'a line for each agent: done, now, next   ←→ through time   ↑↓ between agents   /view table for a row a run'
+                                !! 'a row for each run   /view lines for a line an agent');
+}
+
+#| The evidence for the run under the cursor, shown or put away.  It is
+#| detail: there for a person who wants to look, out of the way otherwise.
+sub show-evidence(Model $m) is export {
+    if $m.layout ne 'lines' { $m.tell('the evidence is beside the conversation on a wide screen; /view lines, then e, shows it there'); return }
+    $m.evidence = !$m.evidence;
+    $m.tell($m.evidence ?? 'the evidence for the job under the cursor, at the right   e puts it away' !! 'evidence put away   e shows it');
 }
 
 sub cycle-filter(Model $m) {
@@ -756,14 +1140,19 @@ sub pick-run(Model $m, Str $ref --> Crew) {
 #| words '321 <word>' takes at the shell (Do321::RunWords).
 sub run-line(Model $m, Str $line) is export {
     .note("line: $line") with $m.log;
-    my %w = parse-run-line($line);
+    # a line that begins by naming an agent here is work for that agent
+    my $said = $line;
+    if $line.trim ~~ /^ '@' (\S+) \s+ \S / && agents-here().first({ .lc eq $0.Str.lc }) -> $name {
+        $said = "/start $name " ~ $line.trim.split(/\s+/, 2)[1];
+    }
+    my %w = parse-run-line($said);
     with %w<error> { $m.tell($_); return }
     my $clear = { $m.input = ''; $m.cursor = 0 };
     given %w<verb> {
         when 'steer' {
             my $c = $m.selected;
             return $m.tell('no run is selected; /start begins one') unless $c.defined;
-            unless $c.phase eq 'running' | 'held' | 'starting' {
+            unless $c.phase eq 'running' | 'held' | 'starting' | 'queued' {
                 # the run is over, so the words begin the agent's next one:
                 # same agent, same workspace, its conversation carried on
                 return $m.tell("{$c.name} {$c.short} has been lost; /restart runs its request again") if $c.phase eq 'lost';
@@ -774,7 +1163,7 @@ sub run-line(Model $m, Str $line) is export {
             $c.sent{$id} = ['steer', now.Num, %w<words>];
             $clear();
             $c.scroll = 0;
-            $m.tell(steer-note($c.harness));
+            $m.tell(($c.phase eq 'queued' ?? 'kept; it gets your words when its turn comes' !! steer-note($c.harness)) ~ cli-hint('steer', $c, '<words>'));
         }
         when 'start' {
             my $harness = '';
@@ -797,6 +1186,7 @@ sub run-line(Model $m, Str $line) is export {
             $clear();
             my $verb = %w<force> ?? 'force' !! $_;
             if $verb eq 'hold' && $c.phase ne 'running' { return $m.tell("{$c.name} {$c.short} is not running; nothing to hold") }
+            if $verb eq 'resume' && $c.phase eq 'queued' { return do-action($m, 'go') }
             if $verb eq 'resume' && $c.phase ne 'held' { return $m.tell("{$c.name} {$c.short} is not held") }
             if $verb eq 'stop' && !$c.active { return $m.tell("{$c.name} {$c.short} has already ended") }
             do-action($m, $verb);
@@ -829,12 +1219,19 @@ sub run-line(Model $m, Str $line) is export {
         when 'view' {
             $clear();
             if %w<view> eq '' { cycle-filter($m) }
+            elsif %w<view> eq 'lines' | 'table' { set-layout($m, %w<view>) }
+            elsif %w<view> eq 'evidence' { show-evidence($m) }
             else {
                 my $keep = $m.selected;
                 $m.filter = %w<view>;
                 $m.sel = $m.visible.first({ $keep.defined && .id eq $keep.id }, :k) // 0;
                 $m.tell("showing {filter-word($m.filter)}: {+$m.visible} of {+$m.crew}");
             }
+        }
+        when 'edit' {
+            # the words after it are the draft the editor opens on
+            $m.input = %w<words>; $m.cursor = $m.input.chars;
+            $m.want-editor = True;
         }
         when 'quit' { $m.quit = True }
     }
@@ -872,8 +1269,42 @@ sub split-at-width(Str $t, Int $w --> List) is export {
     ($first, @words.join(' '));
 }
 
+#| The agents a person can name here: the short names in their trust
+#| file.  Read, never resolved or loaded.
+sub agents-here(--> List) is export {
+    my $f = %*ENV<DO_321_TRUST> ?? %*ENV<DO_321_TRUST>.IO !! ($*HOME // '/'.IO).add('.321/trust.json');
+    return () unless $f.e;
+    my $doc = try parse-json($f.slurp);
+    return () unless $doc ~~ Associative;
+    (($doc<aliases> // {}).keys.sort).List;
+}
+
+#| An agent being named at the end of the input line: '@b' anywhere, or
+#| the word after /start.  Returns (what is typed of it, the names that
+#| begin so, whether it wears an @), or () when no agent is being named.
+sub mention(Str $t --> List) is export {
+    return () if $t eq '' || $t.ends-with(' ');
+    my @w = $t.words;
+    my $last = @w.tail;
+    my $at = $last.starts-with('@');
+    my $start = $t.starts-with('/') && !$t.starts-with('//') && @w > 1
+        && (run-word(@w[0].substr(1)) // run-words-starting(@w[0].substr(1)).head // RunWord).?name eq 'start'
+        && (@w[1 ..^ @w.end].grep({ !.starts-with('--') }).elems == 0)
+        && !$last.starts-with('-') && !(@w > 2 && @w[*-2] eq '--harness' | '--workspace');
+    return () unless $at || $start;
+    my $typed = $at ?? $last.substr(1) !! $last;
+    ($typed, agents-here().grep({ .lc.starts-with($typed.lc) }).List, $at);
+}
+
 sub slash-hint(Model $m --> Str) {
     my $t = $m.input;
+    # an agent being named: who it could be
+    if mention($t) -> ($typed, @names, $at) {
+        my $p = $at ?? '@' !! '';
+        return "no agent here begins '{$p}{$typed}'; 321 agents lists them" unless @names;
+        return "{$p}{@names[0]}   " ~ ($typed eq @names[0] ?? 'then what it should do' !! 'Tab completes') if @names == 1;
+        return @names.map({ $p ~ $_ }).join('  ') ~ '   Tab completes';
+    }
     return '' unless $t.starts-with('/') && !$t.starts-with('//');
     my $word = $t.substr(1).split(' ', 2)[0];
     my @w = $t.contains(' ') ?? run-words().grep(*.name eq $word) !! run-words-starting($word);
@@ -895,6 +1326,34 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
         return unless $n;
         $m.sel = $cycle ?? ($m.sel + $d) % $n !! (($m.sel + $d) max 0) min ($n - 1);
     }
+    # on tracklines the arrows go where the eye does: left and right
+    # along one agent's line, through done, now and next, stopping at
+    # its ends; up and down to the next agent, landing on what it has
+    # in hand, else on the newest thing it did.
+    my sub go($to) { with $to { $m.sel = $m.visible.first({ .id eq $to.id }, :k) // $m.sel } }
+    my sub along(Int $d) {
+        return move($d) unless $m.layout eq 'lines' && $c.defined;
+        my @on = $m.visible.grep({ .name eq $c.name });
+        my $k = @on.first({ .id eq $c.id }, :k) + $d;
+        go(@on[$k]) if 0 <= $k < @on.elems;
+    }
+    my sub line(Int $d) {
+        return move($d) unless $m.layout eq 'lines' && $c.defined;
+        my @v = $m.visible;
+        my %z = $m.zones;
+        my @names = @v.map(*.name).unique;
+        my $i = (@names.first({ $_ eq $c.name }, :k) // 0) + $d;
+        return if $i < 0 || $i >= @names.elems;
+        my @on = @v.grep({ .name eq @names[$i] });
+        go(@on.first({ %z{.id} eq 'now' }) // @on.grep({ %z{.id} eq 'done' }).tail // @on.head);
+    }
+    # the arrows live in two places, one above the other: the lines and
+    # the prompt.  Down from the last line goes to the prompt; up from
+    # an empty prompt goes back to the lines.
+    my sub down() {
+        return line(1) unless $m.layout eq 'lines' && $c.defined;
+        if $m.zoom || $c.name eq $m.visible.map(*.name).unique.tail { $m.mode = 'input' } else { line(1) }
+    }
     my sub type(Str $text) { $m.mode = 'input'; $m.input = $text; $m.cursor = $text.chars }
     my sub edit() {
         given $k.name {
@@ -913,6 +1372,8 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
     }
     # the terminal's own interrupt still leaves; the runs keep going
     if $k.name eq 'ctrl-c' { $m.quit = True; return }
+    # a long thought is written in the person's own editor
+    if $k.name eq 'ctrl-g' && $m.mode eq 'input' { $m.want-editor = True; return }
     given $k.name {
         when 'pgup' { if $c.defined { $c.scroll += $page }; return }
         when 'pgdn' { if $c.defined { $c.scroll = ($c.scroll - $page) max 0 }; return }
@@ -933,10 +1394,21 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
         }
         when 'nav' {
             given $k.name {
-                when 'up' | 'left'    { move(-1) }
-                when 'down' | 'right' { move(1) }
+                when 'left'  { along(-1) }
+                when 'right' { along(1) }
+                when 'up'    { line(-1) }
+                when 'down'  { down() }
                 when 'tab'            { move(1, :cycle) }
-                when 'enter' | 'esc' { $m.mode = 'input' }
+                # Enter goes in: the job alone, ready to be spoken to.  Esc
+                # comes back out, a level at a time.
+                when 'enter' {
+                    if $m.layout eq 'lines' && $c.defined && !$m.zoom {
+                        $m.zoom = True;
+                        $m.tell("{$c.name} {$c.short} alone: type to it   Esc for its keys   Esc again for every line");
+                    }
+                    $m.mode = 'input';
+                }
+                when 'esc' { if $m.zoom { $m.zoom = False } else { $m.mode = 'input' } }
                 when 'char' {
                     given $k.text {
                         when 'h' { run-line($m, '/hold') }
@@ -947,10 +1419,12 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                         when 'n' { type('/start ') }
                         when '/' { type('/') }
                         when 'v' { cycle-filter($m) }
+                        when 'e' { show-evidence($m) }
+                        when 't' { set-layout($m, $m.layout eq 'lines' ?? 'table' !! 'lines') }
                         when 'q' { $m.quit = True }
                         when 'i' { $m.mode = 'input' }
-                        when 'k' { move(-1) }
-                        when 'j' { move(1) }
+                        when 'k' { line(-1) }
+                        when 'j' { down() }
                     }
                 }
             }
@@ -961,7 +1435,14 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                 when 'tab' {
                     # a word being typed after '/' is finished; otherwise the next run
                     my $t = $m.input;
-                    if $t.starts-with('/') && !$t.starts-with('//') && !$t.contains(' ') {
+                    my sub agree(@n) { @n.reduce(-> $a, $b { my $i = 0; $i++ while $i < $a.chars && $i < $b.chars && $a.substr($i, 1) eq $b.substr($i, 1); $a.substr(0, $i) }) }
+                    if $m.cursor == $t.chars && mention($t) -> ($typed, @names, $at) {
+                        # an agent being named is finished, or taken as far as the names agree
+                        my $head = $t.substr(0, $t.chars - $typed.chars);
+                        if @names == 1 { type($head ~ @names[0] ~ ' ') }
+                        elsif @names > 1 && agree(@names).chars > $typed.chars { type($head ~ agree(@names)) }
+                    }
+                    elsif $t.starts-with('/') && !$t.starts-with('//') && !$t.contains(' ') {
                         my @w = run-words-starting($t.substr(1));
                         if @w == 1 { type("/{@w[0].name} ") }
                         elsif @w > 1 {
@@ -973,10 +1454,12 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
                     else { move(1, :cycle) }
                 }
                 when 'shift-tab' { move(-1, :cycle) }
-                when 'up'   { if $c.defined { $c.scroll += 1 } }
+                # up from an empty prompt is back on the lines above it; with
+                # words typed, the arrows read the conversation
+                when 'up'   { if $m.layout eq 'lines' && $m.input eq '' && $c.defined { $m.mode = 'nav' } elsif $c.defined { $c.scroll += 1 } }
                 when 'down' { if $c.defined { $c.scroll = ($c.scroll - 1) max 0 } }
                 when 'left' | 'right' {
-                    if $m.input eq '' { move($k.name eq 'left' ?? -1 !! 1) } else { edit() }
+                    if $m.input eq '' { along($k.name eq 'left' ?? -1 !! 1) } else { edit() }
                 }
                 when 'enter' {
                     return if $m.input.trim eq '';
@@ -988,12 +1471,44 @@ sub handle-key(Model $m, Key $k, Int :$page = 10) is export {
     }
 }
 
+# ------------------------------------------------------------ the editor
+
+#| The editor a person named: $VISUAL, else $EDITOR, else vi.
+sub editor-command(--> Str) is export { (%*ENV<VISUAL> // '').trim || (%*ENV<EDITOR> // '').trim || 'vi' }
+
+#| The draft, written in an editor: the input goes into a private file,
+#| &open is handed its path and returns when the editor closes, and what
+#| the file then holds is the input.  Nothing is sent: the person reads
+#| it back on the input line and presses Enter themselves.  Returns what
+#| went wrong, or Str.
+sub edit-draft(Model $m, &open --> Str) is export {
+    my $f = $m.draft-file;
+    my $err = Str;
+    {
+        $f.spurt($m.input);
+        $f.chmod(0o600);
+        open($f);
+        $m.input = $f.slurp.subst(/\n+ $/, '');
+        $m.cursor = $m.input.chars;
+        $m.mode = 'input';
+        CATCH { default { $err = .message } }
+    }
+    try $f.unlink;
+    $err;
+}
+
 # ------------------------------------------------------------ the loop
 
 #| Open Mission Control.  Returns the exit code when the person leaves.
 sub run-deck(Str :$focus = '' --> Int) is export {
     my $m = Model.new;
     $m.scan;
+    # a trackline an agent: who is doing what, at a glance.
+    # DO_321_VIEW=table opens on a row a run instead.
+    my $want = (%*ENV<DO_321_VIEW> // '').lc;
+    $m.layout = $want eq 'table' ?? 'table' !! 'lines';
+    # the cursor opens on work in hand, else on the newest thing
+    $m.sel = $m.visible.first(*.active, :k) // ($m.layout eq 'lines' ?? ($m.visible.end max 0) !! 0);
     if $focus ne '' { $m.sel = $m.visible.first({ .id eq $focus }, :k) // 0 }
     my $t = Terminal.new;
     my $log = TuiLog.new.open;
@@ -1040,6 +1555,21 @@ sub run-deck(Str :$focus = '' --> Int) is export {
             last if $m.quit;
         }
         last if $m.quit;
+        if $m.want-editor {
+            $m.want-editor = False;
+            my $ed = editor-command();
+            $log.note("editor: $ed");
+            # the screen and the keys go to the editor, and come back after
+            $t.leave;
+            sleep 0.2;
+            my $why = edit-draft($m, -> $f { my $p = shell("$ed '{$f.Str.subst("'", "'\\''", :g)}'"); die "$ed ended {$p.exitcode}" if $p.exitcode != 0 });
+            $t.enter;
+            while $keys.poll { }
+            $t.key-reader($keys);
+            $t.invalidate;
+            $m.tell($why.defined ?? "the editor did not finish: $why" !! $m.input eq '' ?? 'nothing was written' !! 'written; Enter sends it');
+            $dirty = True;
+        }
         if $resized { $resized = False; $t.size; $t.invalidate; $dirty = True; $log.note("resize {$t.cols}x{$t.rows}") }
         for $m.crew -> $c { $dirty = True if $c.refresh }
         # a run started elsewhere shows within two seconds; a run started

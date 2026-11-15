@@ -808,6 +808,8 @@ class Summary is export {
     has Str $.session-ref = '';
     has Numeric $.cost-usd = 0;
     has Int $.turns = 0;
+    #| Tokens as the harness counted them, by kind; empty when it said nothing.
+    has %.usage;
     has @.denials;
     has Bool $.blocked = False;
     has Str $.blocked-on = '';
@@ -834,6 +836,15 @@ sub parse-envelope(Str $line --> Summary) is export {
         cost-usd => ($env<total_cost_usd> ~~ Numeric ?? $env<total_cost_usd> !! 0),
         turns => ($env<num_turns> ~~ Numeric ?? $env<num_turns>.Int !! 0),
         denials => @denials, errors => [ |@($env<errors> // []).grep(Str) ];
+    # The harness's own count of tokens, when its result carries one: what
+    # went in, what came out, and what was read from or written to its cache.
+    my %usage;
+    if $env<usage> ~~ Associative {
+        for (input => 'input_tokens', output => 'output_tokens', cacheRead => 'cache_read_input_tokens', cacheWrite => 'cache_creation_input_tokens') -> $p {
+            my $v = $env<usage>{$p.value};
+            %usage{$p.key} = $v.Int if $v ~~ Numeric;
+        }
+    }
     if $env<structured_output> ~~ Associative {
         my $o = $env<structured_output>;
         %args<summary> = $o<summary> if $o<summary> ~~ Str && $o<summary> ne '';
@@ -848,7 +859,7 @@ sub parse-envelope(Str $line --> Summary) is export {
     my @d = @(%args<denials>:delete);
     my @e = @(%args<errors>:delete);
     my @c = @(%args<conditions>:delete // []);
-    Summary.new(|%args, :denials(@d), :errors(@e), :conditions(@c));
+    Summary.new(|%args, :denials(@d), :errors(@e), :conditions(@c), :%usage);
 }
 
 sub first-line(Str $s, Int $max --> Str) {
@@ -1077,6 +1088,7 @@ class ClaudeCode does Adapter is export {
         my $result = await $done;
         my $exit = $result.defined ?? $result.exitcode !! -1;
         my ($env, $session, $said) = $lock.protect({ ($consumer.envelope, $consumer.session, $consumer.said.join("\n\n")) });
+        my %usage;
         my $out = Outcome.new(:cost(doc('Cost', basis => COST-UNREPORTED)), :session-ref($session));
         # What the model said in its messages, not only the short summary
         # field: a controller looks there for what it asked the agent to say.
@@ -1084,7 +1096,8 @@ class ClaudeCode does Adapter is export {
         with $env {
             $out.summary = .summary;
             $out.session-ref = .session-ref if .session-ref ne '';
-            $out.cost = doc('Cost', usd => .cost-usd, turns => .turns, basis => COST-HARNESS);
+            $out.cost = doc('Cost', usd => .cost-usd, turns => .turns, tokens => (([+] .usage.values) // 0), basis => COST-HARNESS);
+            %usage = .usage;
             $out.denials = [ |.denials ];
             $out.errors = [ |.errors ];
             $out.conditions = [ |.conditions ];
@@ -1109,7 +1122,8 @@ class ClaudeCode does Adapter is export {
             $out.errors.push('the harness exited without a result object');
         }
         else { $out.status = STATUS-COMPLETED; $out.end-reason = 'completed' }
-        $ctl.emit.(EVENT-COST, %( usd => $out.cost<usd>, turns => $out.cost<turns>, durationMs => ((now - $start) * 1000).Int ));
+        $ctl.emit.(EVENT-COST, %( usd => $out.cost<usd>, turns => $out.cost<turns>, durationMs => ((now - $start) * 1000).Int,
+            |(%usage ?? (tokens => %usage) !! ()) ));
         $out;
     }
 }

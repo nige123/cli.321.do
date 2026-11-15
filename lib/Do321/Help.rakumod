@@ -62,6 +62,7 @@ constant MACHINE   is export = 'For tools';
 constant RUNS      = 'Runs that outlive the terminal';
 constant RUNS-MORE = 'Runs';
 constant STEERING  = 'Steering a run';
+constant LEARN     = 'Getting better';
 
 #| Every command, in the order it is listed.
 sub topics(--> List) is export {
@@ -122,6 +123,32 @@ sub topics(--> List) is export {
       'A new run with its own id and budget; the old receipt is unchanged. It asks first on a terminal and takes --yes in a pipe. --harness runs it on another harness.',
       '321 restart 3by', :shown('restart <run>')),
 
+    t('value', LEARN, 'what the work cost, and what it saved',
+      ['321 value', '321 value --days N --agent NAME --context NAME', '321 value baseline --minutes N --rate DOLLARS'],
+      'Money and tokens as each harness reported them, time, retries, and what people said of the results. A run that reported no cost is unknown, never free. Savings are an estimate against your own baseline: they count only accepted work, set everything spent against it, and are withheld until there is enough of it. --json is the whole calculation.',
+      '321 value --days 30'),
+    t('outcome', LEARN, 'say what came of a run',
+      ['321 outcome <run> accepted|rejected|corrected [why...]'],
+      'A run that finished is not thereby accepted: until someone says, its outcome is unknown. A person says it here; a work system that called 321 says it the same way. The receipt is not changed: the outcome is kept beside it, and the last word said stands. A run is named by its id or the last three characters of it.',
+      '321 outcome 3by accepted', :shown('outcome <run> WORD')),
+    t('context', LEARN, 'related runs, their purpose and history',
+      ['321 context [show|pull NAME]', '321 context new NAME <what it is for...>', '321 context decided|rejected|note NAME <words...>', '321 --context NAME <agent> <request...>'],
+      'Related work: its purpose, what was decided and rejected. A run started with --context NAME is told these as what is already known. A name under a domain (checkout.acme.example) belongs to that organisation, private unless they share it; pull copies one from the registry. A plain name is yours.',
+      '321 context new checkout make checkout work on a phone'),
+    t('lessons', LEARN, 'what agents have learnt here',
+      ['321 lessons [show ID]', '321 lessons add [--agent A] [--context C] [--harness H] <words...>', '321 lessons keep|revert|remove|share ID'],
+      'Advice with a scope and a record of where it came from. It is on trial from the next run its scope matches; show sets the runs given it against comparable ones without. It grants nothing and moves no limit. share copies one into this repository (.321/lessons) for the team to review and commit. add also takes --skill and --from RUN.',
+      '321 lessons add --agent helper run the tests with prove -j4'),
+
+    t('skills', LEARN, 'skills here, and those the registry offers',
+      ['321 skills [available]', '321 skills install|show|rollback|remove PUBLISHER/NAME', '321 --skill PUBLISHER/NAME <agent> <request...>'],
+      'Reusable know-how: words that tell an agent how to do a kind of work. install fetches one you may see, checks its text against the registry\'s digest, and keeps the version it replaces; rollback puts that back. A skill grants nothing: --skill puts its words in the run\'s work package, and the grants are the package\'s alone.',
+      '321 skills install acme/review'),
+    t('registry', LEARN, 'the agent registry and your copy of it',
+      ['321 registry [sync]', '321 registry token   (the token from standard input)', '321 registry use URL'],
+      'Agents and skills are described at agents.321.do. sync reads what you may see, with your token when you have one, and keeps a copy; 321 works from the copy when the registry cannot be reached, and says how old it is. A failed sync keeps the copy there was. The registry never serves agent packages: those are pinned in the trust file. Needs curl.',
+      '321 registry sync'),
+
     t('iz4 install', HOLD, 'wire the project\'s IZ4 into the harness here',
       ['321 iz4 install', '321 iz4 install --advisory', '321 iz4 install --harness NAME'],
       'Writes the hooks that put the IZ4 before the agent, hold an edit or a shell command until it is checked, and check the finished turn, as strongly as the harness allows, then reads them back. Installing again changes nothing. --advisory wires the context alone: nothing is refused. --workspace DIR names another directory.',
@@ -136,8 +163,8 @@ sub topics(--> List) is export {
       'An introduction in the package\'s own words: what it is for, its personality, how it speaks and how it decides, what each skill it carries says it does, what it asks to be allowed and what it refuses, and the trust it holds here. A run gets only what that, your grants and this machine\'s policy agree on. In a pipe, --brief gives id, version, level, byline and role.',
       '321 whois <agent>', :shown('whois <agent>')),
     t('trust', 'Agents and trust', 'the trust file: what may run here',
-      ['321 trust show', '321 trust check', '321 trust network [none|provider_only|open]'],
-      '~/.321/trust.json (--trust FILE names another) says what may run: a publisher\'s pinned package, checked by digest and signature; one pinned as development, digest only; or a local path. Short names are aliases. check loads every one and says which fail; network says, or sets, the network every run started here gets. --package-dir DIR runs an unsigned package.',
+      ['321 trust show', '321 trust check', '321 trust network [none|provider_only|open]', '321 trust now [N|none]'],
+      '~/.321/trust.json (--trust FILE names another) says what may run: a pinned package, checked by digest and signature; a development pin, digest only; or a local path. check loads each and says which fail. network sets the network runs started here get; now, how many runs of one agent work at once.',
       '321 trust network open'),
     t('packages', 'Agents and trust', 'check, digest and read agent packages',
       ['321 packages validate DIR', '321 packages digest DIR [--write]', '321 packages show ID', '321 packages builtin prompt'],
@@ -253,15 +280,30 @@ sub help-index(%ctx = %() --> Str) is export {
 #| tool calls are left to '321 help machine'.
 sub help-more(%ctx = %() --> Str) is export {
     my @l = '', "{icon()} 321 help more: runs, trust, deploying, harnesses, the tool", '';
-    for topics().map(*.group).unique.grep({ $_ ne EVERY-DAY && $_ ne RUNS && $_ ne HOLD && $_ ne MACHINE }) -> $g {
+    for topics().map(*.group).unique.grep({ $_ ne EVERY-DAY && $_ ne RUNS && $_ ne HOLD && $_ ne MACHINE && $_ ne LEARN }) -> $g {
         @l.push: $g;
         @l.push: listing($_, 28, %ctx) for topics().grep({ .group eq $g });
         @l.push: '';
     }
     @l.push: '321 help COMMAND    more on one command, with an example';
+    @l.push: '321 help learning   cost and savings, outcomes, contexts, lessons, skills';
     @l.push: '321 help machine    the commands a tool calls';
     @l.push: '';
     @l.push: 'Highlights appear only on a terminal: NO_COLOR, --plain or DO_321_COLOR=0 turns them off, DO_321_COLOR=1 keeps them; --json and --brief are for tools.';
+    @l.push: '';
+    own(@l.join("\n") ~ "\n", %ctx);
+}
+
+#| Getting better: what the work cost, what came of it, and what was learnt.
+sub help-learning(%ctx = %() --> Str) is export {
+    my @l = '', "{icon()} 321 help learning: cost, outcomes, contexts, lessons, skills", '';
+    @l.push: listing($_, 24, %ctx) for topics().grep({ .group eq LEARN });
+    @l.push: '';
+    @l.push: 'A run is told its work context and the lessons that apply as what is already';
+    @l.push: 'known. They grant nothing. What you learn stays yours (~/.321) until you share';
+    @l.push: 'it with a project; what a project knows is a file in its repository.';
+    @l.push: '';
+    @l.push: '321 help COMMAND    more on one command, with an example';
     @l.push: '';
     own(@l.join("\n") ~ "\n", %ctx);
 }
@@ -312,6 +354,7 @@ sub help-for(@words, %ctx = %() --> List) is export {
     return (help-index(%ctx), True) if $asked eq '';
     return (help-more(%ctx), True) if $asked eq 'more' | 'all';
     return (help-machine(%ctx), True) if $asked eq 'machine' | 'tools';
+    return (help-learning(%ctx), True) if $asked eq 'learning' | 'learn';
     with topic($asked) { return (help-topic($_, %ctx), True) }
     # '321 help iz4 install --advisory': the action is part of the command it belongs to
     my @w = $asked.words;

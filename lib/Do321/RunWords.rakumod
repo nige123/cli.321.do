@@ -18,7 +18,7 @@ class RunWord is export {
     has Bool $.screen-only = False;
 }
 
-constant RUN-VIEWS is export = <all active needs>;
+constant RUN-VIEWS is export = <all active needs lines table evidence>;
 
 #| Every word, in the order the screen offers them.
 sub run-words(--> List) is export {
@@ -31,7 +31,8 @@ sub run-words(--> List) is export {
     RunWord.new(name => 'restart', usage => '<run> [--harness NAME]', what => "run an ended run's request again, with its own budget"),
     RunWord.new(name => 'attach',  usage => '<run>',            what => 'open Mission Control on one run'),
     RunWord.new(name => 'find',    usage => '<words...>',       what => "find words in this run's conversation", :screen-only),
-    RunWord.new(name => 'view',    usage => '[all|active|needs]', what => 'which runs the deck shows', :screen-only),
+    RunWord.new(name => 'edit',    usage => '[words...]',       what => 'write what you are saying in your own editor ($EDITOR)', :screen-only),
+    RunWord.new(name => 'view',    usage => '[all|active|needs|lines|table|evidence]', what => 'which runs the deck shows, as a line per agent or a table; evidence shows or hides a run\'s', :screen-only),
     RunWord.new(name => 'quit',    usage => '',                 what => 'leave Mission Control; every run keeps going', :screen-only),
     )
 }
@@ -87,7 +88,8 @@ sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export(
             return err('--continue goes with --package') if %r<continue> ne '';
             return err('say which agent and what it should do') if @a < 2;
             %r<run> = '';
-            %r<agent> = @a.shift;
+            # '@b1ll' is the agent b1ll: a mention names it as well as its name does
+            %r<agent> = @a.shift.subst(/^ '@' <?before .>/, '');
             %r<words> = @a.join(' ');
             return %r;
         }
@@ -106,6 +108,7 @@ sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export(
             %r<words> = @a.join(' ');
             return %r;
         }
+        when 'edit' { %r<words> = @a.join(' '); return %r }
         when 'view' {
             return err('view takes one of: ' ~ RUN-VIEWS.join(', ')) if @a > 1 || (@a && @a[0] ne any(RUN-VIEWS));
             %r<view> = @a ?? @a[0] !! '';

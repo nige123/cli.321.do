@@ -1,0 +1,138 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Learn;
+
+# Work contexts, lessons and outcomes: what is kept, where, and what the
+# sums say.  No run is started here; receipts are written by hand.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+
+sub receipt(Str $id, Str $agent, Str $status, :$usd, Int :$tokens = 0, Str :$basis = 'harness', Int :$secs = 60, Str :$harness = 'claude_code', Int :$ago = 1) {
+    my $d = $home.add('runs').add($id);
+    $d.mkdir;
+    my $start = DateTime.now.utc.earlier(hours => $ago);
+    $d.add('receipt.json').spurt(encode-json({ runId => $id, agent => { id => $agent }, harness => { adapter => $harness }, status => $status,
+        startedAt => $start.Str, endedAt => $start.later(seconds => $secs).Str, attempts => [{}],
+        cost => { usd => ($usd // 0), turns => 1, tokens => $tokens, basis => $basis } }));
+}
+
+subtest 'a work context: a purpose and a history, kept by name' => {
+    ok learn-name-ok('checkout-v2') && !learn-name-ok('Bad Name') && !learn-name-ok('../x'), 'a name is a plain word';
+    new-context($home, 'checkout', 'make checkout work on a phone in under a minute');
+    context-note($home, 'checkout', 'decision', 'one page, no account needed');
+    context-note($home, 'checkout', 'rejected', 'a wizard of four steps');
+    my %c = context($home, 'checkout');
+    is %c<schema>, SCHEMA-CONTEXT, 'it says what it is';
+    is %c<notes>.elems, 2, 'with what was decided and what was rejected';
+    is contexts($home).map(*<name>), ('checkout',), 'and is listed';
+    nok context($home, 'nosuch').defined, 'a context nobody made is not there';
+    is (context-owner('checkout.acme.example'), context-owner('checkout'), context-owner('a.b')), ('acme.example', '', ''), 'a name under a domain is that organisation\'s; a plain name is the person\'s';
+    my %o = new-context($home, 'checkout.acme.example', 'the shop\'s checkout');
+    is (%o<owner>, %o<sharing>), ('acme.example', 'private'), 'a new context says whose it is, and is private';
+    context-note($home, 'checkout.acme.example', 'note', 'mine, made here');
+    my %p = pull-context($home, %( name => 'checkout.acme.example', owner => 'acme.example', sharing => 'public', purpose => 'as the organisation says',
+        notes => [ %( kind => 'decision', text => 'one page', at => '2026-11-01T00:00:00Z', by => 'acme' ), ] ), 'https://registry.example');
+    is (%p<purpose>, %p<sharing>, %p<source>), ('as the organisation says', 'public', 'https://registry.example'), 'a pulled copy is as the registry describes it, and says where it came from';
+    is %p<notes>.map(*<text>), ('one page', 'mine, made here'), 'with the registry\'s history, and the notes made here kept beside it';
+    pull-context($home, %( name => 'checkout.acme.example', purpose => 'again', notes => [] ), 'https://registry.example');
+    is context($home, 'checkout.acme.example')<notes>.map(*<text>), ('mine, made here',), 'pulling again replaces what the registry said, never what was noted here';
+}
+
+subtest 'lessons: scoped, with where they came from, tried and reversible' => {
+    my %a = add-lesson($home, 'run the tests with prove -j4', %( agent => 'b1ll' ), %( from => 'person', by => 'tester' ));
+    my %c = add-lesson($home, 'the phone layout is the one to check first', %( agent => 'b1ll', context => 'checkout' ), %( from => 'run', runId => 'R1', by => 'tester' ));
+    my %h = add-lesson($home, 'ask for the diff as one patch', %( harness => 'codex' ), %( from => 'person', by => 'tester' ));
+    is %a<state>, 'trial', 'a new lesson is on trial';
+    ok %a<provenance><at> ne '' && %c<provenance><runId> eq 'R1', 'and carries its provenance';
+    ok lesson-applies(%a, :agent<321.do/b1ll>), 'an agent\'s lesson applies to that agent, by either name';
+    nok lesson-applies(%a, :agent<1da>), 'and to no other';
+    nok lesson-applies(%c, :agent<b1ll>), 'a context\'s lesson does not apply outside its context';
+    ok lesson-applies(%c, :agent<b1ll>, :context<checkout>), 'and does inside it';
+    nok lesson-applies(%h, :agent<b1ll>), 'a harness\'s lesson is not assumed to carry to a run whose harness was not named';
+    ok lesson-applies(%h, :agent<b1ll>, :harness<codex>), 'it applies on that harness';
+
+    my ($lines, $ids) = known-lines($home, :agent<b1ll>, :context<checkout>);
+    ok $lines[0].contains("work context 'checkout'") && $lines[0].contains('on a phone'), 'a run is told its context\'s purpose';
+    ok $lines.first(*.contains('Decided earlier')) && $lines.first(*.contains('rejected')), 'what was decided, and what was rejected';
+    is $ids.sort, (%a<id>, %c<id>).sort, 'and the lessons that apply, by id';
+    ok $lines.grep(*.contains('A lesson from earlier work')).first(*.contains('grants nothing')), 'a lesson is said as advice that grants nothing';
+
+    my %l = lesson($home, %a<id>);
+    set-lesson-state(%l, 'reverted', 'no better');
+    nok lesson-applies(lesson($home, %a<id>), :agent<b1ll>), 'a reverted lesson is applied no more';
+    is lesson($home, %a<id>)<history>[0]<why>, 'no better', 'and says why';
+    remove-lesson(lesson($home, %h<id>));
+    nok lesson($home, %h<id>).defined, 'a lesson can be removed';
+}
+
+subtest 'project knowledge lives in the project, and gets there on purpose' => {
+    my $repo = $home.add('shop');
+    $repo.mkdir;
+    for (<init -q>, <config user.email t@example.test>, <config user.name t>) -> @a { my $p = run 'git', '-C', $repo.Str, |@a, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close) }
+    is project-root($repo.Str), $repo.Str, 'a repository is a project';
+    is project-root($home.Str), '', 'a plain directory is not';
+    my %mine = add-lesson($home, 'migrations go through make migrate', %( agent => 'b1ll' ), %( from => 'person', by => 'tester' ));
+    nok lessons($home, :project($repo.Str)).first({ .<kept-in> eq 'project' }), 'a person\'s lesson is not the project\'s';
+    share-lesson(lesson($home, %mine<id>), $repo.Str, 'tester');
+    my %shared = lessons($home, :project($repo.Str)).first({ .<kept-in> eq 'project' });
+    ok %shared<file>.starts-with($repo.add('.321').Str), 'shared, it is a file in the repository';
+    is %shared<provenance><sharedBy>, 'tester', 'saying who shared it';
+    my ($lines) = known-lines($home.add('elsewhere'), :agent<b1ll>, :workspace($repo.Str));
+    is $lines.grep(*.contains('make migrate')).elems, 1, 'someone else working in the project gets it from the project';
+    my ($none) = known-lines($home.add('elsewhere'), :agent<b1ll>, :workspace($home.Str));
+    nok $none.first(*.contains('make migrate')), 'and work outside the project does not';
+}
+
+subtest 'what was spent, and what is not known' => {
+    receipt('R1', '321.do/b1ll', 'completed', :usd(1.50), :tokens(12000), :ago(5));
+    receipt('R2', '321.do/b1ll', 'completed', :usd(0.50), :ago(4));
+    receipt('R3', '321.do/b1ll', 'failed', :basis<unreported>, :ago(3), :harness<codex>);
+    receipt('R4', '321.do/1da', 'completed', :basis<none>, :harness<procedure>, :ago(2));
+    record-applied($home, 'R1', :agent<321.do/b1ll>, :context<checkout>, :lessons(['aaa']));
+    record-outcome($home, 'R1', 'rejected', :by<tester>);
+    record-outcome($home, 'R1', 'accepted', :by<tester>, :note('after a look'));
+    my @w = read-work($home);
+    is @w.elems, 4, 'every run with a receipt';
+    my $r1 = @w.first(*.id eq 'R1');
+    is ($r1.context, $r1.lessons, $r1.outcome), ('checkout', ['aaa'], 'accepted'), 'joined to its context, its lessons, and the last thing said of it';
+    nok @w.first(*.id eq 'R3').usd.defined, 'a run that reported no cost has no cost, not a cost of nothing';
+    nok @w.first(*.id eq 'R2').tokens.defined, 'nor tokens when none were reported';
+    is @w.first(*.id eq 'R2').outcome, '', 'a run nobody has spoken of is unknown, though it finished';
+    my %s = sums(@w);
+    is (%s<usd>, %s<priced-runs>, %s<unpriced-runs>, %s<modelless-runs>), (2.0, 2, 1, 1), 'spend is what was reported, with the runs it rests on and the runs it does not';
+    is (%s<tokens>, %s<token-runs>), (12000, 1), 'tokens likewise';
+    is (%s<accepted>, %s<unknown>), (1, 3), 'outcomes: what was said, and how many are unknown';
+}
+
+subtest 'savings need a baseline and enough accepted work' => {
+    my @w = read-work($home);
+    nok savings(sums(@w), baseline($home))<known>, 'with no baseline there is no figure';
+    ok savings(sums(@w), baseline($home))<why>.contains('no baseline'), 'and it says why';
+    set-baseline($home, 30, 60);
+    my %few = savings(sums(@w), baseline($home));
+    ok !%few<known> && %few<why>.contains('not enough comparable work yet'), 'one accepted run is not enough';
+    record-outcome($home, 'R2', 'accepted');
+    receipt('R5', '321.do/b1ll', 'completed', :usd(1.00), :ago(1));
+    record-outcome($home, 'R5', 'accepted');
+    my %sv = savings(sums(read-work($home)), baseline($home));
+    ok %sv<known>, 'three are';
+    is (%sv<minutes>, %sv<worth>, %sv<spend>, %sv<net>), (90, 90, 3.0, 87.0), 'the estimate: accepted work at the baseline, less everything spent';
+    ok %sv<spend-is-floor>, 'and it says the spend is a floor when a run reported no cost';
+    ok %sv<assumption>.contains('30 minutes') && %sv<assumption>.contains('$60'), 'with its assumption in words';
+}
+
+subtest 'a lesson is compared with the work it was not applied to' => {
+    my %l = add-lesson($home, 'check the phone layout first', %( agent => 'b1ll' ), %( from => 'person', by => 'tester' ));
+    my %c = compare-lesson(%l, read-work($home));
+    nok %c<enough>, 'applied to nothing yet, there is nothing to say';
+    for 1..3 { receipt("W$_", '321.do/b1ll', 'completed', :usd(0.20), :ago(1)); record-applied($home, "W$_", :agent<321.do/b1ll>, :lessons([%l<id>])) }
+    %c = compare-lesson(%l, read-work($home));
+    ok %c<enough>, 'three with and three without can be compared';
+    is (%c<with><runs>, %c<without><runs>), (3, 4), 'the same agent\'s runs, with it and without';
+    ok %c<with><median-usd> < %c<without><median-usd>, 'by what each cost';
+}
+
+done-testing;

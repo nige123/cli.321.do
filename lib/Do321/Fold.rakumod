@@ -24,11 +24,14 @@ class RunState is export {
     has Str $.outcome is rw = '';
     has Str $.activity is rw = 'starting';
     has Str $.summary is rw = '';
+    has @.why is rw;
     has Int $.tools is rw = 0;
     has Int $.attempts is rw = 0;
     has Str $.harness is rw = '';
     has Rat $.usd is rw = 0.0;
     has Bool $.cost-reported is rw = False;
+    #| Tokens as the harness counted them: by kind where it said, else 'total'.
+    has %.usage is rw;
     has Str $.last-at is rw = '';
     has Str $.started-at is rw = '';
     has Str $.ended-at is rw = '';
@@ -40,6 +43,19 @@ class RunState is export {
     #| directive id -> { kind, text, state, at, reason }
     has %.controls;
     has @.swept;
+
+    #| The tokens in words, or '' when the harness reported none: never a zero.
+    method tokens-text(--> Str) {
+        return '' unless %!usage;
+        my sub n(Int $v) { $v >= 1_000_000 ?? sprintf('%.1fM', $v / 1_000_000) !! $v >= 10_000 ?? sprintf('%.0fk', $v / 1000) !! $v.Str }
+        return n(%!usage<total>) ~ ' tokens' if %!usage<total>:exists;
+        my @p;
+        @p.push(n(%!usage<input>) ~ ' in') if %!usage<input>:exists;
+        @p.push(n(%!usage<output>) ~ ' out') if %!usage<output>:exists;
+        @p.push(n(%!usage<cacheRead>) ~ ' read from cache') if (%!usage<cacheRead> // 0) > 0;
+        @p.push(n(%!usage<cacheWrite>) ~ ' written to cache') if (%!usage<cacheWrite> // 0) > 0;
+        @p.join(', ');
+    }
 
     method cost-text(--> Str) {
         return 'none yet' unless $!cost-reported;
@@ -98,6 +114,17 @@ sub fold-event(RunState $s, %e) is export {
                 if (%p<follows> // '') ne '';
             say-line(:who<you>, :text(%p<request> // '')) if (%p<request> // '') ne '';
         }
+        when 'queued' {
+            $s.phase = 'queued';
+            my @b = @(%p<behind> // []).map({ .Str.substr(*-3) });
+            $s.activity = 'queued' ~ (@b ?? " behind {@b.join(', ')}" !! '');
+            say-line(:who<note>, :text("waits its turn: {%p<why> // ''}"), :tone<dim>);
+        }
+        when 'dequeued' {
+            $s.phase = 'running';
+            $s.activity = 'starting';
+            say-line(:who<note>, :text("starts now: {%p<why> // 'its turn'}"), :tone<dim>);
+        }
         when 'directive_delivered' {
             control(%p<directiveId> // '', :kind(%p<kind> // ''), :text(%p<text> // ''), :state<acknowledged>);
             if %p<kind> eq 'steer' | 'clarify' {
@@ -129,6 +156,11 @@ sub fold-event(RunState $s, %e) is export {
             # a summary that begins with the outcome's own word is not said twice
             my $said = $s.summary.starts-with($s.outcome ~ ':') ?? $s.summary.substr($s.outcome.chars + 1).trim !! $s.summary;
             say-line(:who<end>, :text("{$s.outcome}: $said"), :$tone);
+            # a refusal says why, a harness a line, and last the step that
+            # puts it right, in the colour of a thing to do
+            for $s.why.grep({ !.starts-with('to run it here') }) { say-line(:who<note>, :text($_), :tone<dim>) }
+            for $s.why.grep(*.starts-with('to run it here')) { say-line(:who<note>, :text($_), :tone<now>) }
+            $s.why = ();
             for $s.controls.kv -> $id, %c { control($id, :state<confirmed>) if %c<kind> eq 'stop' }
         }
         # --- what the runtime records
@@ -158,6 +190,8 @@ sub fold-event(RunState $s, %e) is export {
         }
         when 'cost' {
             if %p<usd>.defined { $s.usd += %p<usd>.Rat; $s.cost-reported = True }
+            if %p<tokens> ~~ Associative { $s.usage{.key} = ($s.usage{.key} // 0) + .value.Int for %p<tokens>.pairs.grep({ .value ~~ Numeric }) }
+            elsif %p<tokens> ~~ Numeric && %p<tokens> > 0 { $s.usage<total> = ($s.usage<total> // 0) + %p<tokens>.Int }
         }
         when 'directive_received' { control(%p<directiveId> // '', :kind(%p<kind> // ''), :state<received>) }
         when 'directive_applied'  { control(%p<directiveId> // '', :state<applied>) }
@@ -183,7 +217,8 @@ sub fold-event(RunState $s, %e) is export {
             control(%p<directiveId> // '', :state('in progress'));
             say-line(:who<note>, :text("stopping{(%p<reason> // '') ne '' ?? ': ' ~ %p<reason> !! ''}"), :tone<wait>);
         }
-        when 'denied' { say-line(:who<note>, :text("denied: {%p<reason> // %p<summary> // ''}"), :tone<bad>) }
+        # why, kept for the receipt: the verdict is said once, then why, then the fix
+        when 'denied' { $s.why = (%p<details> // []).map(*.Str).List }
     }
     # a steer the runtime applied is taken: the agent has the words
     return unless $kind eq 'directive_delivered' | 'directive_received' | 'directive_applied' | 'directive_rejected'

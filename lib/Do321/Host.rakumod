@@ -29,6 +29,7 @@ use Do321::Sys;
 use Do321::RunDir;
 use Do321::Fold;
 use Do321::Harnesses;
+use Do321::Learn;
 
 constant HOST-VERSION is export = '0.5.1';
 #| How long a delivered stop may take before the host signals the runtime.
@@ -48,7 +49,8 @@ constant EXIT-LOST is export = 6;
 #| launched here carries no approval; an approval stays where a person
 #| gives one.  Returns (RunDir, error).
 sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-path = '', IO::Path :$home = home-dir(),
-               Str :$via = 'mission-control', :%continues, RunDir :$follows, Str :$harness = '', Bool :$isolate = False --> List) is export {
+               Str :$via = 'mission-control', :%continues, RunDir :$follows, Str :$harness = '', Bool :$isolate = False,
+               Str :$context = '' --> List) is export {
     return (RunDir, 'say what the agent should do') if $request.trim eq '';
     # a follow-up goes on from a receipt: a run still going has none
     my $prev-bytes;
@@ -67,9 +69,12 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
         $adapter = $name;
     }
     private-umask();
+    # a follow-up belongs to the work context of the run it goes on from
+    my $ctx = $context;
+    with $follows { $ctx = ((runs-applied($home){.id} // {})<context> // '').Str if $ctx eq '' }
     my $cfg = try load-trust($trust-path ne '' ?? $trust-path.IO !! default-trust-path());
     return (RunDir, $!.message) if $!;
-    my $g = Do321::CLI::Global.new(:$trust-path, :$workspace);
+    my $g = Do321::CLI::Global.new(:$trust-path, :$workspace, context => $ctx);
     my ($agent, $err) = load-agent-named($cfg, $g, $agent-name);
     return (RunDir, $err) with $err;
     my ($ws, $kind) = resolve-workspace($workspace);
@@ -84,13 +89,13 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
         %isolation = kind => 'git-worktree', of => $ws, path => $path, base => $base;
         $ws = $path;
     }
-    elsif $ws ne '' && writes($agent.manifest) {
-        with workspace-taken($ws, $home) -> $other {
-            my %o = $other.run;
-            return (RunDir, "{%o<agent><displayName> // 'another run'} {$other.short} is already working in $ws; --isolate gives this run a worktree of its own");
-        }
-    }
-    my %wp = try build-package($cfg, $agent, $g, $request, $ws, $kind);
+    # Otherwise a run that writes waits its turn for the workspace, and a
+    # run past the agent's standing limit (policy.now) waits for a place:
+    # the run's own host does the waiting, oldest first.  Nothing here
+    # chooses between pieces of work.
+    my %queue = workspace => so($ws ne '' && !%isolation && writes($agent.manifest)),
+                limit => (($cfg.policy // {})<now> // 0).Int;
+    my %wp = try build-package($cfg, $agent, $g, $request, $ws, $kind, :$home, harness => $adapter);
     if $! {
         my $why = $!.message;
         drop-worktree(%isolation) if %isolation;
@@ -136,7 +141,7 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
         agent => { id => $agent.id, name => $agent-name, version => (%m<version> // ''), displayName => (%m<displayName> // $agent-name),
                    byline => byline-of(%m) },
         request => $request, workspace => $ws, grants => [ |@(%wp<capabilities><granted>) ],
-        harness => { requested => $adapter }, isolation => (%isolation ?? %isolation !! Nil),
+        harness => { requested => $adapter }, isolation => (%isolation ?? %isolation !! Nil), queue => %queue,
         launchedBy => { uid => my-uid(), via => $via }, launchedAt => now-iso();
     write-atomic($rd.run-file, encode-json-pretty(%run) ~ "\n", :durable);
 
@@ -276,18 +281,45 @@ sub drop-worktree(%iso) {
     try { my $p = run 'git', '-C', %iso<of>, 'worktree', 'remove', '--force', %iso<path>, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close) }
 }
 
+#| The runs this one waits behind, oldest first, from evidence alone:
+#| a run at work in the same workspace, a run at work for the same
+#| agent when the agent's places are all taken, and any run waiting for
+#| the same thing that was launched before this one.  Empty: its turn.
+sub ahead-of(RunDir $r, IO::Path $home = home-dir() --> List) is export {
+    my %me = $r.run;
+    my %q = (%me<queue> // {}).Hash;
+    return () unless %q<workspace> || (%q<limit> // 0) > 0;
+    my $ws = (%me<workspace> // '').Str;
+    my $agent = (%me<agent><id> // %me<agent><name> // '').Str;
+    my (@ws, @agent);
+    for all-runs($home) -> $o {
+        next if $o.id eq $r.id || !$o.hosted;
+        my $phase = liveness($o)<phase>;
+        next unless $phase eq 'starting' | 'running' | 'held' | 'stopping' | 'blocked' | 'queued';
+        # a run still waiting counts only when it was launched first
+        next if $phase eq 'queued' && $o.id gt $r.id;
+        my %o = $o.run;
+        @ws.push($o) if %q<workspace> && $ws ne '' && (%o<workspace> // '') eq $ws;
+        @agent.push($o) if (%o<agent><id> // %o<agent><name> // '') eq $agent;
+    }
+    my @behind = @ws;
+    @behind.append(@agent) if (%q<limit> // 0) > 0 && @agent >= %q<limit>;
+    @behind.unique(:as(*.id)).sort(*.id).List;
+}
+
+#| Why a run waits, in words, from the runs it is behind.
+sub queue-reason(RunDir $r, @behind --> Str) is export {
+    my %me = $r.run;
+    my $ws = (%me<workspace> // '').Str;
+    my @in-ws = @behind.grep({ $ws ne '' && (.run<workspace> // '') eq $ws });
+    my $names = @behind.map({ "{.run<agent><displayName> // .run<agent><name> // 'a run'} {.short}" }).join(', ');
+    @in-ws ?? "$names {@behind == 1 ?? 'is' !! 'are'} ahead of it in $ws"
+           !! "{%me<agent><displayName> // 'the agent'} works on {(%me<queue> // {})<limit>} at once here, and $names {@behind == 1 ?? 'is' !! 'are'} ahead";
+}
+
 #| Whether an agent can change files: one that can, holds its workspace.
 sub writes(%m --> Bool) {
     so (|@(%m<capabilities><required> // []), |@(%m<capabilities><optional> // [])).first({ $_ eq 'repo.write' | 'files.write' | 'shell.run' });
-}
-
-#| An active run already working in this workspace, or RunDir:U.
-sub workspace-taken(Str $ws, IO::Path $home --> RunDir) {
-    for all-runs($home) -> $r {
-        next unless $r.hosted && ($r.run<workspace> // '') eq $ws;
-        return $r if liveness($r)<phase> eq 'starting' | 'running' | 'held' | 'stopping' | 'blocked';
-    }
-    RunDir;
 }
 
 #| A worktree of the workspace at its last commit, for one run, under
@@ -387,6 +419,49 @@ sub host-main(Str $dir --> Int) is export {
         continues => (%run<continues> ~~ Associative ?? %run<continues><runId> // '' !! ''),
         follows => (%run<follows> ~~ Associative ?? %run<follows><runId> // '' !! '') ));
 
+    # Its turn: a run that must wait does so here, before anything runs.
+    # The marker is made before the first look, so two runs launched at
+    # once each see the other waiting and the older goes first.  While it
+    # waits, a stop ends it having done nothing, a resume lets it go now,
+    # and anything else said to it is kept, in order, for when it starts.
+    my @early;
+    my $stop-first = False;
+    if (%run<queue> // {})<workspace> || ((%run<queue> // {})<limit> // 0) > 0 {
+        try $r.queued-file.spurt('');
+        my %pkg = (read-json-file($r.package-file) // {}).Hash;
+        my $expires = (%pkg<expiresAt> // '') ne '' ?? (try DateTime.new(%pkg<expiresAt>.Str).Instant) !! Nil;
+        my $said = '';
+        my $why = 'its turn';
+        loop {
+            my @behind = ahead-of($r, $r.dir.parent.parent);
+            last unless @behind;
+            my $key = @behind.map(*.id).join(',');
+            if $key ne $said {
+                $said = $key;
+                record('host', 'queued', %( behind => @behind.map(*.id).Array, why => queue-reason($r, @behind) ));
+            }
+            write-status();
+            my $go = False;
+            for take-inbox($r) -> %t {
+                with %t<refused> { record('host', 'directive_refused', %( directiveId => %t<directiveId>, reason => "the request was not read: $_" )); next }
+                my %d = %t<directive>;
+                if %d<kind> eq 'stop' { $stop-first = True; $why = 'stopped while it waited'; @early.push(%d); $go = True }
+                elsif %d<kind> eq 'resume' {
+                    record('host', 'directive_delivered', %( directiveId => %d<directiveId>, kind => 'resume', text => '', seq => 0 ));
+                    record('host', 'directive_applied', %( directiveId => %d<directiveId> ));
+                    $why = 'asked to go now'; $go = True;
+                }
+                else { @early.push(%d) }
+            }
+            # a package that expires while it waits is put to the runtime, which says so on the receipt
+            if $expires.defined && now > $expires { $why = 'its package expired while it waited'; $go = True }
+            last if $go;
+            sleep 0.5;
+        }
+        record('host', 'dequeued', %( :$why )) if $said ne '';
+        try $r.queued-file.unlink;
+    }
+
     # The runtime, as its own child, told to go when the host goes.
     my @pre = </usr/bin/setpriv /bin/setpriv>.first(*.IO.x) ?? (</usr/bin/setpriv /bin/setpriv>.first(*.IO.x), '--pdeathsig', 'TERM', '--') !! ();
     # the receipt names the run as this directory does, so the two agree
@@ -401,6 +476,7 @@ sub host-main(Str $dir --> Int) is export {
     @argv.append('--workspace', $ws) if $ws ne '' && $ws ne ((%wp<workspace> // {})<path> // '').Str;
     @argv.append('--continue', continued-file($r).Str) if continued-file($r).e;
     @argv.append('--follows', follows-file($r).Str) if follows-file($r).e;
+    @argv.append('--stop-first') if $stop-first;
     my $proc = Proc::Async.new(:w, |@argv);
     my $receipt-seen = False;
     $proc.stdout.lines.tap(-> $line {
@@ -451,6 +527,8 @@ sub host-main(Str $dir --> Int) is export {
             else { $seq--; record('host', 'directive_refused', %( directiveId => $id, reason => 'the runtime is no longer listening' )) }
         });
     }
+    # what was said while it waited its turn, in the order it was said
+    deliver($_) for @early;
     # a signal to the host is a stop, from the one who sent it
     signal(SIGHUP).tap({ });
     signal(SIGTERM, SIGINT).tap(-> $s {

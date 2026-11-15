@@ -47,6 +47,9 @@ class Options is export {
     has Str $.history-dir = '';
     has %.policy;                   # a Policy document
     has Str $.adapter = '';         # restrict selection to one adapter name
+    #| The caller already holds a stop for this run: wait for it before
+    #| anything is attempted, so the run ends stopped having done nothing.
+    has Bool $.stop-first = False;
     #| The terminal receipt of an earlier run of the SAME package that
     #| this run continues.  Cost and attempt numbering carry forward; the
     #| old receipt is untouched and linked from the new one.
@@ -763,6 +766,7 @@ class Session is export {
         }
         $!dir.start($run-ctx, $run-ctx);
         $!dir.drain-now;
+        if $!opts.stop-first { for ^200 { last if $!dir.stop-requested; sleep 0.05; $!dir.drain-now } }
         my %live = $!adapter.enforcement;
         self.apply-controllers;
 
@@ -887,7 +891,8 @@ class Session is export {
             $g.checks.push(%( point => POINT-CONTEXT, result => RESULT-PASS, reason => 'the context is in the prompt' ));
             self!plan-hooks($g, $ws);
             self.append-history(doc('HistoryLine', kind => 'controller-context', instructions => [ "$label {%found<subject>} {%found<digest>}" ]));
-            self.emit(EVENT-PROGRESS, %( text => "$label policy: the context from {%found<subject>} is in the prompt; the finished work is put to {$c.name}" ));
+            # nothing is said to the person: a policy that is in place and
+            # holds is silent.  The check above keeps the fact for the record.
         }
         self!rebuild-policy-text;
     }
@@ -1269,7 +1274,7 @@ class Runner is export {
                 @details.push('required enforcement: ' ~ @reqs.map(*.feature).join(', ')) if @reqs;
                 # the one step that most often puts it right: a shell with
                 # the network shut needs a harness none installed is
-                @details.push('to run it here: grant the network, --network open at the shell or policy.limits.network in the trust file; shell.run never grants it by itself')
+                @details.push('to run it here: 321 trust network open grants the network to every run started here, --network open to one; shell.run never grants it by itself')
                     if @reqs.first(*.feature eq FEAT-NETWORK-DENY);
                 return $s.deny('no installed adapter can enforce what this package requires', @details);
             }

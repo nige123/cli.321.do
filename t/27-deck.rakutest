@@ -7,6 +7,7 @@ use Do321::Sys;
 use Do321::RunDir;
 use Do321::Term;
 use Do321::Deck;
+use Do321::RunWords;
 
 if $*KERNEL.name eq 'darwin' {
     plan :skip-all('Mission Control runs on Linux for now');
@@ -363,6 +364,336 @@ subtest 'the evidence says what iz4 last found, in its words' => {
     ok $t.lines.first({ .contains('iz4') && .contains('all held: the foundation') }), 'iz4\'s last line is in the evidence, its verdict first' or diag $t;
     $mm.sel = $mm.crew.first({ .id eq $a.id }, :k);
     nok render($mm, 40, 160).text.lines.first({ .contains('all held') }), 'and only for the run whose workspace it is';
+}
+
+subtest 'where the work came from, the shell words, and still marks' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    my $cr = $mm.crew.first({ .id eq $b.id });
+    is $cr.origin, '', 'a run started here names no origin';
+    ok evidence-rows($cr).first({ .[0] eq 'from' })[1].starts-with('started here'), 'and the evidence says it was started here';
+
+    # a package something else issued: its issuer and references, as given
+    my %run = parse-json($b.run-file.slurp);
+    %run<issuer> = %( kind => '123', id => 'api.123.do', url => 'https://api.123.do' );
+    %run<refs> = [ %( kind => 'track', id => 'shop.example' ), %( kind => 'step', id => '200' ), %( kind => 'step' ), ];
+    my $kept = $b.run-file.slurp;
+    write-atomic($b.run-file, encode-json(%run));
+    my $m2 = Model.new(:$home);
+    $m2.scan;
+    my $c2 = $m2.crew.first({ .id eq $b.id });
+    is $c2.origin, 'api.123.do: track shop.example, step 200', 'an issued run says who issued it and for what, a half-said reference left out';
+    is evidence-rows($c2).first({ .[0] eq 'from' })[1], $c2.origin, 'in the evidence';
+    $m2.sel = $m2.crew.first({ .id eq $b.id }, :k);
+    ok render($m2, 40, 160).text.contains('api.123.do: track'), 'on the wide screen';
+    ok render($m2, 36, 120).text.contains('from api.123.do: track shop.example'), 'and beside the request at an ordinary width';
+    write-atomic($b.run-file, $kept);
+
+    # every hint is a line the shell's own parser takes
+    for <stop hold resume> -> $verb {
+        my $hint = cli-hint($verb, $cr);
+        ok $hint.starts-with(" · CLI: 321 $verb {$cr.short}"), "$verb says its shell words";
+        my @w = $hint.subst(' · CLI: 321 ', '').words;
+        nok parse-run-words(@w[0], @w[1..*])<error>, "and the shell takes them: {@w.join(' ')}";
+    }
+    my @s = cli-hint('steer', $cr, 'look again').subst(' · CLI: 321 ', '').words;
+    nok parse-run-words(@s[0], @s[1..*])<error>, 'a steer too';
+    is cli-hint('find', $cr), '', 'a word only the screen has gets no shell hint';
+    { temp %*ENV<DO_321_HINTS> = '0'; is cli-hint('stop', $cr), '', 'DO_321_HINTS=0 leaves the hints out'; }
+
+    # still marks
+    my @marks = (^8).map({ crew-line($cr, $_)[0] }).unique;
+    is (^4).map({ track-mark($mm.crew.first({ .id eq $a.id }), $_)[0] }), <▣ ▢ ▣ ▢>, 'a job being worked on throbs, an even pulse';
+    is (^4).map({ track-mark($mm.crew.first({ .id eq $d.id }), $_)[0] }).unique, ('■',), 'and nothing else moves';
+    { temp %*ENV<DO_321_MOTION> = '0';
+      is (^8).map({ crew-line($cr, $_)[0] }).unique.elems, 1, 'DO_321_MOTION=0 keeps the mark still'; }
+}
+
+subtest 'the input area grows with what is typed, and an editor takes a long thought' => {
+    my %l = input-layout('hello', 5, 20, 8);
+    is (%l<lines>.elems, %l<row>, %l<col>), (1, 0, 5), 'a short line is one row, the cursor at its end';
+    %l = input-layout('a' x 45, 45, 20, 8);
+    is (%l<lines>.elems, %l<row>, %l<col>), (3, 2, 5), 'a long one wraps onto as many rows as it needs';
+    %l = input-layout("one\ntwo", 4, 20, 8);
+    is (%l<lines>.join('|'), %l<row>, %l<col>), ('one|two', 1, 0), 'a line the person broke is a row of its own';
+    %l = input-layout('a' x 200, 200, 20, 4);
+    is (%l<lines>.elems, %l<row>, %l<above>), (4, 3, 7), 'past the most rows it scrolls with the cursor and counts what is above';
+    %l = input-layout('a' x 200, 0, 20, 4);
+    is (%l<row>, %l<above>), (0, 0), 'and back at the start it shows the start';
+    is input-layout('日本語', 3, 4, 8)<lines>.join('|'), '日本|語', 'rows are measured in columns, not characters';
+
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.sel = $mm.crew.first({ .id eq $b.id }, :k);
+    my $one = render($mm, 36, 100);
+    my $rule1 = (^36).first({ $one.line($_).starts-with('───') }, :end);
+    $mm.input = 'please look at the checkout again, ' x 8;
+    $mm.cursor = $mm.input.chars;
+    my $many = render($mm, 36, 100);
+    my $rule2 = (^36).first({ $many.line($_).starts-with('───') }, :end);
+    ok $rule2 < $rule1, 'the area takes more rows as the text grows';
+    ok $many.text.contains('look at the checkout again') && $many.line(35).contains('Enter send'), 'the text is whole and the hint stays below it';
+    my ($cr, $cc) = cursor-at($mm, 36, 100);
+    is $cr, 34, 'the cursor is on the last row of the text';
+    $mm.input = 'x' x 5000; $mm.cursor = 5000;
+    my $big = render($mm, 36, 100);
+    my $rule3 = (^36).first({ $big.line($_).starts-with('───') || $big.line($_).contains('above') }, :end);
+    is 36 - 2 - $rule3, input-max(36), 'and never more than its share of the screen';
+    ok $big.text.contains('above'), 'saying how much is above';
+
+    # Ctrl-G asks for the editor; what the editor leaves is the draft, unsent
+    $mm.input = 'first thought'; $mm.cursor = 5;
+    handle-key($mm, Key.new(:name<ctrl-g>));
+    ok $mm.want-editor, 'Ctrl-G asks for the editor';
+    $mm.want-editor = False;
+    run-line($mm, '/edit a start');
+    ok $mm.want-editor && $mm.input eq 'a start', '/edit does too, opening on the words after it';
+    $mm.input = 'first thought';
+    my $seen;
+    my $inbox-before = $b.inbox.dir.grep(*.f).elems;
+    my $why = edit-draft($mm, -> $f { $seen = $f.slurp; is $f.mode, '0600', 'the draft file is private'; $f.spurt("a longer thought\nover two lines\n\n") });
+    nok $why.defined, 'the editor finished';
+    is $seen, 'first thought', 'the editor opens on what was typed';
+    is $mm.input, "a longer thought\nover two lines", 'what it leaves is the input, its trailing blank lines dropped';
+    is $mm.cursor, $mm.input.chars, 'the cursor at its end';
+    is $b.inbox.dir.grep(*.f).elems, $inbox-before, 'nothing is sent until Enter';
+    nok $mm.draft-file.e, 'the draft file is gone';
+    is edit-draft($mm, -> $f { die 'vi ended 1' }), 'vi ended 1', 'an editor that fails is said';
+    { temp %*ENV<VISUAL> = ''; temp %*ENV<EDITOR> = 'nano -w'; is editor-command(), 'nano -w', 'the editor is the one the person named, flags and all'; }
+    { temp %*ENV<VISUAL> = ''; temp %*ENV<EDITOR> = ''; is editor-command(), 'vi', 'else vi'; }
+}
+
+subtest 'a trackline for each agent' => {
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    set-layout($mm, 'lines');
+    is $mm.visible.map(*.name).squish.elems, $mm.visible.map(*.name).unique.elems, 'the runs are walked agent by agent';
+    $mm.sel = $mm.visible.first({ .id eq $b.id }, :k);
+    my $cv = render($mm, 36, 120);
+    my @t = $cv.text.lines;
+    my $head = @t.first(*.starts-with('  CREW'));
+    my sub row-of(Str $n) { @t.first({ .starts-with("  $n") && .contains('│') }) }
+    my ($bea, $ada, $iris) = row-of('BEA'), row-of('ADA'), row-of('IRIS');
+    ok $bea.defined && $ada.defined && $iris.defined, 'each agent has a row of its own';
+    is @t.grep({ .starts-with('  BEA') }).elems, 1, 'one row, however much it has in hand';
+    my @bars = $bea.indices('│');
+    is @bars.elems, 2, 'now is between two bars';
+    ok $bea.substr(@bars[0], @bars[1] - @bars[0]).comb.grep({ $_ eq '▣' | '▢' }).elems >= 2, 'everything in hand stands side by side between them';
+    is ($ada.indices('│'), $iris.indices('│')), (@bars, @bars), 'the bars line up down the screen';
+    is $head.index('NOW') + 1, (@bars[0] + @bars[1]) div 2, 'the word NOW is centred over them';
+    my @hd = $cv.grid[@t.first({ $_ eq $head }, :k)];
+    is (@hd[$head.index('DONE')][1], @hd[$head.index('NOW')][1], @hd[$head.index('NEXT')][1]), <ok now wait>, 'each heading wears its zone\'s colour';
+    ok $bea ~~ / <[▣▢■▪⊠◧]> \s\s+ '❮'? <[▣▢■▪⊠◧]> /, 'with room between the marks';
+    ok $head.index('DONE') < @bars[0] < @bars[1] < $head.index('NEXT'), 'between DONE and NEXT';
+    is $cv.grid[@t.first({ $_ eq $bea }, :k)][@bars[0]][1], 'now', 'the bars wear the focus blue';
+    ok $ada.contains('■') && $ada.contains('⊠'), 'what is done and what did not happen have marks of their own';
+    ok $ada.index('■') < @bars[0], 'to the left of now';
+    ok $ada.substr(@bars[0], @bars[1] - @bars[0]) ~~ / '·' / && !($ada ~~ / <[▣▢]> /), 'an agent with nothing in hand has a still point between its bars';
+    nok $bea.contains('fix flaky') || $bea.contains('─'), 'a row is marks alone: no words, no rules';
+    is $cv.text.lines[2..*].join.comb('❮').elems, 1, 'the cursor is 321\'s own mark closed on one job, and is nowhere else';
+    ok $bea ~~ / '❮' <[▣▢]> '❯' /, 'on the row';
+    my $dl = @t.first({ .contains("Bea {$b.short}") }, :k);
+    ok @t[$dl].contains("Bea {$b.short}") && @t[$dl].contains('fix flaky t/19-status'), 'the detail says what the job under the cursor is' or diag @t[$dl];
+    ok @t[$dl + 1].trim ne '' && !@t[$dl + 1].contains('fix flaky'), 'and under it how it stands' or diag @t[$dl + 1];
+    ok @t.first({ $_ ne $head && .contains(TRACK-LEGEND) }), 'a tall screen has the key to the shapes on a row of its own';
+    my @wide = render($mm, 28, 200).text.lines;
+    ok @wide.first(*.starts-with('  CREW')).ends-with(TRACK-LEGEND), 'a wide, short one has it beside the headings, in room that was empty';
+    is @wide.grep(*.contains(TRACK-LEGEND)).elems, 1, 'once';
+    # a large screen: a panel at the right, for the shapes and the keys
+    my $big = render($mm, 36, 180);
+    my @big = $big.text.lines;
+    my $pc = @big.first(*.contains('SHAPES')).index('SHAPES');
+    ok $pc > 180 - PANEL-WIDTH - 2, 'a large screen has a panel at the right' or diag @big[2];
+    nok $big.text.contains(TRACK-LEGEND), 'the key to the shapes is in it, a shape a row, and nowhere else';
+    is @big.grep({ .chars > $pc && .substr($pc) ~~ / ^ <[■▪⊟⊠◧▣◫□]> \s+ \w / }).elems, 8, 'every shape and its word';
+    my $wr = @big.first({ .chars > $pc && .substr($pc).starts-with('▣') }, :k);
+    is $big.grid[$wr][$pc][1], 'bold', 'the shape of the job under the cursor is picked out';
+    my $tj = @big.first({ .chars > $pc && .substr($pc).starts-with('THIS JOB') }, :k);
+    is (@big[$tj + 1].substr($pc).trim, @big[$tj + 2].substr($pc).trim), </hold /stop>, 'under it, what can be done to that job, as words at the prompt';
+    nok @big.first({ .contains("Bea {$b.short}") }).contains('/hold'), 'so the title no longer carries them';
+    ok @big.first({ .chars > $pc && .substr($pc).starts-with('MOVE') }), 'and how to move';
+    $mm.mode = 'nav';
+    my @bn = render($mm, 36, 180).text.lines;
+    ok @bn[$tj + 1].substr($pc) ~~ / ^ 'h' \s+ 'hold' / && @bn[$tj + 2].substr($pc) ~~ / ^ 's' \s+ 'stop' /, 'on the lines they are keys' or diag @bn[$tj + 1];
+    $mm.mode = 'input';
+    nok render($mm, 28, 180).text.contains('SHAPES') || render($mm, 36, 130).text.contains('SHAPES'), 'a screen that is not large keeps its width for the work';
+    nok render($mm, 24, 100).text.contains('■ done'), 'a small screen keeps its rows for the work';
+    ok @t[$dl].ends-with('/hold   /stop'), 'beside the title, what can be done to that job, as words at the prompt' or diag @t[$dl];
+    ok @t[$dl + 1] ~~ / \d+ ':' \d\d / , 'with the time it has taken' or diag @t[$dl + 1];
+    my $paid = make-run('Iris', 'cost the release', [['host', 'host_started', { request => 'cost the release' }], ['run', 'attempt_started', { attempt => 1 }],
+        ['run', 'adapter_selected', { adapter => 'claude_code' }], ['run', 'cost', { usd => 1.25, basis => 'reported' }]]);
+    my $mp = Model.new(:$home);
+    $mp.scan;
+    set-layout($mp, 'lines');
+    $mp.sel = $mp.visible.first({ .id eq $paid.id }, :k);
+    my $pl = render($mp, 36, 120).text.lines.first({ .contains('on Claude Code') });
+    ok $pl.defined, 'the harness it is on' or diag render($mp, 36, 120).text;
+    ok $pl.contains('$1.25'), 'and what it has cost, where the harness reported it' or diag $pl;
+    nok $cv.text.contains('EVIDENCE'), 'the evidence is out of the way: the conversation has the width';
+    $mm.mode = 'nav';
+    handle-key($mm, Key.new(:name<char>, :text<e>));
+    ok render($mm, 36, 120).text.contains('EVIDENCE'), 'e shows it, for a person who wants to look';
+    run-line($mm, '/view evidence');
+    nok render($mm, 36, 120).text.contains('EVIDENCE'), 'and /view evidence, the same as a word, puts it away';
+    $mm.mode = 'input';
+    is track-mark($mm.crew.first({ .id eq $d.id }), 1)[1], 'ok', 'what is done is green';
+    is track-mark($mm.crew.first({ .id eq $a.id }), 1)[1], 'now', 'what is in hand is blue, whichever agent has it';
+    is track-mark($mm.crew.first({ .id eq $c.id }), 1)[1], 'bad', 'what did not happen is red, never read as done';
+    ok $cv.grid[@t.first({ $_ eq $bea }, :k)][2][1].contains('#c0552e'), 'an agent\'s own colour is on its name';
+
+    # still marks, and a run that waits its turn
+    $b.queued-file.spurt('');
+    my $m2 = Model.new(:$home);
+    $m2.scan;
+    set-layout($m2, 'lines');
+    my $q = $m2.crew.first({ .id eq $b.id });
+    is $q.phase, 'queued', 'a run whose host waits its turn is queued';
+    is track-mark($q, 1), ('□', 'wait', 'next'), 'an open square, orange, to the right of now';
+    ok $q.active, 'it counts as active';
+    ok actions-for((do { $m2.sel = $m2.visible.first({ .id eq $b.id }, :k); $m2 })).first(*<key> eq 'go'), 'and can be let go now';
+    is crew-line($q, 1)[0], '▫', 'in the table too';
+    $b.queued-file.unlink;
+    is (^4).map({ track-mark($mm.crew.first({ .id eq $a.id }), $_)[0] }), <▣ ▢ ▣ ▢>, 'a job being worked on throbs, an even pulse';
+    is (^4).map({ track-mark($mm.crew.first({ .id eq $d.id }), $_)[0] }).unique, ('■',), 'and nothing else moves';
+    { temp %*ENV<DO_321_MOTION> = '0';
+      my $w = $mm.crew.first({ .id eq $a.id });
+      is (^8).map({ track-mark($w, $_)[0] }).unique, ('▣',), 'DO_321_MOTION=0 keeps the now square still'; }
+
+    # a run that waits on a person is still in hand, until it is answered
+    my $w = make-run('Ada', 'migrate the orders table', [['host', 'host_started', { request => 'migrate the orders table' }],
+        ['host', 'receipt', { status => 'blocked', summary => 'which database?' }]], :receipt<blocked>);
+    my $m3 = Model.new(:$home);
+    $m3.scan;
+    set-layout($m3, 'lines');
+    is $m3.zones{$w.id}, 'now', 'a run that waits on you is in NOW: it is your move';
+    my $wl = render($m3, 36, 120).text.lines.first({ .starts-with('  ADA') && .contains('│') });
+    ok $wl.substr($wl.index('│')).contains('◧'), 'between the bars' or diag $wl;
+    my $ans = make-run('Ada', 'the staging one', [['host', 'host_started', { request => 'the staging one' }], ['run', 'attempt_started', { attempt => 1 }]]);
+    my %r = parse-json($ans.run-file.slurp);
+    %r<follows> = { runId => $w.id };
+    write-atomic($ans.run-file, encode-json(%r));
+    my $m4 = Model.new(:$home);
+    $m4.scan;
+    set-layout($m4, 'lines');
+    is $m4.zones{$w.id}, 'done', 'once a run goes on from it, it is answered, and done';
+    is $m4.zones{$ans.id}, 'now', 'and the run that went on is in hand';
+    my $c4 = render($m4, 36, 120);
+    my $r4 = (^36).first({ $c4.line($_).starts-with('  ADA') });
+    my @amber = $c4.grid[$r4].grep({ .[0] eq '◧' });
+    is @amber.map(*.[1]).unique, ('ok',), 'and is drawn green, as everything in DONE is' or diag @amber.raku;
+
+    # the arrows go where the eye does
+    $mm.mode = 'nav';
+    my @bea = $mm.visible.grep({ .name eq 'BEA' });
+    $mm.sel = $mm.visible.first({ .id eq @bea[0].id }, :k);
+    handle-key($mm, Key.new(:name<right>));
+    is $mm.selected.id, @bea[1].id, 'right moves along the agent\'s line, to the next job';
+    handle-key($mm, Key.new(:name<right>)) for @bea;
+    is $mm.selected.id, @bea.tail.id, 'and stops at its end';
+    handle-key($mm, Key.new(:name<down>));
+    is $mm.selected.name, 'IRIS', 'down goes to the next agent';
+    handle-key($mm, Key.new(:name<up>));
+    is $mm.selected.name, 'BEA', 'up comes back';
+    is $mm.zones{$mm.selected.id}, 'now', 'landing on what that agent has in hand';
+    handle-key($mm, Key.new(:name<up>));
+    is $mm.selected.name, 'ADA', 'and up again, to the line above';
+    my $ada-at = $mm.selected.id;
+    handle-key($mm, Key.new(:name<left>));
+    is $mm.selected.name, 'ADA', 'left goes back through what that agent has done';
+    isnt $mm.selected.id, $ada-at, 'to the run before';
+    handle-key($mm, Key.new(:name<left>)) for ^3;
+    is $mm.selected.name, 'ADA', 'stopping at the oldest, on the same line';
+    handle-key($mm, Key.new(:name<up>));
+    is $mm.selected.name, 'ADA', 'as up stops at the first line';
+    # the arrows live in two places: the lines, and the prompt beneath
+    $mm.sel = $mm.visible.first({ .name eq 'IRIS' }, :k);
+    $mm.flash = '';
+    my $nv = render($mm, 36, 120).text.lines;
+    ok $nv[*-2].contains("IRIS {$mm.selected.short} ❯") && $nv[*-2].contains('↓ to say something to Iris'), 'on the lines, the prompt names the job and says how to reach it' or diag $nv[*-2];
+    ok $nv.tail.contains('↓ say something'), 'as the footer does';
+    handle-key($mm, Key.new(:name<down>));
+    is ($mm.mode, $mm.selected.name), ('input', 'IRIS'), 'down from the last line goes to the prompt, for the same job';
+    my $pv = render($mm, 36, 120);
+    ok $pv.text.lines[*-2].contains("IRIS {$mm.selected.short} ❯ say something to Iris"), 'which says what it is for' or diag $pv.text.lines[*-2];
+    ok $pv.text.lines.tail.contains('↑ the lines'), 'and how to go back';
+    my $fr = (2..35).first({ $pv.line($_).contains("❮") });
+    is $pv.grid[$fr][$pv.line($fr).index('❮')][1], 'now', 'the cursor on the line stays, saying who the words go to';
+    handle-key($mm, Key.new(:name<char>, :text<x>));
+    handle-key($mm, Key.new(:name<up>));
+    is $mm.mode, 'input', 'with words typed, up stays at the prompt';
+    handle-key($mm, Key.new(:name<backspace>));
+    handle-key($mm, Key.new(:name<up>));
+    is ($mm.mode, $mm.selected.name), ('nav', 'IRIS'), 'up from an empty prompt is back on the lines';
+    handle-key($mm, Key.new(:name<up>));
+    is $mm.selected.name, 'BEA', 'and up again is the agent above';
+    handle-key($mm, Key.new(:name<down>));
+    is ($mm.mode, $mm.selected.name), ('nav', 'IRIS'), 'down passes through the agents first';
+
+    # the cursor's job can be acted on, and gone into
+    $mm.sel = $mm.visible.first({ .id eq $b.id }, :k);
+    $mm.flash = '';
+    my $hint = render($mm, 36, 120).text.lines.tail;
+    my $acts = render($mm, 36, 120).text.lines.first({ .contains("Bea {$b.short}") });
+    ok $acts.ends-with('h hold   s stop'), 'on the lines, the job\'s title carries the keys its state allows' or diag $acts;
+    nok $acts.contains('a again'), 'and nothing it does not';
+    ok $hint.contains('Enter zoom in'), 'and that Enter goes in';
+    handle-key($mm, Key.new(:name<enter>));
+    ok $mm.zoom && $mm.mode eq 'input', 'Enter zooms in on the job, ready to be spoken to';
+    my @z = render($mm, 36, 120).text.lines;
+    ok @z.first({ .starts-with('  BEA') && .contains('❮') }), 'its agent\'s row stays';
+    nok @z.first({ .starts-with('  IRIS') }) || @z.first({ .starts-with('  ADA') }), 'the other rows give their room to its conversation';
+    handle-key($mm, Key.new(:name<esc>));
+    ok $mm.zoom && $mm.mode eq 'nav', 'Esc gives the keys, still on the job';
+    $mm.flash = '';
+    ok render($mm, 36, 120).text.lines.tail.contains('Esc every line'), 'and says how to come out';
+    handle-key($mm, Key.new(:name<esc>));
+    ok !$mm.zoom && $mm.mode eq 'nav', 'Esc again shows every line';
+    ok render($mm, 36, 120).text.lines.first({ .starts-with('  IRIS') && .contains('│') }), 'as it was';
+    $mm.sel = $mm.visible.first({ .name eq 'ADA' }, :k);
+    my $kept = $mm.selected.id;
+    handle-key($mm, Key.new(:name<char>, :text<t>));
+    is ($mm.layout, $mm.selected.id), ('table', $kept), 't goes back to the table, on the same run';
+    run-line($mm, '/view lines');
+    is ($mm.layout, $mm.selected.id), ('lines', $kept), '/view lines says it as a word';
+    ok render($mm, 36, 120).text.lines.first({ .starts-with('  ADA') && .contains('│') }), 'and the lines are drawn';
+}
+
+subtest 'an agent is named with a mention, and Tab finishes the name' => {
+    my $tf = $home.add('mention-trust.json');
+    $tf.spurt(encode-json({ aliases => { b1ll => 'example.test/b1ll', bea => 'example.test/bea', '1da' => 'example.test/1da' } }));
+    temp %*ENV<DO_321_TRUST> = $tf.Str;
+    is agents-here(), <1da b1ll bea>, 'the agents here are the short names a person chose';
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    $mm.mode = 'input';
+    my sub say-line(Str $t) { $mm.input = ''; $mm.cursor = 0; handle-key($mm, Key.new(:name<char>, :text($_))) for $t.comb }
+    my sub tab() { handle-key($mm, Key.new(:name<tab>)) }
+    say-line('@b');
+    ok render($mm, 36, 120).text.lines.tail.contains('@b1ll  @bea   Tab completes'), 'a mention begun lists who it could be' or diag render($mm, 36, 120).text.lines.tail;
+    tab();
+    is $mm.input, '@b', 'Tab goes as far as the names agree';
+    say-line('@b1');
+    tab();
+    is $mm.input, '@b1ll ', 'and finishes the one it can only be';
+    say-line('/start B1');
+    tab();
+    is $mm.input, '/start b1ll ', 'after /start the name needs no @, in either case';
+    say-line('/start --harness fake @1');
+    tab();
+    is $mm.input, '/start --harness fake @1da ', 'options before it are left as they are';
+    say-line('tell @be');
+    tab();
+    is $mm.input, 'tell @bea ', 'a mention is finished anywhere in the words';
+    say-line('@zz');
+    ok render($mm, 36, 120).text.lines.tail.contains("no agent here begins '\@zz'"), 'a name no agent has is said so';
+    my $sel = $mm.sel;
+    say-line('/start b1ll write hel');
+    tab();
+    is $mm.input, '/start b1ll write hel', 'the request itself is never completed';
+    is parse-run-line('/start @b1ll write hello')<agent>, 'b1ll', '/start @b1ll is the agent b1ll';
+    is parse-run-line('/start @b1ll write hello')<words>, 'write hello', 'with the request as said';
+    run-line($mm, '@B1LL write hello');
+    ok $mm.flash.starts-with('not started: trust') && !$mm.flash.contains('@'), 'a line that begins by naming an agent here is work for that agent' or diag $mm.flash;
 }
 
 done-testing;

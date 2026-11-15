@@ -14,8 +14,8 @@ if $*KERNEL.name eq 'darwin' {
 }
 
 # One agent, two harnesses, at once: each run asks for its engine, each
-# works in a worktree of its own, a second writer in a shared workspace is
-# refused, and a run started again on another harness is a new run with
+# works in a worktree of its own, a second writer in a shared workspace
+# waits its turn, and a run started again on another harness is a new run with
 # nothing carried over.  The harnesses are the fake Claude Code and 321's
 # own stand-in; no model is involved.
 
@@ -110,11 +110,56 @@ subtest 'one agent on two harnesses at once, each in a worktree of its own' => {
     isnt $a.id, $b.id, 'two runs';
 }
 
-subtest 'a second writer in a shared workspace is refused' => {
+subtest 'a second writer in a shared workspace waits its turn' => {
     ok wait-for({ liveness(@runs[0])<phase> eq 'running' }), 'the first run is working';
-    my ($rc, $out, $err) = mc('start', '--workspace', wa-of(@runs[0]), 'helper', 'and another thing');
-    isnt $rc, 0, 'a second run in the same workspace does not start';
-    ok $err.contains('already working in') && $err.contains('--isolate'), 'it says who is there, and what to do' or diag $err;
+    my $first = @runs[0];
+    my ($rc, $out, $err) = mc('start', '--workspace', wa-of($first), 'helper', 'and another thing');
+    is $rc, 0, 'a second run in the same workspace is accepted' or diag $err;
+    ok $out.contains('waits:') && $out.contains($first.short) && $out.contains('resume'), 'and told it waits, behind whom, and how to let it go' or diag $out;
+    my $q = all-runs($home).grep({ .hosted && (.run<request> // '') eq 'and another thing' }).head;
+    ok $q.defined, 'it is a run of its own';
+    ok wait-for({ liveness($q)<phase> eq 'queued' }), 'waiting, by its own host\'s evidence' or diag liveness($q).raku;
+    ok wait-for({ $q.events-file.e && $q.events-file.slurp.contains('"queued"') }), 'its log says it waits';
+    my %ev = $q.events-file.lines.map({ parse-json($_) }).first({ .<kind> eq 'queued' });
+    is %ev<payload><behind>, [$first.id], 'behind the run that has the workspace';
+    nok $q.events-file.slurp.contains('attempt_started'), 'and nothing has run';
+    is ahead-of($first, $home).elems, 0, 'the first run waits behind nothing';
+
+    # words said to it are kept for its turn
+    my ($rs, $os) = mc('--brief', 'steer', $q.short, 'mind', 'the', 'tests');
+    ok $rs == 0 && $os.contains("\tkept\t"), 'a steer to a waiting run is kept, and said so' or diag $os;
+
+    # a stop ends it before anything runs, on the runtime's own receipt
+    my ($rc2) = mc('stop', $q.short);
+    is $rc2, 3, 'a waiting run can be stopped';
+    is $q.receipt<status>, 'stopped', 'its receipt says stopped';
+    is @($q.receipt<attempts> // []).elems, 0, 'with no attempt made';
+    nok $q.queued-file.e, 'and it waits no more';
+    is liveness($first)<phase>, 'running', 'the run it waited behind is untouched';
+
+    # a third is let go ahead of its turn by a person
+    my ($rc3, $o3) = mc('--brief', 'start', '--workspace', wa-of($first), 'helper', 'a third thing');
+    my $g = run-dir($o3.split("\t")[0]);
+    ok wait-for({ liveness($g)<phase> eq 'queued' }), 'another waits';
+    my ($rc4, $o4) = mc('resume', $g.short);
+    ok $rc4 == 0 && $o4.contains('ahead of its turn'), 'resume lets it go now, and says what that is' or diag $o4;
+    ok wait-for({ $g.events-file.slurp.contains('"dequeued"') && liveness($g)<phase> ne 'queued' }), 'and it starts';
+    mc('stop', $g.short);
+}
+
+subtest 'an agent with one place works on one thing; the next waits' => {
+    my %t = parse-json($trust.slurp);
+    %t<policy> = %( now => 1 );
+    $trust.spurt(encode-json(%t));
+    my ($rc, $o) = mc('--brief', 'start', '--isolate', '--workspace', $ws.Str, 'helper', 'one more, in its own worktree');
+    is $rc, 0, 'a run in a worktree of its own is accepted' or diag $o;
+    my $l = run-dir($o.split("\t")[0]);
+    ok wait-for({ liveness($l)<phase> eq 'queued' }), 'and waits, though no one shares its workspace' or diag liveness($l).raku;
+    ok wait-for({ $l.events-file.e && $l.events-file.slurp.contains('at once here') }), 'saying the agent\'s places are taken';
+    is $l.run<queue><limit>, 1, 'by the limit that stood when it was started';
+    mc('stop', $l.short);
+    %t<policy>:delete;
+    $trust.spurt(encode-json(%t));
 }
 
 subtest 'stopping one leaves the other as it was' => {

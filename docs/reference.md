@@ -48,7 +48,9 @@ Everything the runtime will run is configured by an administrator in
 `schemas/trust-config.v1.json`. `321 trust network open` (or `none`,
 `provider_only`) writes `policy.limits.network`, the network every run
 started on this machine gets unless `--network` says otherwise for one
-run; with no value it says what stands.
+run; with no value it says what stands. `321 trust now 1` (or any number, or
+`none`) writes `policy.now`: how many runs of one agent work at once
+here, the rest waiting their turn, oldest first.
 
 ```json
 {
@@ -782,6 +784,118 @@ refuse an early edit and a turn end with no report), and
 (0.15.0 or later): with an older one, install is refused and the settings
 are left byte for byte, so no hook is ever pointed at something that
 cannot answer. The safe order is iz4 first, then 321.
+
+## Getting better: contexts, lessons, outcomes, value, skills
+
+`321 help learning` lists the commands. Everything here is local and
+needs no service: no daemon, no account, no 123.do and no IZ4.
+
+Four things are kept apart, each in a place of its own:
+
+| What | Where | Whose |
+|---|---|---|
+| A work context: a region of related work, its purpose and history | `~/.321/contexts/<name>.json` | the person's |
+| A lesson | `~/.321/lessons/<id>.json` | the person's, until shared |
+| Project knowledge: lessons shared with a project | `<repo>/.321/lessons/<id>.json` | the team's, under version control |
+| What came of a run | `~/.321/learn/outcomes.ndjson` | whoever said it |
+
+A receipt is never rewritten: what a run was started knowing
+(`~/.321/learn/applied.ndjson`) and what was said of it afterwards sit
+beside it.
+
+**Work contexts.** `321 context new NAME <purpose>` begins one;
+`decided`, `rejected` and `note` add to its history. A run started with
+`--context NAME` (or `DO_321_CONTEXT`) carries the purpose and the last
+twelve entries in its work package's `context.lines`, which the prompt
+gives the agent as what is already known. A follow-up run keeps the
+context of the run it goes on from. A context named under a domain (`checkout.acme.example`) is owned by
+that organisation: the owner is everything after the first label. A
+plain name (`checkout`) is the person's own. Every context is private
+unless its organisation shares it, which is done at the registry, not
+here. The name says whose a context is and grants nothing: who may read
+one held at the registry is decided there, by membership of the owning
+account. `321 context pull NAME` keeps a copy of one this person may
+see; pulling again replaces what the registry said and keeps the notes
+made on this machine, which stay here (the registry's tokens only read).
+
+A context is not a project: one
+context can hold runs in several repositories, and a repository can hold
+several contexts. A work system that keeps tracks of its own does not use
+this store: it puts its own snapshot in `context.lines` and its own
+reference in `correlation`, both already part of `work-package.v1`, and
+321 carries the reference without reading it.
+
+**Lessons.** A lesson is a sentence of advice, a scope and a provenance.
+The scope may name an agent, a work context, a skill and a harness;
+every part it names must match the run. A harness-scoped lesson applies
+only when that harness was named for the run, because learning is not
+assumed to carry between harnesses. A lesson is `trial` when added,
+then `kept` or `reverted` by a person; a reverted lesson is given to no
+run and stays on record. Matching lessons go into `context.lines`,
+labelled as advice that grants nothing; they change no grant and no
+limit, and the runtime computes authority exactly as before.
+`321 lessons show ID` sets the runs given the lesson against comparable
+runs that were not (same agent; same context or harness when the lesson
+names one) and reports each side's count, finish rate, median reported
+cost and median time. Fewer than three runs on either side is reported
+as too few. It is a comparison of recorded runs, not a controlled trial,
+and says so.
+
+`321 lessons share ID` copies a lesson into the repository of the
+current workspace. Nothing else writes there, and 321 commits nothing:
+the team gets the lesson when a person commits and merges the file.
+Work outside a repository has no project knowledge; personal lessons and
+contexts still apply.
+
+**Outcomes.** `321 outcome <run> accepted|rejected|corrected [why]`
+records what a person, or the work system that issued the package, says
+came of a run. Until it is said the outcome is unknown: a completed
+receipt is not acceptance. The last word said stands.
+
+**Value.** `321 value` sums receipts: money where the harness reported
+it (`cost.basis` of `harness` or `mixed`), with the number of runs it
+rests on; runs that reported no cost, counted as unknown; runs that used
+no model; tokens where a harness reported them; elapsed time; retries;
+and outcomes. `--json` is `value-report.v1`; `--brief` is one record a
+group (`all`, `agent`, `harness`, `context`): kind, name, runs,
+finished, dollars or `?`, runs reporting cost, tokens or `?`, seconds,
+accepted, rejected, corrected, unknown; then a `savings` record.
+
+Savings are an estimate and need a baseline the person states:
+`321 value baseline --minutes N --rate DOLLARS`, a person's time for one
+accepted run and what an hour of it is worth. The estimate is accepted
+runs times the baseline, less everything spent in the period, failed
+runs and retries included. It is withheld below three accepted runs, and
+says when the spend is a floor because some run reported no cost. 321
+spends nothing on learning itself today (no reflection or evaluation run
+is made), so there is no learning cost to subtract; when there is, it
+belongs in the same sum.
+
+Tokens: Claude Code's result is read for input, output and cache tokens
+and Codex's for its total. Receipts written before this carried no token
+count, and are reported as not reported.
+
+**Skills and the registry.** `321 registry sync` reads `/api/agents` and
+`/api/skills` from the registry (agents.321.do, or `321 registry use
+URL`, or `DO_321_REGISTRY`), with the token from `321 registry token`
+(standard input; kept in `~/.321/registry-token`, mode 0600, never
+printed) or `DO_321_REGISTRY_TOKEN`, and keeps a copy under
+`~/.321/registry`. A failed sync keeps the copy there was and records
+the failure. `321 skills install PUBLISHER/NAME` fetches one skill,
+refuses it unless its text matches the digest the registry gave, and
+keeps the version it replaces under `versions/`; `321 skills rollback`
+puts that back without the network. `--skill PUBLISHER/NAME` puts an
+installed skill's words in the work package's `instructions`, after
+checking the copy on disk against its digest again. A skill grants
+nothing: its `requires` list is what it needs the run to have been
+granted, not a grant. The registry never serves agent packages; an
+agent still runs from a package pinned in the trust file. 321 calls
+`curl` for this and says so when it is missing.
+
+Not built: lessons proposed by 321 itself from a run (a person adds
+them, optionally naming the run with `--from`); promotion of a lesson
+into a registry skill; publishing to the registry from the CLI;
+organisation-wide value reports (the sums are this machine's runs).
 
 ## Prompt-only runs
 

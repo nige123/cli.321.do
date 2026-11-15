@@ -70,11 +70,32 @@ with their CPU and memory, the open control, the receipt.
 
 | Key | Does |
 |---|---|
+| Alt-Enter | a new line in what you are typing; the input area grows with the text, up to eight rows or a third of the screen, then scrolls with the cursor and says how much is above |
+| `/edit`, Ctrl-G | opens what you are typing in your own editor (`$VISUAL`, else `$EDITOR`, else `vi`); what you save comes back to the input line, and nothing is sent until Enter |
 | Enter | sends what is typed to the selected run: a steer while it works; once it has ended, the agent's next run, going on from that one |
 | Esc | between typing and moving among runs |
 | `v` | shows every run, the active ones, or the ones that need you |
 | Ctrl-F | finds words in the conversation; Enter again for the next older |
 | Ctrl-P | every action, Run again among them for an ended run |
+
+A run that something else issued says where it came from, beside its
+request and in the evidence: the issuer and the references its package
+carried, word for word (`from api.123.do: track shop.example, step
+200`). A run started here says only that. Nothing is said that the
+package did not carry.
+
+A control sent from the screen says its shell words once it is sent
+(`stop requested for BEA K3F · CLI: 321 stop K3F`), so the words learnt
+here work at the shell. Only words the shell takes get one;
+`DO_321_HINTS=0` leaves them out. `DO_321_MOTION=0` keeps every mark
+still: the words carry the state by themselves.
+
+An agent is named on the input line by its short name, with or without
+an `@`: `/start b1ll tidy the README` and `/start @b1ll tidy the README`
+are the same, and a line that begins `@b1ll` is work for b1ll, a new run
+of its own. Tab finishes a name being typed after `@` or after `/start`,
+or takes it as far as the names agree; the line under the input lists
+who it could be. The names are the ones in your trust file.
 
 A run that said something since you last looked at it is marked new. A
 steer is shown at once as sending, and as unconfirmed when its run has not
@@ -122,7 +143,8 @@ checks the choice again: a harness that cannot enforce a requirement is
 refused, never used with the requirement waived.
 
 **Workspaces.** Two runs that can write never share a workspace. A second
-one is refused and told about `--isolate`, which gives the run a git
+one waits its turn (see *Waiting its turn*), or is started with
+`--isolate`, which gives the run a git
 worktree of the workspace at its last commit, under `~/.321/worktrees`.
 Changes not yet committed are not in it. The run never commits. You
 review what it did there, take it, and remove the worktree with
@@ -132,6 +154,100 @@ review what it did there, take it, and remove the worktree with
 with its own budget. It names the old run and that run's receipt
 digest, gets a fresh worktree if the old run had one, and carries no
 approval or grant. Nothing of the old harness's session moves across.
+
+## A line for each agent
+
+The screen opens on tracklines: a row an agent, time running left to
+right. The marks are squares, because these are bots; 123 draws a
+person's steps as dots.
+
+      CREW             DONE   NOW     NEXT
+      1DA               ■ ▪ │ ·     │
+      B1LL   +3 ■ ■ ■ ⊠ ■ │ ▣❮▣❯◧ │ □ □
+      M1RA                  │ ▣     │
+
+     ▣ b1ll KD2  fix flaky t/19-status
+       running a tool · bash · 3:40 · on Claude Code
+
+    ■ done  ▪ no change  ⊟ stopped  ⊠ did not happen  ◧ waits on you  ▣ working  ◫ held  □ next
+
+What an agent has done leads up to NOW, the newest nearest it and older
+ones counted. Everything it has in hand stands side by side between two
+blue bars, and the bars line up down the screen as one band: what is
+happening now is a column the eye runs down. What waits its turn
+follows. An agent with nothing in hand has a still point between its
+bars. Agents are in name order, so each stays where it was.
+
+A row is marks alone. What a job is, is said for the one under the
+cursor, in the two lines beneath: the agent, the run and its request,
+then how it stands, the time it has taken, what it has cost and the
+harness it is on. Beside the title is what can be done to that job, by
+its own state: keys while the arrows are on the lines (`h hold`,
+`s stop`, `r resume` or `r go now`, `a again`), the same things as
+words at the prompt (`/hold`, `/stop`). The key to the shapes sits
+beside the headings on a wide, short screen, or on a row of its own on a tall
+one. A large screen (140 columns by 30 rows, or more) has a panel at
+the right instead: the shapes a row each, with the cursor's own picked
+out; under them what can be done to the job under the cursor; then how
+to move. The screen is kept quiet on purpose: no rules along the rows. A mark's shape says its state and its
+colour says where on the track it is: green for done, blue for now,
+orange for next. What did not happen is red, so it is never read as
+done. An agent's own colour is on its name. A job being worked on
+throbs, an even pulse (`DO_321_MOTION=0` keeps it still).
+
+NOW is everything in hand: at work, held, and a run that ended waiting
+on you, which is your move. It stays there until a run goes on from it;
+then it has been answered and takes its place in DONE.
+
+The cursor is 321's own mark closed on a job: `❮▣❯`. Enter
+zooms in: the other rows give their room to that job's conversation and
+the input line is ready to speak to it. Esc gives its keys; Esc again
+shows every line.
+
+The arrows live in two places, one above the other: the lines and the
+prompt. On the lines, ←→ move along one agent's line, through done, now
+and next, and stop at its ends; ↑↓ go to the next agent, landing on
+what it has in hand. Down from the last line goes to the prompt, which
+names the job and says what it is for (`B1LL 7MY ❯ say something to
+b1ll, or / for a word`). Up from an empty prompt is back on the lines.
+Esc does the same either way. The conversation is the run under the cursor, and every control acts on
+that run. Its evidence (phase, harness, attempts, cost, host, workspace,
+receipt) is detail and is out of the way; `e` on the lines, or
+`/view evidence`, shows it beside the conversation and puts it away
+again. The lines take at most two fifths of the screen; agents past that
+are counted above and below, and follow the cursor. `t`, or
+`/view table` and `/view lines`, switches between the lines and a table
+with a row a run; `DO_321_VIEW=table` opens on the table. Below 80
+columns the crew is one line, as before.
+
+## Waiting its turn
+
+A run that cannot start yet is accepted and waits: phase `queued`. Two
+things make a run wait. A run that writes waits for the workspace while
+another run is at work there. And where `321 trust now N` stands, an
+agent works on N things at once, and a run started past that waits for a
+place. The oldest waiting run goes first.
+
+Nothing schedules. Each run's own host waits, looking at the other runs'
+evidence, and starts its runtime when nothing is ahead of it. 321 keeps
+no queue of work and chooses between nothing: which work comes first is
+still the word of whoever started it.
+
+A waiting run is a run: it has its id, its package and its inbox.
+
+- `321 stop <run>` ends it having done nothing. The runtime writes the
+  receipt, `stopped`, with no attempt on it.
+- `321 resume <run>`, or Go now on the screen, starts it at once, ahead
+  of its turn.
+- A steer is kept, and given to the agent when it starts.
+- A package that expires while it waits is put to the runtime, which
+  says so on the receipt.
+
+`321 start` says when a run waits, behind which run, and how to let it
+go. This holds for runs started here, at the shell or from Mission
+Control. A package another system issues (`321 start --package`) is
+hosted as it stands and does not wait: that would change what the
+issuer is told, and is proposed to 123.do, not made.
 
 ## The run directory
 
@@ -147,6 +263,7 @@ approval or grant. Nothing of the old harness's session moves across.
 | `status.json` | host, atomic replace | a cache of the folded state, never proof, with `usage`: CPU and memory of the processes below the host, from `/proc` |
 | `tree.json` | host, each heartbeat | the processes below the host, by identity |
 | `inbox/` | any client | `<ULID>-<kind>.json`, written whole and renamed in |
+| `queued` | host | exists while the run waits its turn; nothing has run |
 | `receipt.json` | the runtime, once | the outcome |
 | `ended.json` | first to prove it | an end the host could not record, with its basis |
 
@@ -168,7 +285,7 @@ in `events.jsonl`.
 
 ## Phase and outcome
 
-`phase` says where a run is in its life: starting, running, blocked, held,
+`phase` says where a run is in its life: starting, queued, running, blocked, held,
 stopping, ended, lost. `outcome` says how it ended: the receipt's word,
 or `lost` when it ended and nobody knows how. A run is `running` only
 while its host is that very process. A pid whose start time or boot

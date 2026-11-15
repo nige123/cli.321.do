@@ -1,0 +1,103 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+
+# The loop at the shell: a work context, a lesson, a run that is told
+# both, what a person says of the result, and what it all came to.  The
+# harness is 321's own stand-in; no model is involved.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+my $dir = fixture('example.test/helper');
+my $trust = temp-dir().add('trust.json');
+$trust.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+    publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+    aliases => { helper => 'example.test/helper' }, policy => { adapters => { preferred => ['fake'] } } })));
+
+sub cli(*@args --> List) { x321('--trust', $trust.Str, |@args, env => %( DO_321_HOME => $home.Str, DO_321_CONTEXT => '' ), cwd => $home) }
+sub last-run(--> IO::Path) { $home.add('runs').dir.grep(*.d).sort(*.basename).tail }
+
+subtest 'a context and a lesson reach the run as what is known, and nothing more' => {
+    my ($rc, $out, $err) = cli('--context', 'nosuch', 'helper', 'tidy the README');
+    ok $rc != 0 && $err.contains("no work context is called 'nosuch'") && $err.contains('321 context new nosuch'), 'a context nobody made is refused, with the way to make it' or diag $err;
+    is cli('context', 'new', 'shop', 'make checkout work on a phone')[0], 0, 'a context is made';
+    is cli('context', 'rejected', 'shop', 'a wizard of four steps')[0], 0, 'and told what was rejected';
+    ($rc, $out) = cli('--brief', 'lessons', 'add', '--agent', 'helper', '--context', 'shop', 'check the phone layout first');
+    my $lesson = $out.split("\t")[0];
+    ok $rc == 0 && $lesson.chars == 6, 'a lesson is added, on trial' or diag $out;
+    my ($o2) = cli('--brief', 'lessons', 'add', '--agent', 'someone-else', 'never applies here');
+    ($rc, $out, $err) = cli('--context', 'shop', 'helper', 'tidy the README');
+    is $rc, 0, 'a run in the context completes' or diag "$out\n$err";
+    my %wp = parse-json(last-run().add('work-package.json').slurp);
+    my @lines = @(%wp<context><lines> // []);
+    ok @lines.first(*.contains("work context 'shop'")) && @lines.first(*.contains('on a phone')), 'its package carries the context\'s purpose';
+    ok @lines.first(*.contains('rejected: a wizard of four steps')), 'and its history';
+    ok @lines.first({ .contains('check the phone layout first') && .contains('grants nothing') }), 'and the lesson, as advice';
+    nok @lines.first(*.contains('never applies here')), 'not a lesson scoped to another agent';
+    my ($rc0, $o0) = cli('helper', 'something outside the context');
+    my %plain = parse-json(last-run().add('work-package.json').slurp);
+    nok @(%plain<context><lines> // []).first(*.contains('phone')), 'a run outside the context is told none of it';
+    is %plain<capabilities><granted>.sort, %wp<capabilities><granted>.sort, 'and a lesson changed no grant';
+    my @applied = $home.add('learn').add('applied.ndjson').lines.map({ parse-json($_) });
+    is @applied.elems, 1, 'what a run was given is recorded, once, for the run that was given something';
+    is (@applied[0]<context>, @applied[0]<lessons>), ('shop', [$lesson]), 'its context and its lessons';
+}
+
+subtest 'what came of a run is said, not assumed' => {
+    my @ids = $home.add('runs').dir.grep(*.d).map(*.basename).sort;
+    my %v = parse-json(cli('value', '--json')[1]);
+    is (%v<total><runs>, %v<total><outcomes><unknown>, %v<total><outcomes><accepted>), (2, 2, 0), 'two runs finished, and neither is accepted until someone says';
+    my ($rc, $out) = cli('outcome', @ids[0].substr(*-4), 'accepted', 'looked', 'right');
+    ok $rc == 0 && $out.contains('accepted') && $out.contains('unchanged'), 'a person says it; the receipt is not touched' or diag $out;
+    my ($rc2, $, $err) = cli('outcome', @ids[0], 'wonderful');
+    ok $rc2 != 0 && $err.contains('accepted, rejected or corrected'), 'in one of three words';
+    ($rc2, $, $err) = cli('outcome', 'ZZZZ', 'accepted');
+    ok $rc2 != 0 && $err.contains('no run here'), 'of a run that is here';
+    %v = parse-json(cli('value', '--json')[1]);
+    is (%v<total><outcomes><accepted>, %v<total><outcomes><unknown>), (1, 1), 'and the sums follow';
+    is %v<byContext><shop><runs>, 1, 'by context';
+    ok %v<byAgent><helper>.defined && %v<byHarness><fake>.defined, 'by agent and by harness';
+}
+
+subtest 'savings are never manufactured' => {
+    my %v = parse-json(cli('value', '--json')[1]);
+    is %v<savings><estimate>, False, 'with no baseline there is no savings figure';
+    ok cli('value')[1].contains('none estimated: no baseline'), 'and the screen says why';
+    is cli('value', 'baseline', '--minutes', '20', '--rate', '90')[0], 0, 'a person gives their own baseline';
+    %v = parse-json(cli('value', '--json')[1]);
+    ok !%v<savings><estimate> && %v<savings><why>.contains('not enough comparable work yet'), 'one accepted run is still not enough';
+    is %v<baseline><minutes>, 20, 'the baseline is in the document';
+    my @rec = cli('--brief', 'value')[1].lines.map(*.split("\t"));
+    is @rec[0][0, 2], ('all', '2'), 'pipeline mode: a record a group';
+    ok @rec.first({ .[0] eq 'savings' && .[1] eq '?' }), 'with savings unknown as ?, not 0';
+}
+
+subtest 'a lesson is shown against the work, kept, reverted, shared on purpose' => {
+    my $id = cli('--brief', 'lessons')[1].lines.first(*.contains('phone')).split("\t")[0];
+    my $show = cli('lessons', 'show', $id)[1];
+    ok $show.contains('applied to 1 run') && $show.contains('are needed'), 'one run is not evidence, and it says so' or diag $show;
+    ok $show.contains('not a controlled trial'), 'nor is any number of them a trial';
+    is cli('lessons', 'revert', $id, 'no', 'better')[0], 0, 'it can be reverted';
+    cli('--context', 'shop', 'helper', 'again');
+    nok last-run().add('work-package.json').slurp.contains('check the phone layout first'), 'and the next run is not given it';
+    is cli('lessons', 'keep', $id)[0], 0, 'or kept again';
+    my ($rc, $, $err) = cli('lessons', 'share', $id);
+    ok $rc != 0 && $err.contains('no repository'), 'sharing needs a project';
+    my $repo = $home.add('proj');
+    $repo.mkdir;
+    { my $p = run 'git', '-C', $repo.Str, 'init', '-q', :out, :err; $p.out.slurp(:close); $p.err.slurp(:close) }
+    ($rc, my $out) = cli('--workspace', $repo.Str, '--brief', 'lessons', 'share', $id);
+    ok $rc == 0 && $repo.add('.321').add('lessons').add("$id.json").e, 'shared, it is a file in the repository' or diag $out;
+    { my $p = run 'git', '-C', $repo.Str, 'status', '--porcelain', :out, :err; my $o = $p.out.slurp(:close); $p.err.slurp(:close);
+      ok $o.contains('.321'), 'left for a person to review and commit: 321 commits nothing'; }
+    is cli('lessons', 'remove', $id)[0], 0, 'a lesson can be removed';
+    nok cli('--brief', 'lessons')[1].contains($id), 'and is gone from the person\'s own';
+}
+
+done-testing;

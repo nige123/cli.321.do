@@ -83,6 +83,20 @@ subtest 'what the host adds' => {
     ok $s.lines.first(*.text.contains('64 MB')), 'a capped log says so, with the size';
 }
 
+subtest 'a refusal: the verdict once, then why, then the step that puts it right' => {
+    my $s = fold([
+        ev(1, 'host', 'host_started', :request('when is the match')),
+        ev(2, 'run', 'denied', :reason('no installed adapter can enforce what this package requires'),
+            :details(['claude_code: cannot enforce network_deny', 'to run it here: 321 trust network open grants the network'])),
+        ev(3, 'host', 'receipt', :status('denied'), :summary('denied: no installed adapter can enforce what this package requires')),
+    ]);
+    my @l = $s.lines.grep({ .who ne 'you' });
+    is @l.grep({ .text.contains('no installed adapter') }).elems, 1, 'the verdict is said once';
+    is @l[0].who, 'end', 'first';
+    ok @l[1].text.starts-with('claude_code:') && @l[1].tone eq 'dim', 'then why each harness could not, quietly';
+    ok @l[2].text.starts-with('to run it here: 321 trust network open') && @l[2].tone eq 'now', 'and last the step, in the colour of a thing to do';
+}
+
 subtest 'outcome words' => {
     is outcome-word('completed'), 'done', 'completed reads done';
     is outcome-word('no_change'), 'no_change', 'no_change keeps the envelope spelling';

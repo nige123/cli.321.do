@@ -25,6 +25,7 @@
       "properties": {
         "capabilityCeiling": { "type": "array", "items": { "type": "string" } },
         "limits": { "type": "object", "additionalProperties": false, "properties": { "maxUsd": { "type": "number" }, "maxTurns": { "type": "integer" }, "timeout": { "type": "string" }, "network": { "enum": ["none", "provider_only", "open"] } } },
+        "now": { "type": "integer", "minimum": 1, "description": "The most runs of one agent that work at once here. A run started past it waits its turn, oldest first. Absent: no limit." },
         "adapters": { "type": "object", "additionalProperties": false, "properties": { "preferred": { "type": "array", "items": { "type": "string" } }, "denied": { "type": "array", "items": { "type": "string" } } } },
         "standingApprovals": {
           "description": "Deployments an unattended `321 <agent> go` may run without a person at the terminal. The administrator who writes this file is the approver; each approval is still bound to the exact fresh plan.",

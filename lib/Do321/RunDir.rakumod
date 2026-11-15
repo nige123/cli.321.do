@@ -100,6 +100,8 @@ class RunDir is export {
     method inbox       { $!dir.add('inbox') }
     method receipt-file { $!dir.add('receipt.json') }
     method ended-file  { $!dir.add('ended.json') }
+    #| There while the run waits its turn; the host makes and removes it.
+    method queued-file { $!dir.add('queued') }
     method log-file    { $!dir.add('host.log') }
 
     method run(--> Hash)     { (read-json-file(self.run-file) // {}).Hash }
@@ -272,6 +274,7 @@ class EventTail is export {
 #| Where a run stands, from evidence only:
 #|   ended    a receipt, or an ended.json, exists (the receipt wins)
 #|   running  the host recorded in host.json is that very process still
+#|   queued   that host is alive and waits its turn: nothing has run yet
 #|   starting launched moments ago and the host has not said who it is
 #|   lost     no receipt, and the host is gone or was never born
 #| Returns a hash: phase, why, and the outcome when ended.
@@ -302,6 +305,7 @@ sub liveness(RunDir $r, Int :$grace = 15 --> Hash) is export {
         return %( phase => 'lost', why => 'no host ever started for it' );
     }
     if same-process(%h<pid>.Int, %h<startTicks>.Int, %h<bootId> // '') {
+        return %( phase => 'queued', why => "host {%h<pid>} is alive and waits its turn", host => %h ) if $r.queued-file.e;
         return %( phase => 'running', why => "host {%h<pid>} is alive", host => %h );
     }
     my $why = (%h<bootId> // '') ne boot-id() ?? 'the machine restarted since it began' !! "host {%h<pid>} is gone";
