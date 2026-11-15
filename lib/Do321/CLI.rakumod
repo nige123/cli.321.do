@@ -1431,7 +1431,7 @@ sub cmd-registry(Env $env, Global $g, @args --> Int) {
             my $told = '';
             if $sub eq 'sync' && !$failed && sharing-on($home) {
                 my %r = try { send-reports($home) } // %();
-                $told = $! ?? "not sent: {$!.message}" !! %r<sent> ?? "{many-of(%r<sent>, 'outcome')} sent to the record" ~ (%r<unknownAgent> ?? "; {%r<unknownAgent>} for agents the registry does not hold" !! '') !! 'nothing new to send';
+                $told = $! ?? "not sent: {$!.message}" !! %r<sent> ?? "{many-of(%r<sent>, 'outcome')} sent to the record" ~ (%r<signed> ?? ", {%r<signed>} signed" !! '') ~ (%r<duplicateReceipt> ?? "; {%r<duplicateReceipt>} already counted from another account" !! '') ~ (%r<unknownAgent> ?? "; {%r<unknownAgent>} for agents the registry does not hold" !! '') !! 'nothing new to send';
                 %s<reports> = $told;
             }
             if $json { $w.say(encode-json(%( url => registry-url($home), |%s ))); return $failed ?? EXIT-FAILED !! 0 }
@@ -1481,13 +1481,16 @@ sub cmd-record(Env $env, Global $g, @args --> Int) {
         my $on = sharing-on($home);
         my @p = try { reports-pending($home) } // ();
         my $token = registry-token($home) ne '';
-        if $json { $w.say(encode-json(%( sharing => $on, since => sharing-since($home), registry => registry-url($home), token => $token, pending => [ |@p ] ))); return 0 }
-        if $g.brief { $w.say(brief-line('share', $on ?? 'on' !! 'off', @p.elems)); $w.say(brief-line('report', .<agent>, .<version>, .<outcome>, (.<tokens> // ''))) for @p; return 0 }
+        if $json { $w.say(encode-json(%( sharing => $on, since => sharing-since($home), registry => registry-url($home), token => $token, key => report-key($home), pending => [ |@p ] ))); return 0 }
+        if $g.brief { $w.say(brief-line('share', $on ?? 'on' !! 'off', @p.elems)); $w.say(brief-line('report', .<agent>, .<version>, .<outcome>, (.<tokens> // ''), ((.<signature>:exists) ?? 'signed' !! 'unsigned'))) for @p; return 0 }
         my @l = header('record share', $on ?? 'on' !! 'off'), '';
         @l.append: row-lines('sharing:', $on ?? "on: 321 registry sync sends what you said of your runs to {registry-url($home)}" !! 'off: nothing about your runs leaves this machine');
         @l.append: row-lines('goes:', 'for a run you gave an outcome: the agent and its version, the harness, how it ended, your outcome, tokens, cost, time, attempts');
         @l.append: row-lines('stays:', 'the request, files, paths, contexts, lessons, your notes and the run id');
         @l.append: row-lines('to send:', @p ?? many-of(@p.elems, 'run') !! 'nothing: no run with an outcome is waiting');
+        my $sg = @p.grep({ .<signature>:exists }).elems;
+        @l.append: row-lines('signed:', $sg ?? "$sg of them carry the signature this 321 gave their receipt; its public key goes too"
+            !! report-key($home) ?? 'none of them: their receipts were not signed by the key here now' !! 'none: this 321 has no key (321 key new makes one, for receipts from then on)') if @p;
         @l.append: row-lines('token:', 'none: the registry takes reports only from someone it knows') if $on && !$token;
         if @p {
             @l.push: '';
@@ -1523,6 +1526,7 @@ sub cmd-record(Env $env, Global $g, @args --> Int) {
     }
     my %min = (%r<minimum> // {}).Hash;
     @l.append: row-lines('basis:', (%r<basis> // 'reported by people who ran it').Str ~ (%min ?? "; a version shows its figures at {%min<reports> // '?'} reports from {%min<accounts> // '?'} accounts" !! ''));
+    @l.append: row-lines('signed:', 'a signed report carries the signature of a key its reporter registered: a receipt was written, which does not make its figures true') if @v.first({ .<signed> ~~ Associative });
     @l.push: '';
     @l.push: sharing-on($home) ?? next-text('say what came of a run of yours, and it joins the record', '321 outcome accepted')
         !! next-text('add what you said of your runs to the record', '321 record share on');

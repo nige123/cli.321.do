@@ -296,6 +296,9 @@ class Work is export {
     has Str $.version = '';       # the agent's, as its receipt gave it
     has Str $.digest = '';
     has Str $.ended = '';
+    has Str $.receipt-digest = '';  # what the receipt's signature is over
+    has Str $.signature = '';       # its value, '' for a receipt nobody signed
+    has Str $.signed-by = '';       # the id of the key that signed it
     has DateTime $.started;
     method who(--> Str) { $!agent.contains('/') ?? $!agent.split('/').tail !! $!agent }
     method finished(--> Bool) { so $!status eq 'completed' | 'no_change' }
@@ -327,6 +330,7 @@ sub read-work(IO::Path $home, Int :$days = 30, Int :$cap = 2000, DateTime :$now 
             seconds => ($ended > $started ?? ($ended - $started) !! 0),
             attempts => @($doc<attempts> // []).elems,
             version => (($doc<agent> // {})<version> // '').Str, digest => (($doc<agent> // {})<digest> // '').Str, ended => ($doc<endedAt> // '').Str,
+            receipt-digest => ($doc<receiptDigest> // '').Str, signature => (($doc<signature> // {})<value> // '').Str, signed-by => (($doc<signature> // {})<keyId> // '').Str,
             context => ((%ap{$id} // {})<context> // '').Str,
             lessons => @((%ap{$id} // {})<lessons> // []),
             outcome => ((%oc{$id} // {})<outcome> // '').Str));

@@ -91,13 +91,14 @@ subtest 'an agent record is shown as it was reported' => {
     $reg.add('api/agents/helper/record').spurt(encode-json({ schema => 'agent-record.v1', agent => 'helper',
         basis => 'reported by people who ran it; not verified by the registry', minimum => { reports => 5, accounts => 3 },
         versions => [ { version => '1.2.0', enough => True, reports => 40, accounts => 9, outcomes => { accepted => 30, corrected => 6, rejected => 4 },
-                        tokens => { median => 12400, reports => 31 }, usd => Nil, seconds => { median => 80 }, harnesses => { claude_code => 40 } },
+                        tokens => { median => 12400, reports => 31 }, usd => Nil, seconds => { median => 80 }, harnesses => { claude_code => 40 }, signed => { reports => 22, accounts => 6 } },
                       { version => '1.3.0', enough => False }, ] }));
     my ($rc, $out, $err) = cli('record', 'helper');
     is $rc, 0, 'the record is read' or diag $err;
     ok flat($out).contains('40 reports from 9 accounts') && flat($out).contains('75% accepted, 15% corrected, 10% rejected'), 'a version with enough reports shows them' or diag $out;
     ok flat($out).contains('median 12k tokens (of the 31 that said)'), 'a figure resting on fewer reports says how many' or diag $out;
-    ok $out.contains('1m 20s'), 'and the time';
+    ok flat($out).contains('1m 20s'), 'and the time';
+    ok flat($out).contains('22 signed') && flat($out).contains('does not make its figures true'), 'how many are signed, and what that does not show' or diag $out;
     ok flat($out).contains('v1.3.0:') && $out.contains('not enough reports yet'), 'a version without enough shows no figure';
     ok flat($out).contains('not verified by the registry') && flat($out).contains('5 reports from 3 accounts'), 'and the basis is said';
     nok $out.contains('$0.00'), 'a cost nobody reported is not shown as nothing';
@@ -106,6 +107,34 @@ subtest 'an agent record is shown as it was reported' => {
     ok $rc != 0 && $err.contains('321:'), 'an agent the registry does not hold is said plainly' or diag $err;
     my @b = cli('--brief', 'record', 'helper')[1].lines;
     is @b[0].split("\t")[0 .. 5], ('record', 'helper', '1.2.0', 'enough', '40', '9'), 'and in a pipeline, a record per version';
+}
+
+subtest 'a receipt this 321 signed is reported with its signature, and no other is' => {
+    my $h = temp-dir(); $h.chmod(0o700);
+    my sub c(*@args --> List) { x321('--trust', $trust.Str, |@args, env => %( DO_321_HOME => $h.Str, DO_321_CONTEXT => '', DO_321_REGISTRY => "file://$reg", DO_321_REGISTRY_TOKEN => '' ), cwd => $h) }
+    my sub newest(--> Str) { $h.add('runs').dir.grep(*.d).sort(*.basename).tail.basename }
+    is c('helper', 'before there was a key')[0], 0, 'a run before the key';
+    my $unsigned = newest();
+    is c('outcome', $unsigned, 'accepted')[0], 0, 'given an outcome';
+    is c('key', 'new')[0], 0, 'a key is made';
+    is c('helper', 'after the key')[0], 0, 'and a run after it';
+    my $signed = newest();
+    is c('outcome', $signed, 'corrected')[0], 0, 'given an outcome';
+    set-sharing($h, True);
+    my %by = reports-pending($h).map({ .<outcome> => $_ });
+    nok %by<accepted><signature>:exists, 'the receipt nobody signed is reported without a signature';
+    my %s = %by<corrected>;
+    my %receipt = parse-json($h.add('runs').add($signed).add('receipt.json').slurp);
+    is (%s<receiptDigest>, %s<signature>), (%receipt<receiptDigest>, %receipt<signature><value>), 'the signed one carries its receipt\'s digest and signature, as they are';
+    is %s.keys.sort, <agent attempts digest endedAt harness outcome receiptDigest run seconds signature status tokens usd version>.sort, 'and nothing else new';
+    my %k = report-key($h);
+    is %k.keys.sort, <algorithm keyId publicKey>, 'the key that goes is its public half alone';
+    is %k<keyId>, %receipt<signature><keyId>, 'and is the one that signed';
+    my ($rc, $out) = c('record', 'share');
+    ok flat($out).contains('1 of them carry the signature') && flat($out).contains('its public key goes too'), 'the screen says what is signed, and that the public key goes' or diag $out;
+    nok $out.contains(parse-json($h.add('key.json').slurp)<privateKey>), 'the private half is never shown';
+    my $other = temp-dir(); $other.chmod(0o700);
+    nok report-of($other, read-work($h).first({ .id eq $signed }))<signature>:exists, 'a home with no key sends no signature it cannot answer for';
 }
 
 sub flat(Str $s --> Str) { $s.subst(/\s+/, ' ', :g) }

@@ -917,12 +917,23 @@ reports only with a token. What went is written to
 before anything does. Nothing is sent by a run, and there is no
 background sender: only `321 registry sync` sends.
 
+Where this 321 has a key (`321 key new`), a report for a receipt that
+key signed also carries the receipt's `receiptDigest` and the value of
+its signature, and the batch carries the key's public half. The
+registry checks the signature, registers the key to the reporting
+account and counts a receipt once. A record then says how many of a
+version's reports are signed. Signed means a receipt was written by a
+key its reporter registered. The registry never sees the receipt, so
+it does not mean the figures are what the receipt says. A receipt
+signed by a key that is no longer the one here is reported unsigned.
+
 Not built: lessons proposed by 321 itself from a run (a person adds
 them, optionally naming the run with `--from`); promotion of a lesson
 into a registry skill; publishing to the registry from the CLI;
 organisation-wide value reports (the sums are this machine's runs);
-checking a report against a signed receipt (the record is what people
-said, and many accounts could say what is not so).
+checking a report's figures against its receipt (the registry holds a
+signature over the receipt's digest, not the receipt; many accounts
+with many keys could still say what is not so).
 
 ## Prompt-only runs
 

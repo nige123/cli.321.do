@@ -5,6 +5,7 @@ use Do321::JSON;
 use Do321::RunDir;
 use Do321::Learn;
 use Do321::Registry;
+use Do321::Keys;
 
 #| An agent's record: how its versions have done, as the people who ran
 #| them reported, kept at the registry; and this person's part in it.
@@ -18,7 +19,11 @@ use Do321::Registry;
 #|     context, no lesson, no note, and not the run's id: the registry
 #|     gets a key made from the id and a salt that stays here;
 #|   - a figure the harness did not report goes as not known, never zero;
-#|   - what was sent is written down here, so it can be read.
+#|   - what was sent is written down here, so it can be read;
+#|   - where this 321 has a key, a report carries the signature its
+#|     receipt already has, the digest it is over, and the key's public
+#|     half.  That shows a receipt was written by this key; it does not
+#|     show the registry the receipt, and proves no figure.
 
 constant SCHEMA-REPORT is export = 'outcome-report.v1';
 constant REPORT-BATCH is export = 200;
@@ -69,9 +74,19 @@ sub reports-sent(IO::Path $home --> Hash) is export {
     %( $f.lines.map({ try parse-json($_) }).grep(Associative).map({ (.<run> // '') => (.<outcome> // '').Str }) );
 }
 
-#| One run as it is reported: exactly these keys, and no others.
-sub report-of(IO::Path $home, Work $w --> Hash) is export {
-    %( run => run-key($home, $w.id), agent => $w.agent, version => $w.version, digest => $w.digest, harness => $w.harness,
+#| The public half of this 321's key, or an empty hash when it has none.
+sub report-key(IO::Path $home --> Hash) is export {
+    my $k = try load-key($home);
+    $k ~~ Associative ?? public-part(%$k) !! %();
+}
+
+#| One run as it is reported: exactly these keys, and no others.  The
+#| last two are there only for a receipt signed by the key this 321
+#| has now: a signature nobody here can answer for is not sent.
+sub report-of(IO::Path $home, Work $w, Str :$key-id = (report-key($home)<keyId> // '') --> Hash) is export {
+    my $signed = $key-id ne '' && $w.signature ne '' && $w.signed-by eq $key-id && $w.receipt-digest ne '';
+    %( |($signed ?? (receiptDigest => $w.receipt-digest, signature => $w.signature) !! ()),
+       run => run-key($home, $w.id), agent => $w.agent, version => $w.version, digest => $w.digest, harness => $w.harness,
        status => $w.status, outcome => $w.outcome,
        tokens => ($w.tokens.defined ?? $w.tokens.Int !! Nil), usd => ($w.usd.defined ?? $w.usd + 0 !! Nil),
        seconds => $w.seconds.Int, attempts => $w.attempts, endedAt => $w.ended );
@@ -81,7 +96,8 @@ sub report-of(IO::Path $home, Work $w --> Hash) is export {
 #| for, that has not gone with that outcome already.
 sub reports-pending(IO::Path $home, Int :$days = 90 --> List) is export {
     my %sent = reports-sent($home);
-    read-work($home, :$days).grep({ .outcome ne '' && .agent ne '' && .ended ne '' }).map({ report-of($home, $_) })
+    my $key-id = (report-key($home)<keyId> // '').Str;
+    read-work($home, :$days).grep({ .outcome ne '' && .agent ne '' && .ended ne '' }).map({ report-of($home, $_, :$key-id) })
         .grep({ (%sent{.<run>} // '') ne .<outcome> }).List;
 }
 
@@ -91,17 +107,18 @@ sub reports-pending(IO::Path $home, Int :$days = 90 --> List) is export {
 sub send-reports(IO::Path $home --> Hash) is export {
     die X::Do321::Registry.new(message => 'sharing is off: 321 record share on turns it on') unless sharing-on($home);
     my @all = reports-pending($home);
-    my %sum = sent => 0, stored => 0, replaced => 0, unknownAgent => 0;
+    my %sum = sent => 0, stored => 0, replaced => 0, unknownAgent => 0, signed => 0, duplicateReceipt => 0;
+    my %key = report-key($home);
     return %sum unless @all;
     my $f = sent-file($home);
     for @all.rotor(REPORT-BATCH, :partial) -> @batch {
-        my $said = registry-get($home, '/api/reports', send => encode-json(%( schema => SCHEMA-REPORT, reports => [ |@batch ] )));
+        my $said = registry-get($home, '/api/reports', send => encode-json(%( schema => SCHEMA-REPORT, |(@batch.first({ .<signature>:exists }) ?? (key => %key) !! ()), reports => [ |@batch ] )));
         my $h = $f.open(:a);
         $h.say(encode-json(%( run => .<run>, outcome => .<outcome>, agent => .<agent>, at => stamp() ))) for @batch;
         $h.close;
         $f.chmod(0o600);
         %sum<sent> += @batch.elems;
-        %sum{$_} += ($said{$_} // 0).Int for <stored replaced unknownAgent>;
+        %sum{$_} += ($said{$_} // 0).Int for <stored replaced unknownAgent signed duplicateReceipt>;
     }
     %sum;
 }
@@ -131,5 +148,6 @@ sub version-lines(%v --> List) is export {
     else { @l.push: 'tokens not reported' }
     with %v<usd> { @l.push: "median {money(.<median>)}" ~ ((.<reports> // $r).Int < $r ?? " (of the {.<reports>} that said)" !! '') if $_ ~~ Associative }
     with %v<seconds> { @l.push: "median {duration(.<median>)}" if $_ ~~ Associative }
+    with %v<signed> { @l.push: "{(.<reports> // 0).Int} signed" if $_ ~~ Associative }
     ($name, |@l).List;
 }
