@@ -293,6 +293,9 @@ class Work is export {
     has Str $.context = '';
     has @.lessons;
     has Str $.outcome = '';       # accepted | rejected | corrected | '' for unknown
+    has Str $.version = '';       # the agent's, as its receipt gave it
+    has Str $.digest = '';
+    has Str $.ended = '';
     has DateTime $.started;
     method who(--> Str) { $!agent.contains('/') ?? $!agent.split('/').tail !! $!agent }
     method finished(--> Bool) { so $!status eq 'completed' | 'no_change' }
@@ -323,6 +326,7 @@ sub read-work(IO::Path $home, Int :$days = 30, Int :$cap = 2000, DateTime :$now 
             tokens => ($tokens > 0 ?? $tokens !! Any),
             seconds => ($ended > $started ?? ($ended - $started) !! 0),
             attempts => @($doc<attempts> // []).elems,
+            version => (($doc<agent> // {})<version> // '').Str, digest => (($doc<agent> // {})<digest> // '').Str, ended => ($doc<endedAt> // '').Str,
             context => ((%ap{$id} // {})<context> // '').Str,
             lessons => @((%ap{$id} // {})<lessons> // []),
             outcome => ((%oc{$id} // {})<outcome> // '').Str));

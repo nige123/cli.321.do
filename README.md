@@ -28,8 +28,10 @@ steer, hold, stop. [321.do](https://321.do)
 ```
 
 Agents get better with use: `321 help learning` covers work contexts,
-lessons you can try and take back, what came of each run, and skills
-from the registry.
+lessons you can try and take back, what came of each run, skills from
+the registry, and each agent's record there: how its versions have
+done, as the people who ran them reported. Adding your own reports is
+off until you turn it on.
 
 Inside Mission Control the same words start with a slash: `/start`,
 `/steer`, `/hold`, `/stop`. Anything else you type goes to the run you are on.

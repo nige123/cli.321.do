@@ -148,6 +148,10 @@ sub topics(--> List) is export {
       ['321 registry [sync]', '321 registry token   (the token from standard input)', '321 registry use URL'],
       'Agents and skills are described at agents.321.do. sync reads what you may see, with your token when you have one, and keeps a copy; 321 works from the copy when the registry cannot be reached, and says how old it is. A failed sync keeps the copy there was. The registry never serves agent packages: those are pinned in the trust file. Needs curl.',
       '321 registry sync'),
+    t('record', LEARN, 'how an agent has done, as reported',
+      ['321 record AGENT', '321 record share [on|off]'],
+      'An agent version shows its record at the registry once enough people have reported: how often its work was accepted, and what it took. They are reports, not verified. share on adds yours at the next registry sync: only runs you gave an outcome, and never the request, files, contexts or notes. share alone shows what would go. Off by default.',
+      '321 record 1da'),
 
     t('iz4 install', HOLD, 'wire the project\'s IZ4 into the harness here',
       ['321 iz4 install', '321 iz4 install --advisory', '321 iz4 install --harness NAME'],

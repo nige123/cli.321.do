@@ -74,11 +74,23 @@ sub set-registry-token(IO::Path $home, Str $token) is export {
 #| One GET.  Returns the parsed document, or throws with what went wrong
 #| in words a person can act on.  The token goes in a header, read by
 #| curl from a file descriptor's worth of config, never on the command line.
-sub registry-get(IO::Path $home, Str $path) is export {
+sub registry-get(IO::Path $home, Str $path, Str :$send = '') is export {
     my $url = registry-url($home) ~ $path;
     my $token = registry-token($home);
     my @cfg = "url = \"$url\"", 'silent', 'show-error', 'max-time = 20', 'header = "Accept: application/json"', 'write-out = "\n%{http_code}"';
     @cfg.push("header = \"Authorization: Bearer $token\"") if $token ne '' && !$url.starts-with('file:');
+    # something to send goes by a file only this person can read, named
+    # to curl in its config: never on the command line
+    my $body-file;
+    if $send ne '' {
+        fail-with('a registry that is a directory can be read, not written to') if $url.starts-with('file:');
+        private-dir(registry-dir($home));
+        $body-file = registry-dir($home).add('sending.json');
+        $body-file.spurt($send);
+        $body-file.chmod(0o600);
+        @cfg.push("data-binary = \"\@{$body-file.absolute}\"", 'header = "Content-Type: application/json"');
+    }
+    LEAVE { try { .unlink if .e } with $body-file }
     my $p = try run 'curl', '--config', '-', :in, :out, :err;
     fail-with('curl is needed to reach the registry, and is not on this machine') without $p;
     $p.in.print(@cfg.join("\n") ~ "\n");
@@ -94,6 +106,11 @@ sub registry-get(IO::Path $home, Str $path) is export {
         fail-with("no such document at the registry: $path") if $url.starts-with('file:') && $rc == 37;
         fail-with("the registry at {registry-url($home)} could not be reached" ~ ($err ne '' ?? " ({$err.subst(/^ 'curl: ' /, '')})" !! ''));
     }
+    if $code eq '422' | '413' | '400' {
+        my $said = try parse-json($body);
+        fail-with('the registry refused what was sent' ~ ($said ~~ Associative && ($said<message> // '') ne '' ?? ": {$said<message>}" !! " ($code)"));
+    }
+    fail-with('the registry takes this only from someone it knows: set your token with 321 registry token') if $code eq '401' && $token eq '';
     fail-with('the registry did not recognise the token, or it has been revoked: set a new one with 321 registry token') if $code eq '401';
     fail-with("the registry has nothing at $path that you may see") if $code eq '404';
     fail-with("the registry answered $code for $path") unless $code eq '200' | '000';

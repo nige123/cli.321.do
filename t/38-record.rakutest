@@ -1,0 +1,113 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+use Do321::Learn;
+use Do321::Registry;
+use Do321::Record;
+
+# An agent's record, and this person's part in it.  Sharing is off until
+# it is turned on; only a run given an outcome is reported; a report is
+# exactly its named keys and carries no words of the person's.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+my $dir = fixture('example.test/helper');
+my $trust = temp-dir().add('trust.json');
+$trust.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+    publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+    aliases => { helper => 'example.test/helper' }, policy => { adapters => { preferred => ['fake'] } } })));
+my $reg = temp-dir();
+$reg.add('api').mkdir;
+$reg.add('api/agents').mkdir;
+$reg.add('api/agents/helper').mkdir;
+
+sub cli(*@args --> List) { x321('--trust', $trust.Str, |@args, env => %( DO_321_HOME => $home.Str, DO_321_CONTEXT => '', DO_321_REGISTRY => "file://$reg", DO_321_REGISTRY_TOKEN => '' ), cwd => $home) }
+sub last-run(--> Str) { $home.add('runs').dir.grep(*.d).sort(*.basename).tail.basename }
+
+subtest 'nothing is shared until it is turned on' => {
+    nok sharing-on($home), 'sharing begins off';
+    my ($rc, $out) = cli('record', 'share');
+    ok $rc == 0 && $out.contains('record share: off') && $out.contains('nothing about your runs leaves this machine'), 'and the screen says so' or diag $out;
+    ok $out.contains('321 record share on'), 'with the way to turn it on';
+    dies-ok { send-reports($home) }, 'nothing can be sent while it is off';
+    nok $home.add('registry').add('sent.ndjson').e, 'and nothing was written down as sent';
+}
+
+subtest 'only a run given an outcome is reported, and only by its named keys' => {
+    is cli('context', 'new', 'secretplace', 'the purpose nobody else should read')[0], 0, 'a context';
+    is cli('--context', 'secretplace', 'helper', 'a request with private words in it')[0], 0, 'a run in it';
+    my $first = last-run();
+    is cli('helper', 'another private request')[0], 0, 'and a second run';
+    my $second = last-run();
+    is cli('record', 'share', 'on')[0], 0, 'sharing is turned on';
+    ok sharing-on($home), 'and is on';
+    is reports-pending($home).elems, 0, 'a run nobody has spoken for is not reported';
+    is cli('outcome', $first, 'accepted', 'a note that stays here')[0], 0, 'an outcome is said of one';
+    my @p = reports-pending($home);
+    is @p.elems, 1, 'and that run alone is waiting';
+    my %r = @p[0];
+    is %r.keys.sort, <agent attempts digest endedAt harness outcome run seconds status tokens usd version>.sort, 'a report has exactly its keys';
+    is (%r<agent>, %r<outcome>, %r<version>), ('example.test/helper', 'accepted', '1.2.0'), 'the agent, its version and what was said';
+    ok %r<run> ~~ / ^ 'sha256:' <[0..9 a..f]> ** 64 $ / && !%r<run>.contains($first), 'the run goes by a key, not its id';
+    my $wire = encode-json(%r);
+    nok $wire.contains('private') || $wire.contains('secretplace') || $wire.contains('stays here') || $wire.contains($home.Str), 'no request, context, note or path is in it';
+    ok !%r<tokens>.defined || %r<tokens> > 0, 'tokens are a count or not known, never a zero that was not reported';
+    my ($rc, $out) = cli('record', 'share');
+    ok $out.contains('1 run') && $out.contains('example.test/helper') && $out.contains('accepted'), 'the screen shows what would go' or diag $out;
+    ok $out.contains('321 registry token'), 'and that the registry needs to know who is sending';
+    my %j = parse-json(cli('--json', 'record', 'share')[1]);
+    ok %j<sharing> && %j<pending>.elems == 1, 'and says it as a document';
+}
+
+subtest 'a salt that stays here makes the key' => {
+    my $run = last-run();
+    my $k = run-key($home, $run);
+    is run-key($home, $run), $k, 'the same run has the same key, so a later word can replace an earlier';
+    my $other = temp-dir(); $other.chmod(0o700);
+    set-sharing($other, True);
+    isnt run-key($other, $run), $k, 'and another machine makes another key for the same id';
+    set-sharing($home, False);
+    set-sharing($home, True);
+    is run-key($home, $run), $k, 'turning sharing off and on keeps the salt';
+    is ($home.add('registry').add('share.json').mode +& 0o077), 0, 'the salt is readable by its person alone';
+}
+
+subtest 'a registry that cannot take reports is said, and nothing is marked sent' => {
+    dies-ok { send-reports($home) }, 'a directory registry cannot be written to';
+    nok $home.add('registry').add('sent.ndjson').e, 'so nothing is written down as sent';
+    is reports-pending($home).elems, 1, 'and the run still waits';
+    my ($rc, $out) = cli('record', 'share', 'off');
+    ok $rc == 0 && $out.contains('record share: off'), 'sharing turns off again';
+    is cli('record', 'share', 'sideways')[0], 64, 'and a word that is neither is a usage error';
+}
+
+subtest 'an agent record is shown as it was reported' => {
+    $reg.add('api/agents/helper/record').spurt(encode-json({ schema => 'agent-record.v1', agent => 'helper',
+        basis => 'reported by people who ran it; not verified by the registry', minimum => { reports => 5, accounts => 3 },
+        versions => [ { version => '1.2.0', enough => True, reports => 40, accounts => 9, outcomes => { accepted => 30, corrected => 6, rejected => 4 },
+                        tokens => { median => 12400, reports => 31 }, usd => Nil, seconds => { median => 80 }, harnesses => { claude_code => 40 } },
+                      { version => '1.3.0', enough => False }, ] }));
+    my ($rc, $out, $err) = cli('record', 'helper');
+    is $rc, 0, 'the record is read' or diag $err;
+    ok flat($out).contains('40 reports from 9 accounts') && flat($out).contains('75% accepted, 15% corrected, 10% rejected'), 'a version with enough reports shows them' or diag $out;
+    ok flat($out).contains('median 12k tokens (of the 31 that said)'), 'a figure resting on fewer reports says how many' or diag $out;
+    ok $out.contains('1m 20s'), 'and the time';
+    ok flat($out).contains('v1.3.0:') && $out.contains('not enough reports yet'), 'a version without enough shows no figure';
+    ok flat($out).contains('not verified by the registry') && flat($out).contains('5 reports from 3 accounts'), 'and the basis is said';
+    nok $out.contains('$0.00'), 'a cost nobody reported is not shown as nothing';
+    is cli('record', 'example.test/helper')[0], 0, 'the agent may be named with its publisher';
+    ($rc, $out, $err) = cli('record', 'nobody');
+    ok $rc != 0 && $err.contains('321:'), 'an agent the registry does not hold is said plainly' or diag $err;
+    my @b = cli('--brief', 'record', 'helper')[1].lines;
+    is @b[0].split("\t")[0 .. 5], ('record', 'helper', '1.2.0', 'enough', '40', '9'), 'and in a pipeline, a record per version';
+}
+
+sub flat(Str $s --> Str) { $s.subst(/\s+/, ' ', :g) }
+
+done-testing;

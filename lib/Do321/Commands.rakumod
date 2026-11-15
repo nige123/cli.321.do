@@ -146,6 +146,8 @@ sub commands(--> List) is export {
         subs => (Word.new(name => 'sync', what => 'read what you may see, and keep a copy'),
                  Word.new(name => 'token', what => 'set your token, read from standard input'),
                  Word.new(name => 'use', what => 'name another registry'))),
+    Cmd.new(name => 'record', group => LEARN, what => 'how an agent has done, as those who ran it reported',
+        subs => (Word.new(name => 'share', what => 'whether what you said of your runs is sent, and what would go'),)),
 
     Cmd.new(name => 'iz4', group => HOLD, what => "wire this project's IZ4 into the harnesses here",
         subs => (Word.new(name => 'install', what => 'wire it in'),

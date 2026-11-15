@@ -38,6 +38,7 @@ use Do321::Screens;
 use Do321::History :read;
 use Do321::Learn;
 use Do321::Registry;
+use Do321::Record;
 use Do321::Complete;
 
 #| Stamped at build time in the release workflow.
@@ -345,6 +346,7 @@ sub cli-run(Env $env is copy --> Int) {
         when 'lessons'  { return cmd-lessons($env, $g, @rest[1 .. *]) }
         when 'skills'   { return cmd-skills($env, $g, @rest[1 .. *]) }
         when 'registry' { return cmd-registry($env, $g, @rest[1 .. *]) }
+        when 'record'   { return cmd-record($env, $g, @rest[1 .. *]) }
         when 'completion' { return cmd-completion($env, $g, @rest[1 .. *]) }
         when 'key'      { return cmd-key($env, $g, @rest[1 .. *]) }
         when 'receipt'  { return cmd-receipt($env, $g, @rest[1 .. *]) }
@@ -1426,6 +1428,12 @@ sub cmd-registry(Env $env, Global $g, @args --> Int) {
             my %s = try { $sub eq 'sync' ?? registry-sync($home) !! registry-state($home) } // %();
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
             my $failed = $sub eq 'sync' && (%s<error> // '') ne '';
+            my $told = '';
+            if $sub eq 'sync' && !$failed && sharing-on($home) {
+                my %r = try { send-reports($home) } // %();
+                $told = $! ?? "not sent: {$!.message}" !! %r<sent> ?? "{many-of(%r<sent>, 'outcome')} sent to the record" ~ (%r<unknownAgent> ?? "; {%r<unknownAgent>} for agents the registry does not hold" !! '') !! 'nothing new to send';
+                %s<reports> = $told;
+            }
             if $json { $w.say(encode-json(%( url => registry-url($home), |%s ))); return $failed ?? EXIT-FAILED !! 0 }
             if $g.brief {
                 $w.say(brief-line('registry', registry-url($home), ($failed ?? 'unreachable' !! (%s<syncedAt> // '') ne '' ?? 'synced' !! 'never'), (%s<syncedAt> // ''), (%s<agents> // ''), (%s<skills> // '')));
@@ -1441,6 +1449,7 @@ sub cmd-registry(Env $env, Global $g, @args --> Int) {
                 @l.append: row-lines('skills:', "not listed by this registry ({%s<skillsNote>})") if (%s<skillsNote> // '') ne '';
             }
             else { @l.append: row-lines('copy here:', 'none yet') }
+            @l.append: row-lines('your reports:', $told) if $told ne '';
             @l.append: row-lines('packages:', 'never served by the registry: an agent runs from a package pinned in your trust file');
             @l.push: '';
             @l.push: $failed ?? next-text('321 goes on working from what is here; try again when it can be reached', '321 registry sync')
@@ -1452,6 +1461,73 @@ sub cmd-registry(Env $env, Global $g, @args --> Int) {
         }
         default { return usage-error($env, 'registry', "it is sync, token or use, not '$sub'") }
     }
+}
+
+#| `321 record`: how an agent's versions have done, as the people who ran
+#| them reported; and whether this machine adds what its person said.
+sub cmd-record(Env $env, Global $g, @args --> Int) {
+    my $home = home-of($env);
+    my @a = @args.grep({ $_ ne '--plain' });
+    my $json = $g.json-out || so @a.first('--json');
+    $g.brief = True if @a.first('--brief');
+    @a = @a.grep({ $_ ne '--json' && $_ ne '--brief' });
+    my $w = $env.stdout;
+    return usage-error($env, 'record', 'name an agent, or say share: 321 record 1da') unless @a;
+    if @a[0] eq 'share' {
+        my $word = (@a[1] // '').Str;
+        return usage-error($env, 'record', "it is on or off, not '$word'") unless $word eq '' | 'on' | 'off';
+        my $done = try { set-sharing($home, $word eq 'on') if $word ne ''; True };
+        if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
+        my $on = sharing-on($home);
+        my @p = try { reports-pending($home) } // ();
+        my $token = registry-token($home) ne '';
+        if $json { $w.say(encode-json(%( sharing => $on, since => sharing-since($home), registry => registry-url($home), token => $token, pending => [ |@p ] ))); return 0 }
+        if $g.brief { $w.say(brief-line('share', $on ?? 'on' !! 'off', @p.elems)); $w.say(brief-line('report', .<agent>, .<version>, .<outcome>, (.<tokens> // ''))) for @p; return 0 }
+        my @l = header('record share', $on ?? 'on' !! 'off'), '';
+        @l.append: row-lines('sharing:', $on ?? "on: 321 registry sync sends what you said of your runs to {registry-url($home)}" !! 'off: nothing about your runs leaves this machine');
+        @l.append: row-lines('goes:', 'for a run you gave an outcome: the agent and its version, the harness, how it ended, your outcome, tokens, cost, time, attempts');
+        @l.append: row-lines('stays:', 'the request, files, paths, contexts, lessons, your notes and the run id');
+        @l.append: row-lines('to send:', @p ?? many-of(@p.elems, 'run') !! 'nothing: no run with an outcome is waiting');
+        @l.append: row-lines('token:', 'none: the registry takes reports only from someone it knows') if $on && !$token;
+        if @p {
+            @l.push: '';
+            @l.push: sprintf('  %-22s %-10s %-10s %s', .<agent>, (.<version> || '-'), .<outcome>, (.<tokens>.defined ?? count-text(.<tokens>) ~ ' tokens' !! 'tokens not reported')) for @p.head(8);
+            @l.push: "  and {@p.elems - 8} more" if @p.elems > 8;
+        }
+        @l.push: '';
+        @l.push: !$on ?? next-text('add what you said of your runs to the record', '321 record share on')
+            !! !$token ?? next-text('say who you are to the registry', '321 registry token')
+            !! @p ?? next-text('send them', '321 registry sync')
+            !! next-text('say what came of a run, and it can be sent', '321 outcome accepted');
+        learn-say($env, @l);
+        return 0;
+    }
+    my %r = try { agent-record($home, @a[0]) } // %();
+    if $! {
+        $env.stderr.say("321: {$!.message}");
+        $env.stderr.say(next-text('see the agents the registry holds', '321 registry sync'));
+        return EXIT-FAILED;
+    }
+    if $json { $w.say(encode-json(%r)); return 0 }
+    my @v = @(%r<versions> // []).grep(Associative);
+    if $g.brief {
+        $w.say(brief-line('record', (%r<agent> // ''), (.<version> // ''), (.<enough> ?? 'enough' !! 'few'), (.<reports> // ''), (.<accounts> // ''),
+            ((.<outcomes> // {})<accepted> // ''), ((.<tokens> // {})<median> // ''))) for @v;
+        return 0;
+    }
+    my $name = (%r<agent> // record-name(@a[0])).Str;
+    my @l = header("record $name", @v ?? many-of(@v.elems, 'version') ~ ' reported' !! 'no reports yet'), '';
+    for @v -> %v {
+        my @t = version-lines(%v);
+        @l.append: row-lines(@t[0] ~ ':', @t[1 .. *].join('; '));
+    }
+    my %min = (%r<minimum> // {}).Hash;
+    @l.append: row-lines('basis:', (%r<basis> // 'reported by people who ran it').Str ~ (%min ?? "; a version shows its figures at {%min<reports> // '?'} reports from {%min<accounts> // '?'} accounts" !! ''));
+    @l.push: '';
+    @l.push: sharing-on($home) ?? next-text('say what came of a run of yours, and it joins the record', '321 outcome accepted')
+        !! next-text('add what you said of your runs to the record', '321 record share on');
+    learn-say($env, @l);
+    0;
 }
 
 #| `321 skills`: the skills on this machine and the ones the registry

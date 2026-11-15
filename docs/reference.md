@@ -892,10 +892,37 @@ granted, not a grant. The registry never serves agent packages; an
 agent still runs from a package pinned in the trust file. 321 calls
 `curl` for this and says so when it is missing.
 
+**An agent's record.** `321 record AGENT` reads
+`/api/agents/NAME/record`: for each version, how many reports from how
+many accounts, how often the work was accepted, corrected or rejected,
+and the median tokens, cost and time, each saying how many reports it
+rests on when that is fewer than all. A version below the registry's
+minimum shows no figure. These are reports from people who ran the
+agent; the registry does not verify them, and the screen says so.
+
+`321 record share on` lets this machine add to it; it is off until
+then, and `321 record share off` stops it. With sharing on, `321
+registry sync` sends one report for each run of the last 90 days that a
+person gave an outcome (`321 outcome`), and that has not already gone
+with that outcome. A report is exactly: a key for the run, the agent,
+its version and digest, the harness, the run's status, the outcome,
+tokens, cost, seconds, attempts and when it ended. Tokens and cost are
+`null` when the harness did not report them, never zero. The request,
+files, paths, the work context, lessons, the note given with the
+outcome and the run id are not sent: the key is a SHA-256 of the run id
+and a salt kept in `~/.321/registry/share.json`, so the same run can be
+replaced by a later word and cannot be traced back. The registry takes
+reports only with a token. What went is written to
+`~/.321/registry/sent.ndjson`; `321 record share` shows what would go
+before anything does. Nothing is sent by a run, and there is no
+background sender: only `321 registry sync` sends.
+
 Not built: lessons proposed by 321 itself from a run (a person adds
 them, optionally naming the run with `--from`); promotion of a lesson
 into a registry skill; publishing to the registry from the CLI;
-organisation-wide value reports (the sums are this machine's runs).
+organisation-wide value reports (the sums are this machine's runs);
+checking a report against a signed receipt (the record is what people
+said, and many accounts could say what is not so).
 
 ## Prompt-only runs
 
