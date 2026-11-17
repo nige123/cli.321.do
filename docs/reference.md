@@ -382,12 +382,215 @@ execution of it, **attempt** a harness invocation within the run,
 **receiptId** the report, and a harness **sessionRef** a provider-specific
 continuation handle.
 
+## Choosing how a run is executed
+
+A person names an agent and gives it work. Which model runs it, at what
+effort, on which harness, is chosen for the job and written down before
+the run starts. Three parts, each with one job:
+
+| Part | Where | Does | Never |
+|---|---|---|---|
+| Curation | the agent package (`curation.json`) and `Do321::Curate` | reads what kind of work the request is and asks for a size of model and an effort, with reasons | names a vendor's model, grants anything, moves a limit |
+| The plan | `Do321::Plan`, in the runtime | picks a harness that enforces the package first, then a model it can run; pins harness version, model, effort and skills under a digest | calls a model to decide |
+| Connectors and adapters | `Do321::Models`, `role Adapter` | say what exists: a provider's models and list prices; what a harness can be asked for | appear anywhere else |
+
+There is no model call in a routing decision: curation is rules and
+recorded evidence.
+
+```
+321 choose b1ll fix the failing test     the plan and its reasons; runs nothing
+321 b1ll fix the failing test            run it; the receipt says what it ran on
+321 --profile deep b1ll ...              set the profile by hand
+321 --model opus --effort high b1ll ...  or the model and the effort
+321 models                               what each harness here can be asked for
+```
+
+### Curation (`curation.v1`)
+
+One implementation, configured per agent by an optional file the package
+manifest names (`"curation": "curation.json"`). An agent without one gets
+the default below.
+
+```json
+{
+  "schema": "curation.v1",
+  "profiles": {
+    "economy":  { "tier": "small",  "effort": "low" },
+    "standard": { "tier": "medium", "effort": "medium" },
+    "deep":     { "tier": "large",  "effort": "high" }
+  },
+  "order": ["economy", "standard", "deep"],
+  "default": "standard",
+  "tasks": [
+    { "type": "read",   "profile": "economy",  "words": ["explain", "summarise", "list", "find", "review"] },
+    { "type": "change", "profile": "standard", "words": ["fix", "add", "update", "implement"] },
+    { "type": "design", "profile": "deep",     "words": ["design", "refactor", "migrate", "plan"] }
+  ],
+  "maxEscalations": 1
+}
+```
+
+- A profile asks for a size class (`small`, `medium`, `large`) and an
+  effort (`low` to `max`). The class is what keeps an agent's identity
+  when models change: a new model takes its class's place.
+- The kind of work is the task whose marking word comes first in the
+  request, or `--task`. A request with no marking word gets `default`,
+  and the plan says it was not guessed.
+- **Evidence.** Earlier runs are comparable when they are by the same
+  agent, on the same kind of work, in the same work context. Only runs a
+  person gave an outcome (`321 outcome`) are weighed, and not until there
+  are three. Under half accepted: one profile up. Four in five accepted on
+  the profile below: one down. A budget below what comparable runs cost
+  steps down. Runs that reported no cost are never counted as free.
+- **Override.** `--task`, `--profile`, `--model`, `--effort` win, and the
+  plan lists them under `overrides`. A model named by hand is not climbed
+  past.
+- Curation cannot carry `grants`, `capabilities`, `limits`, `permissions`
+  or `network`, and a profile cannot name a model: such a file is refused
+  and the run is denied before it starts.
+
+### The plan (`execution-plan.v1`, on the receipt as `plan`)
+
+`task`, `taskFrom` (`matched`, `stated`, `default`), `profile`, `harness`,
+`harnessVersion`, `provider`, `model`, `modelName`, `tier`, `access`,
+`effort`, `skills` (name, version, digest), `reasons`, `considered` (each
+harness not used, and why), `overrides`, `ladder`, `maxEscalations`,
+`escalated`, `evidence` and `planDigest`. Each entry of `attempts` says
+the `model`, `effort` and `profile` that attempt ran on.
+
+Order of selection: a harness must be installed, signed in and able to
+enforce what the package needs; among those, local policy order; then the
+smallest model of the class asked for that the harness reaches. A harness
+that cannot take the effort asked for gets the nearest below, and the plan
+says so. A run that nothing can execute as asked is denied before any
+harness starts.
+
+**Escalation is bounded.** When an attempt ends in a harness failure, the
+next attempt moves one step up the plan's own ladder, at most `maxEscalations` times, never past
+`limits.maxUsd`, never after an external action, and never when the run is
+blocked on a person. The step and its reason are recorded in
+`plan.escalated`; the next attempt is told not to repeat what was done.
+An unmet done condition does not climb by default: it is as often
+something missing on the machine as a model too small, and a larger model
+cannot install it. An agent's curation may opt in with
+`"escalateOn": ["harness_failure", "unmet_conditions"]`.
+
+**Three different facts, kept apart.** `conditions[].met` is the agent's
+own report. `evidence` is what the runtime observed (files changed, tool
+calls, exit codes). `321 outcome accepted|corrected|rejected` is the
+person's word, kept beside the receipt and never written into it.
+
+### Cost
+
+`cost.usd` on a receipt is what the harness reported (`cost.basis`
+`harness`). A harness that reports none is `unreported`, shown as unknown.
+List prices in `321 models` are for estimates only and are never added to
+a receipt. A saving is only ever stated against a named baseline
+(`321 value`).
+
+### Adding a model provider
+
+One file in `~/.321/models/`, and nothing else changes:
+
+```json
+{
+  "schema": "model-connector.v1",
+  "provider": "acme",
+  "access": "harness",
+  "auth": { "kind": "harness_login", "reference": "the harness signs in" },
+  "pricing": { "asOf": "2026-11-01", "source": "acme.example/pricing" },
+  "models": [
+    { "id": "acme-mini", "alias": "mini", "tier": "small", "contextTokens": 200000,
+      "efforts": ["low", "medium"], "price": { "input": 0.05, "output": 0.20 } }
+  ]
+}
+```
+
+`access` is `harness` when the harness signs in and calls the provider
+itself, which is every connector built in: 321 holds no key and runs no
+inference proxy. `runtime` is for a provider 321 itself would call; such a
+connector is listed and no run is placed on it until an adapter drives it.
+`auth.reference` names where a credential is kept (an environment
+variable, a keychain entry); a connector that carries a key, token or
+secret is refused. Leave `price` out when it is not known: the model is
+then never used for a cost estimate. `321 models` shows the result, and
+names any file it left out and why. The shared checks are in
+`t/40-plan.rakutest` ("adding a provider is one file").
+
+### Adding a harness for runs
+
+Beyond `detect`, `enforcement` and `run`, an adapter says what it can be
+asked for, in `manifest`:
+
+```raku
+method manifest(--> Hash) {
+    %( providers => ['acme'],        # model-connector providers it reaches
+       access => 'harness',          # it signs in and calls the provider itself
+       sets-model => True,           # a model can be named for one run
+       efforts => [<low medium>],    # the effort settings it takes, least first
+       reports => %( usd => False, tokens => True ),
+       spend-cap => False )          # whether it holds a money limit itself
+}
+method executable(--> Str)  { ... }  # its executable as found here
+method command-name(--> Str) { 'acme' }
+method help-argv(--> List)  { ('run', '--help') }
+method flags-used(--> List) { <--model --json> }
+```
+
+`run` receives `Spec.model` and `Spec.effort` (empty means the harness's
+own default) and puts them on its command line. Claim only what the
+harness does: `reports.usd` false makes every run there cost `unreported`;
+no `pause` or `live_steer` in `enforcement` makes a hold or a steer end
+the attempt and resume it, which the receipt records. The shared contract
+is exercised by a stand-in in `t/40-plan.rakutest` (`class Engine`) and,
+for the real executables, by `321 harness check`.
+
+### What a project pins
+
+```
+321 trust project              what this repository pins, beside what is here
+321 trust project pin b1ll     pin the agent as it is loaded here
+321 --skill acme/review trust project pin b1ll     and a skill, as installed
+```
+
+`<repo>/.321/pins.json` (`project-pins.v1`) names an agent and a skill by
+version and digest. It is a file the team reviews and commits, like the
+lessons in `.321/lessons`. Two people in the same repository then run the
+same agent package and the same skill text, or the run is refused before
+any harness starts and says what differs. A package handed over by a work
+system is denied the same way, on its receipt. A pin grants nothing: what
+may run is still each person's own trust file.
+
+### Harness versions
+
+```
+321 harness check              each harness here against what 321 asks of it
+321 harness pin claude_code    promote the installed version as known good
+321 harness rollback claude_code
+```
+
+A harness updates itself. Every receipt names the version its run was on.
+`check` reads the installed executable, with no model call: its version
+and whether its help still names each flag the adapter passes. `pin`
+records a version as known good (`~/.321/harnesses.json`); where the
+harness keeps its versions side by side on disk (Claude Code does), 321
+then runs that file whatever the command on PATH moves to. A harness
+installed in place (Codex, through npm) is recorded only, and the screen
+says 321 cannot hold it. `rollback` swaps back to the version promoted
+before. After a pin, `check` reports only what has changed since.
+
 ## Machine invocation
 
 ```
 321 run --package <file|-> [--workspace <dir>] [--receipt <file>] [--events <file>]
         [--run-id <id>] [--history-dir <dir>] [--adapter <name>] [--package-dir <dir>]
+        [--task <kind>] [--profile <name>] [--model <name>] [--effort <level>]
 ```
+
+- A package handed over is planned exactly as a request typed at a
+  terminal is: the agent's curation reads the objective, the runtime pins
+  the plan, and the receipt carries it (`plan`). The four words at the end
+  set it by hand. See *Choosing how a run is executed*.
 
 - `--package -`: the first stdin frame is the `work-package.v1`; every later
   frame is a `work-directive.v1`. `--package <file>`: the file is the package

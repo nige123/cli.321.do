@@ -48,7 +48,7 @@ sub frames(Str $out --> List) {
     ([ |@objs ], [ |@schemas ]);
 }
 
-sub serve(Str $in, @args, :%env --> List) {
+sub wire(Str $in, @args, :%env --> List) {
     my ($rc, $out, $err) = x321('run', '--package-dir', $helper.Str, |@args, :$in, :%env);
     my ($objs, $schemas) = frames($out);
     ($rc, $objs, $schemas, $err);
@@ -59,7 +59,7 @@ sub serve(Str $in, @args, :%env --> List) {
     my %wp = pkg('steer me');
     my $in = to-wire('WorkPackage', %wp) ~ "\n" ~ directive-line(%wp<packageId>, 1, DIRECTIVE-STEER, 'left');
     my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
-    my ($rc, $objs, $schemas, $err) = serve($in, ['--adapter', 'fake'], :env(script-env(@script)));
+    my ($rc, $objs, $schemas, $err) = wire($in, ['--adapter', 'fake'], :env(script-env(@script)));
     is $rc, EXIT-COMPLETED, 'exit 0' or diag "$err\n{@$schemas.join(',')}";
     is @$schemas.tail, SCHEMA-RUN-RECEIPT, 'the receipt is last';
     is @$schemas.grep(* eq SCHEMA-RUN-RECEIPT).elems, 1, 'exactly one receipt';
@@ -76,7 +76,7 @@ sub serve(Str $in, @args, :%env --> List) {
     $path.spurt(to-wire('WorkPackage', %wp));
     my $receipt = temp-dir().add('receipt.json');
     my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
-    my ($rc, $objs, $schemas, $err) = serve(directive-line(%wp<packageId>, 1, DIRECTIVE-STEER, 'x'),
+    my ($rc, $objs, $schemas, $err) = wire(directive-line(%wp<packageId>, 1, DIRECTIVE-STEER, 'x'),
         ['--package', $path.Str, '--adapter', 'fake', '--receipt', $receipt.Str], :env(script-env(@script)));
     ok $rc == EXIT-COMPLETED && @$schemas.tail eq SCHEMA-RUN-RECEIPT, 'the file package runs' or diag $err;
     my %r = load('RunReceipt', parse-json($receipt.slurp));
@@ -85,21 +85,21 @@ sub serve(Str $in, @args, :%env --> List) {
 
 # a malformed first frame is a protocol error, not a receipt
 {
-    my ($rc, $objs, $schemas) = serve("this is not json\n", []);
+    my ($rc, $objs, $schemas) = wire("this is not json\n", []);
     ok $rc == EXIT-MALFORMED && @$schemas.elems == 1 && @$schemas[0] eq SCHEMA-PROTOCOL-ERROR, 'exit 65 with one protocol error';
     is @$objs[0]<code>, 'malformed_json', 'malformed_json';
-    ($rc, $objs, $schemas) = serve('{"schema":"work-directive.v1"}' ~ "\n", []);
+    ($rc, $objs, $schemas) = wire('{"schema":"work-directive.v1"}' ~ "\n", []);
     ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'not_a_work_package', 'a directive first is not a package';
-    ($rc, $objs, $schemas) = serve('', []);
+    ($rc, $objs, $schemas) = wire('', []);
     ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'no_package', 'empty stdin';
-    ($rc, $objs, $schemas) = serve('{"schema":"work-package.v1"}' ~ "\n", []);
+    ($rc, $objs, $schemas) = wire('{"schema":"work-package.v1"}' ~ "\n", []);
     ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'unidentified_package', 'a package with no id gets no receipt';
 }
 
 # an invalid but identified package gets a denied receipt
 {
     my %wp = pkg('');
-    my ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", []);
+    my ($rc, $objs) = wire(to-wire('WorkPackage', %wp) ~ "\n", []);
     ok $rc == EXIT-DENIED && @$objs.tail<status> eq STATUS-DENIED, 'denied receipt';
 }
 
@@ -108,7 +108,7 @@ sub serve(Str $in, @args, :%env --> List) {
     my %wp = pkg('go');
     my $in = to-wire('WorkPackage', %wp) ~ "\n\{not json\n" ~ '{"schema":"run-event.v1"}' ~ "\n" ~ directive-line(%wp<packageId>, 1, DIRECTIVE-STEER, 'ok');
     my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
-    my ($rc, $objs, $schemas) = serve($in, ['--adapter', 'fake'], :env(script-env(@script)));
+    my ($rc, $objs, $schemas) = wire($in, ['--adapter', 'fake'], :env(script-env(@script)));
     is $rc, EXIT-COMPLETED, 'the run completes';
     my @errs = @$objs.grep({ .<schema> eq SCHEMA-PROTOCOL-ERROR });
     is @errs.elems, 2, 'two protocol errors';
@@ -119,7 +119,7 @@ sub serve(Str $in, @args, :%env --> List) {
 {
     my %wp = pkg('go');
     my @script = %( kind => 'sleep', duration => '30ms' ), %( kind => 'assert', condition => 1, met => True, proof => 'ok' );
-    my ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", ['--adapter', 'fake'], :env(script-env(@script)));
+    my ($rc, $objs) = wire(to-wire('WorkPackage', %wp) ~ "\n", ['--adapter', 'fake'], :env(script-env(@script)));
     ok $rc == EXIT-COMPLETED && @$objs.tail<status> eq STATUS-COMPLETED, 'EOF does not stop the run';
 }
 
@@ -143,16 +143,16 @@ for (STATUS-COMPLETED, 0, STATUS-NO-CHANGE, 0, STATUS-BLOCKED, 2, STATUS-STOPPED
 {
     my %wp = pkg('ask me');
     my $first = temp-dir().add('r1.json');
-    my ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", ['--adapter', 'fake', '--receipt', $first.Str],
+    my ($rc, $objs) = wire(to-wire('WorkPackage', %wp) ~ "\n", ['--adapter', 'fake', '--receipt', $first.Str],
         :env(script-env([ %( kind => 'blocked', question => 'which file?' ), ])));
     is $rc, EXIT-BLOCKED, 'the first run is blocked';
     my $in = to-wire('WorkPackage', %wp) ~ "\n" ~ directive-line(%wp<packageId>, 1, DIRECTIVE-CLARIFY, 'calc.go');
     my @script = %( kind => 'await_directive' ), %( kind => 'assert', condition => 1, met => True, proof => 'answered' );
-    ($rc, $objs) = serve($in, ['--adapter', 'fake', '--continue', $first.Str], :env(script-env(@script)));
+    ($rc, $objs) = wire($in, ['--adapter', 'fake', '--continue', $first.Str], :env(script-env(@script)));
     is $rc, EXIT-COMPLETED, 'the continuation completes';
     my $cont = @$objs.tail<continues>;
     ok $cont.defined && $cont<attempts> == 1, 'the continuation link' or diag @$objs.tail<continues>.raku;
-    ($rc, $objs) = serve(to-wire('WorkPackage', %wp) ~ "\n", ['--continue', temp-dir().add('missing.json').Str]);
+    ($rc, $objs) = wire(to-wire('WorkPackage', %wp) ~ "\n", ['--continue', temp-dir().add('missing.json').Str]);
     ok $rc == EXIT-MALFORMED && @$objs[0]<code> eq 'continue_unreadable', 'an unreadable continuation is a protocol error';
 }
 

@@ -126,6 +126,22 @@ subtest 'a clean period is said plainly, and an empty one is not congratulated' 
     like @l[0], / ^ '❮▣❯ 321 log' /, 'and the screen still stands up with no runs in it';
 }
 
+subtest 'a run with a plan says what it ran on, and one without says nothing' => {
+    my $root = temp-dir();
+    run-dir($root, '01M0000000000000000000000A', status => 'completed', hours-ago => 3);
+    my $d = run-dir($root, '01M0000000000000000000000B', status => 'completed', hours-ago => 2, usd => 0.01, basis => 'harness');
+    my %r = parse-json($d.add('receipt.json').slurp);
+    %r<plan> = %( schema => 'execution-plan.v1', modelName => 'haiku', effort => 'low', profile => 'economy' );
+    $d.add('receipt.json').spurt(encode-json(%r));
+    my @r = read-runs($root, :days(7), :$now);
+    is @r[0].model, 'haiku', 'the model is the plan\'s own word';
+    is @r[1].model, '', 'a receipt with no plan names none';
+    my %doc = parse-json(log-json(@r, tally(@r)));
+    my @recent = @(%doc<data><recent>);
+    is-deeply @recent[0]<ranOn>, %( model => 'haiku', effort => 'low', profile => 'economy' ), 'the JSON carries it';
+    nok @recent[1]<ranOn>:exists, 'and leaves it out where nothing is known';
+}
+
 subtest 'how long ago, as a person says it' => {
     is when-text($now.earlier(:seconds(30)), :$now), 'just now', 'under a minute and a half';
     is when-text($now.earlier(:minutes(11)), :$now), '11 min ago', 'minutes';

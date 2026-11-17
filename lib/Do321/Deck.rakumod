@@ -592,7 +592,8 @@ sub draw-tracks(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str
         my $time = met($sc);
         my $rest = ($time ne '' ?? " · $time" !! '')
             ~ ($sc.state.cost-reported ?? " · {$sc.state.cost-text}" !! '')
-            ~ ($sc.harness ne '' ?? " · on {harness-name($sc.harness)}" !! '');
+            ~ ($sc.harness ne '' ?? " · on {harness-name($sc.harness)}" !! '')
+            ~ ($sc.state.model ne '' && $cols >= 110 ?? ", {$sc.state.model}" !! '');
         my $from = $sc.origin ne '' ?? " · from {$sc.origin}" !! '';
         $c = $cv.put($row, 3, fit($word, ($cols - 4 - text-width($rest)) max 12), $wt eq 'ok' | 'now' ?? '' !! $wt);
         $c = $cv.put($row, $c, fit($rest, $cols - $c - 1));
@@ -758,6 +759,7 @@ sub evidence-rows(Crew $c --> List) is export {
         my %ab = abilities($a);
         @r.push(['cannot', %ab<cannot>.join(', '), 'wait']) if %ab<cannot>;
     }
+    @r.push(['ran on', $s.ran-on ~ ($s.profile ne '' ?? " ({$s.profile})" !! ''), '']) if $s.ran-on ne '';
     @r.push(['attempts', $s.attempts.Str, '']);
     @r.push(['tools', many-of($s.tools, 'call'), '']);
     @r.push(['cost', $s.cost-reported ?? "{$s.cost-text}, as the harness reported it" !! 'none reported yet', '']);

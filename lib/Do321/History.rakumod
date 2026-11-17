@@ -32,6 +32,11 @@ class Run is export {
     has Str      $.basis = '';
     has Str      $.receipt = '';
     has Str      $.waiting = '';
+    #| The model, effort and profile the receipt's plan was pinned to; ''
+    #| for a run that had no plan or named no model.
+    has Str      $.model = '';
+    has Str      $.effort = '';
+    has Str      $.profile = '';
 
     #| The word the screen says, and the mark it takes with it.
     method state(--> Str) { state-of($!status) }
@@ -81,6 +86,7 @@ sub read-runs(
             $objective = (($w // {})<objective> // '').Str if $w ~~ Associative;
         }
         my $ended = stamp(($doc<endedAt> // '').Str);
+        my $plan = $doc<plan> ~~ Associative ?? $doc<plan> !! {};
         @out.push(Run.new(
             :$id,
             agent     => $who,
@@ -93,6 +99,9 @@ sub read-runs(
             basis     => (($doc<cost> // {})<basis> // '').Str,
             receipt   => $r.Str,
             waiting   => (($doc<stop> // {})<reason> // '').Str,
+            model     => ($plan<modelName> // '').Str,
+            effort    => ($plan<effort> // '').Str,
+            profile   => ($plan<profile> // '').Str,
         ));
     }
     @out.List;

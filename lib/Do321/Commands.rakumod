@@ -148,6 +148,8 @@ sub commands(--> List) is export {
                  Word.new(name => 'use', what => 'name another registry'))),
     Cmd.new(name => 'record', group => LEARN, what => 'how an agent has done, as those who ran it reported',
         subs => (Word.new(name => 'share', what => 'whether what you said of your runs is sent, and what would go'),)),
+    Cmd.new(name => 'choose', group => LEARN, what => 'what an agent would run a request on, and why; runs nothing'),
+    Cmd.new(name => 'models', group => LEARN, what => 'the models each harness here can be asked for'),
 
     Cmd.new(name => 'iz4', group => HOLD, what => "wire this project's IZ4 into the harnesses here",
         subs => (Word.new(name => 'install', what => 'wire it in'),
@@ -160,6 +162,7 @@ sub commands(--> List) is export {
         subs => (Word.new(name => 'show', what => 'what is pinned, and where it lives'),
                  Word.new(name => 'diff', what => 'what has moved since you pinned it', values => 'agent'),
                  Word.new(name => 'check', what => 'load every package and say which fail'),
+                 Word.new(name => 'project', what => 'the agent and skill versions this project pins, beside what is here'),
                  Word.new(name => 'network', what => 'the network every run started here gets; say it to set it', values => 'network'),
                  Word.new(name => 'now', what => 'how many runs of one agent work at once; the rest wait their turn'))),
     Cmd.new(name => 'packages', group => TRUST, what => 'check, digest and read agent packages',
@@ -174,7 +177,10 @@ sub commands(--> List) is export {
 
     Cmd.new(name => 'harness', group => HARNESS, what => 'the agent environments 321 knows, and which are here',
         subs => (Word.new(name => 'detect', what => 'what is installed, and what this project is wired into'),
-                 Word.new(name => 'can', what => 'what each can enforce when it runs an agent'))),
+                 Word.new(name => 'can', what => 'what each can enforce when it runs an agent'),
+                 Word.new(name => 'check', what => 'the installed versions against what 321 asks of them'),
+                 Word.new(name => 'pin', what => 'promote a version as known good'),
+                 Word.new(name => 'rollback', what => 'go back to the version promoted before'))),
     Cmd.new(name => 'hooks', group => HARNESS, what => 'the older direct wiring: see it, or take it out',
         subs => (Word.new(name => 'status', what => 'what is wired'), Word.new(name => 'remove', what => 'take it out'))),
 

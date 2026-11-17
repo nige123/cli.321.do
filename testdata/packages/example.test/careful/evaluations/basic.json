@@ -1,0 +1,6 @@
+{
+  "cases": [
+    { "objective": "note: remember the milk", "expectStatus": "completed" },
+    { "objective": "ask: something unclear", "expectStatus": "blocked" }
+  ]
+}

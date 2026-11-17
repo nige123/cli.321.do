@@ -57,6 +57,15 @@ Each file stands alone. To build one from source, use
 rakupp -I lib --aot --standalone bin/321 -o dist/321
 ```
 
+With Raku++ already installed, its installer fetches 321 by name from
+[Raku.land](https://raku.land):
+
+```
+rakupp install Do321
+```
+
+321 needs Raku++. It does not run on Rakudo, so `zef install` refuses it.
+
 ## More
 
 `321 help` shows the commands. The details are in

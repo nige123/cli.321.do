@@ -256,6 +256,13 @@ sub row-lines(Str $label, Str $value --> List) is export {
     (sprintf('%-13s %s', $label, @v[0]), |@v[1..*].map({ (' ' x 14) ~ $_ })).List;
 }
 
+#| Money as a person reads it.  A cost under a cent is said to be one: it
+#| was not nothing, and $0.00 would read as free.
+sub usd-words($usd --> Str) is export {
+    my $u = ($usd // 0).Numeric;
+    $u > 0 && $u < 0.005 ?? 'under $0.01' !! sprintf('$%.2f', $u);
+}
+
 #| A count that reads like English: one turn, not 1 turns.
 sub many-of(Int $n, Str $word --> Str) is export { "$n $word" ~ ($n == 1 ?? '' !! 's') }
 

@@ -139,6 +139,14 @@ class Codex does Adapter is export {
     method name(--> Str) { 'codex' }
 
     method !binary(--> Str) { $!binary ne '' ?? $!binary !! 'codex' }
+    method executable(--> Str) {
+        my $bin = self!binary;
+        my $path = $bin.contains('/') ?? ($bin.IO.f ?? $bin.IO !! IO::Path) !! on-path($bin);
+        $path.defined ?? $path.Str !! '';
+    }
+    method command-name(--> Str) { 'codex' }
+    method help-argv(--> List) { ('exec', '--help') }
+    method flags-used(--> List) { <--json --model --config --output-schema --skip-git-repo-check> }
 
     method detect(--> Detection) {
         my $bin = self!binary;
@@ -164,6 +172,12 @@ class Codex does Adapter is export {
            FEAT-REPO-SCOPE, False, FEAT-LIVE-STEER, False, FEAT-PAUSE, False );
     }
 
+    method manifest(--> Hash) {
+        # Codex reports tokens and no money, and holds no spend limit itself.
+        %( providers => ['openai'], access => 'harness', sets-model => True, efforts => [<low medium high>],
+           reports => %( usd => False, tokens => True ), spend-cap => False )
+    }
+
     #| Whether its sandbox holds the agent to exactly these grants.
     method confines(@grants --> Bool) { codex-sandbox(@grants) ne '' }
 
@@ -175,10 +189,14 @@ class Codex does Adapter is export {
                      '-c', 'sandbox_workspace_write.network_access=false';
         @common.push('--output-schema', $schema-file) if $schema-file ne '';
         @common.push('--skip-git-repo-check') if $spec.workspace eq '' || !$spec.workspace.IO.add('.git').e;
-        with $spec.overlay {
-            my $o = try parse-json($_);
-            @common.push('--model', $o<model>) if !$! && $o ~~ Associative && $o<model> ~~ Str && $o<model> ne '';
+        if $spec.model ne '' { @common.push('--model', $spec.model) }
+        else {
+            with $spec.overlay {
+                my $o = try parse-json($_);
+                @common.push('--model', $o<model>) if !$! && $o ~~ Associative && $o<model> ~~ Str && $o<model> ne '';
+            }
         }
+        @common.push('-c', "model_reasoning_effort=\"{$spec.effort}\"") if $spec.effort ne '';
         $spec.session-ref ne ''
             ?? ('exec', 'resume', |@common, $spec.session-ref, '-').List
             !! ('exec', |@common, '-').List;

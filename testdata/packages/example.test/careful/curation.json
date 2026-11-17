@@ -1,0 +1,13 @@
+{
+  "schema": "curation.v1",
+  "profiles": {
+    "quick":   { "tier": "small",  "effort": "medium" },
+    "careful": { "tier": "large",  "effort": "high" }
+  },
+  "order": ["quick", "careful"],
+  "default": "careful",
+  "tasks": [
+    { "type": "lookup", "profile": "quick", "words": ["list", "find", "where"] }
+  ],
+  "maxEscalations": 0
+}

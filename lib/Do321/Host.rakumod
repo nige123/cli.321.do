@@ -95,7 +95,7 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
     # chooses between pieces of work.
     my %queue = workspace => so($ws ne '' && !%isolation && writes($agent.manifest)),
                 limit => (($cfg.policy // {})<now> // 0).Int;
-    my %wp = try build-package($cfg, $agent, $g, $request, $ws, $kind, :$home, harness => $adapter);
+    my %wp = (try build-package($cfg, $agent, $g, $request, $ws, $kind, :$home, harness => $adapter)) // %();
     if $! {
         my $why = $!.message;
         drop-worktree(%isolation) if %isolation;
@@ -165,7 +165,7 @@ sub launch-package(IO::Path $file, Str :$workspace = '', Str :$continue = '', IO
     return (RunDir, "cannot read $file: {$!.message}") if $!;
     my $doc = try parse-json($raw);
     return (RunDir, "$file is not JSON") unless $doc ~~ Associative;
-    my %wp = try load('WorkPackage', $doc);
+    my %wp = (try load('WorkPackage', $doc)) // %();
     return (RunDir, "$file is not a work package: {$!.message}") if $!;
     # the workspace: the caller's word, else the package's; caller-owned
     # either way, and never a worktree of 321's making.  An issuer leaves

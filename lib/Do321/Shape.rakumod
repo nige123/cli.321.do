@@ -37,7 +37,7 @@ define 'AgentManifest', (
     publisher => 'obj:Publisher', owner => 'obj:Owner', licence => 'obj:Licence', provenance => 'obj:Provenance',
     identity => 'obj:Identity', prompts => 'strs', skills => 'strs?', procedures => 'list:Procedure?',
     capabilities => 'obj:CapabilitySpec', harness => 'obj:HarnessSpec', placement => 'obj:PlacementSpec',
-    outputSchemas => 'obj:OutputSchemas', evaluations => 'strs?');
+    outputSchemas => 'obj:OutputSchemas', evaluations => 'strs?', curation => 'str?');
 define 'Publisher', (domain => 'str', url => 'str?');
 define 'Owner', (legalName => 'str?', url => 'str?');
 define 'Licence', (spdx => 'str?', url => 'str?');
@@ -93,13 +93,26 @@ define 'RunReceipt', (
     attempts => 'list:Attempt', directives => 'obj:DirectiveSummary', instructionHistory => 'obj:HistoryRef',
     events => 'obj:EventSummary', startedAt => 'str', endedAt => 'str', status => 'str', summary => 'str?',
     blockedOn => 'str?', blockedEvidence => 'str?', conditions => 'list:ConditionProof', evidence => 'obj:Evidence', cost => 'obj:Cost',
-    stop => 'ptr:StopInfo?', denied => 'ptr:DenialInfo?', uncertain => 'strs?', receiptDigest => 'str',
-    signature => 'ptr:Signature?');
+    stop => 'ptr:StopInfo?', denied => 'ptr:DenialInfo?', uncertain => 'strs?', plan => 'ptr:ExecutionPlan?',
+    receiptDigest => 'str', signature => 'ptr:Signature?');
+# What the run was pinned to before it began: who chose what, and why.
+# The agent's curation asks; the runtime checks, pins and records.
+define 'ExecutionPlan', (schema => 'str', task => 'str?', taskFrom => 'str?', profile => 'str?', harness => 'str',
+    harnessVersion => 'str?', provider => 'str?', model => 'str?', modelName => 'str?', tier => 'str?', access => 'str?',
+    effort => 'str?', skills => 'list:PlanSkill?', reasons => 'strs?', considered => 'list:PlanRejected?',
+    overrides => 'strs?', ladder => 'list:PlanStep?', maxEscalations => 'int?', escalateOn => 'strs?', escalated => 'list:PlanEscalation?',
+    evidence => 'ptr:PlanEvidence?', planDigest => 'str');
+define 'PlanSkill', (name => 'str', version => 'str?', digest => 'str?');
+define 'PlanRejected', (harness => 'str', why => 'str');
+define 'PlanStep', (profile => 'str', tier => 'str', effort => 'str?');
+define 'PlanEscalation', (attempt => 'int', from => 'str', to => 'str', why => 'str');
+define 'PlanEvidence', (comparable => 'int', judged => 'int', accepted => 'int', medianUsd => 'num?', medianSeconds => 'int?',
+    usdRuns => 'int?', basis => 'str');
 define 'Continuation', (runId => 'str', receiptId => 'str', receiptDigest => 'str', attempts => 'int');
 define 'RunLink', (runId => 'str', receiptId => 'str', receiptDigest => 'str');
 define 'HarnessInfo', (adapter => 'str', version => 'str?', procedure => 'str?', sessionRefs => 'strs?');
 define 'Attempt', ( n => 'int', adapter => 'str', startedAt => 'str', endedAt => 'str', endReason => 'str',
-    sessionRef => 'str?', cost => 'obj:Cost');
+    sessionRef => 'str?', cost => 'obj:Cost', model => 'str?', effort => 'str?', profile => 'str?');
 define 'DirectiveSummary', ( received => 'strs', applied => 'strs', rejected => 'list:RejectedDirective',
     duplicates => 'strs?', gaps => 'list:SequenceGap?');
 define 'RejectedDirective', (directiveId => 'str', reason => 'str');

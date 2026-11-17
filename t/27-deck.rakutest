@@ -290,6 +290,18 @@ subtest 'what the screen says without evidence' => {
     ok $mm.confirm[0].contains('own budget') && $mm.confirm[0].contains('no approval carries over'), 'after a question that says what that means';
 }
 
+subtest 'what a run is on, from its own events' => {
+    my $h = make-run('Bea', 'tidy the totals', [['host', 'host_started', { request => 'tidy the totals' }],
+        ['run', 'adapter_selected', { adapter => 'claude_code', model => 'haiku', effort => 'low', profile => 'economy' }],
+        ['run', 'attempt_started', { attempt => 1, model => 'haiku', effort => 'low' }]]);
+    my $bare = make-run('Bea', 'tidy the tests', [['host', 'host_started', { request => 'tidy the tests' }], ['run', 'adapter_selected', { adapter => 'codex' }]]);
+    my $mm = Model.new(:$home);
+    $mm.scan;
+    my $c = $mm.crew.first({ .id eq $h.id });
+    is evidence-rows($c).first({ .[0] eq 'ran on' })[1], 'haiku, low effort (economy)', 'the evidence names the model, effort and profile';
+    nok evidence-rows($mm.crew.first({ .id eq $bare.id })).first({ .[0] eq 'ran on' }), 'and says nothing where the runtime named none';
+}
+
 subtest 'the agent first, the harness beside it' => {
     my $h1 = make-run('Bea', 'add a coupon field', [['host', 'host_started', { request => 'add a coupon field' }], ['run', 'adapter_selected', { adapter => 'claude_code' }]]);
     my $h2 = make-run('Bea', 'add a coupon field', [['host', 'host_started', { request => 'add a coupon field' }], ['run', 'adapter_selected', { adapter => 'codex' }]]);

@@ -1,0 +1,273 @@
+# Choosing how a run is executed: the model connectors, what a harness
+# says it can be asked for, the agent's curation, and the plan the runtime
+# pins.  The agent asks; the runtime decides, records why, and climbs only
+# by a step the plan listed, within the budget.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Trust;
+use Do321::Adapter;
+use Do321::Run;
+use Do321::Models;
+use Do321::Plan;
+use Do321::Curate;
+use Do321::Learn;
+use Do321RunTest;
+
+my $bg = Cancel.new;
+
+#| A harness for these tests: it says what it can be asked for, ends each
+#| attempt the way it is told, and keeps what each attempt was given.
+class Engine does Adapter {
+    has Str $.called = 'engine';
+    has %.says;                 # its manifest
+    has %.enf;
+    has @.ends;                 # the status of each attempt in turn; the last repeats
+    has @.given;                # (model, effort) per attempt
+    has @.told;                 # the instructions each attempt carried
+    has Bool $.here = True;
+    has $.usd = 0;
+    method name(--> Str) { $!called }
+    method detect(--> Detection) { $!here ?? Detection.new(:available, :version<9.9>) !! Detection.new(:reason('not signed in')) }
+    method enforcement(--> Hash) { %!enf }
+    method manifest(--> Hash) { %!says }
+    method run(Cancel $ctx, Spec $spec, Control $ctl --> Outcome) {
+        @!given.push(($spec.model, $spec.effort));
+        @!told.push($spec.instructions.join(' | '));
+        my $end = @!ends[@!given.end] // @!ends.tail // STATUS-COMPLETED.Str;
+        my $out = Outcome.new(:cost(doc('Cost', usd => $!usd, turns => 1, basis => COST-HARNESS)), :session-ref('s1'));
+        if $end eq 'harness_error' { $out.status = STATUS-FAILED; $out.end-reason = 'harness_error'; $out.errors.push('the model gave up') }
+        else { $out.status = $end; $out.end-reason = 'completed'; $out.summary = 'done'; $out.conditions = [ %( met => True, proof => 'seen' ), ] }
+        $out;
+    }
+}
+
+my %ALL = features().map({ $_ => True });
+sub claude-like(*%o) { Engine.new(:called<claudish>, :says(%( providers => ['anthropic'], access => 'harness', sets-model => True,
+    efforts => [<low medium high xhigh max>], reports => %( usd => True, tokens => True ), spend-cap => True )), :enf(%ALL), |%o) }
+sub codex-like(*%o) { Engine.new(:called<codexish>, :says(%( providers => ['openai'], access => 'harness', sets-model => True,
+    efforts => [<low medium high>], reports => %( usd => False, tokens => True ), spend-cap => False )), :enf(%ALL), |%o) }
+sub reg(*@a) { my $r = Registry.new.register-hidden(new-procedure()); $r.register($_) for @a; $r }
+
+my $home = temp-dir();
+my @models = catalogue($home)[0].List;
+my $agent = helper();
+
+subtest 'the models known here', {
+    my $haiku = find-model(@models, 'haiku');
+    ok $haiku.defined && $haiku.id eq 'claude-haiku-5-5' && $haiku.tier eq 'small' && $haiku.provider eq 'anthropic', 'a model is found by its alias';
+    is find-model(@models, 'anthropic/opus').tier, 'large', 'and by provider and alias';
+    ok !find-model(@models, 'gpt-nine').defined, 'a name nobody listed finds nothing';
+    is models-for(@models, ['anthropic']).map(*.label).join(' '), 'haiku sonnet opus', 'a provider has its models smallest first';
+    ok find-model(@models, 'openai/default').defined && !find-model(@models, 'openai/default').priced, 'a model with no recorded price says so';
+    ok @models.all.access eq ACCESS-HARNESS, 'every model built in is reached by its harness: 321 holds no key';
+    is-approx list-cost($haiku, 1_000_000, 1_000_000), 0.60, 'a list price turns tokens into an estimate';
+    ok !list-cost(find-model(@models, 'openai/default'), 10, 10).defined, 'and no price means no estimate, never zero';
+}
+
+subtest 'adding a provider is one file', {
+    my $h = temp-dir();
+    mkdir $h.add('models');
+    $h.add('models').add('acme.json').spurt('{"schema":"model-connector.v1","provider":"acme","access":"harness","auth":{"kind":"env","reference":"ACME_API_KEY"},"pricing":{"asOf":"2026-11-01"},"models":[{"id":"acme-mini","tier":"small","efforts":["low"],"price":{"input":0.05,"output":0.2}}]}');
+    $h.add('models').add('bad.json').spurt('{"schema":"model-connector.v1","provider":"leaky","access":"harness","auth":{"kind":"env","token":"sk-123"},"models":[{"id":"x","tier":"small"}]}');
+    $h.add('models').add('nonsense.json').spurt('{"schema":"nope"}');
+    my ($got, $skipped) = catalogue($h);
+    ok find-model(@$got, 'acme-mini').defined, 'the new provider is in the catalogue';
+    is @$skipped.elems, 2, 'unsound files are left out and named';
+    ok @$skipped.first(*.contains('never holds one')), 'a connector that carries a credential is refused' or diag @$skipped.raku;
+    is @$got.grep({ .provider eq 'anthropic' }).elems, 3, 'and the built-in ones are as they were';
+}
+
+subtest 'an agent reads what kind of work a request is', {
+    my %c = default-curation();
+    is curation-problems(%c).elems, 0, 'the default curation is sound';
+    is task-of(%c, 'Explain what tally.py does')[0, 1].join(' '), 'read matched', 'a request that leads with explain is read work';
+    is task-of(%c, 'fix the off-by-one, then explain it')[0], 'change', 'the word that comes first decides';
+    is task-of(%c, 'refactor the parser')[0], 'design', 'refactor is design work';
+    is task-of(%c, 'tally ho')[1], 'default', 'a request with no marking word is not guessed at';
+    is task-of(%c, 'explain it', 'design')[0, 1].join(' '), 'design stated', 'what a person states wins';
+    dies-ok { task-of(%c, 'x', 'sorcery') }, 'a kind the agent does not have is refused';
+    my %bad = default-curation(); %bad<profiles><economy><model> = 'claude-haiku-5-5';
+    ok curation-problems(%bad).first(*.contains('never a vendor')), 'a profile cannot name a vendor model';
+    %bad = default-curation(); %bad<limits> = %( maxUsd => 99 );
+    ok curation-problems(%bad).first(*.contains('moves no limit')), 'curation has no word for a limit';
+    %bad = default-curation(); %bad<maxEscalations> = 40;
+    ok curation-problems(%bad).elems, 'and its climbing is bounded';
+}
+
+subtest 'what an agent asks for', {
+    my %c = default-curation();
+    my $w = curate(%c, objective => 'explain the build');
+    is ($w.profile, $w.tier, $w.effort).join(' '), 'economy small low', 'read work asks for the small class at low effort';
+    is $w.ladder.map(*<profile>).join(' '), 'standard deep', 'with the steps above it to climb';
+    is $w.max-escalations, 1, 'one step at most';
+    ok $w.reasons[0].contains("it says 'explain'"), 'and says why' or diag $w.reasons.raku;
+    $w = curate(%c, objective => 'fix the build');
+    is $w.profile, 'standard', 'change work asks for the middle';
+    $w = curate(%c, objective => 'explain the build', profile => 'deep', effort => 'max');
+    is ($w.profile, $w.tier, $w.effort).join(' '), 'deep large max', 'a person may set the profile and the effort';
+    is $w.overrides.join('; '), 'profile deep; effort max', 'and the plan says they did';
+    $w = curate(%c, objective => 'explain the build', model => 'opus');
+    ok $w.model eq 'opus' && !$w.ladder && $w.max-escalations == 0, 'a model a person named is not climbed past';
+    dies-ok { curate(%c, objective => 'x', profile => 'heroic') }, 'a profile the agent does not have is refused';
+    dies-ok { curate(%c, objective => 'x', effort => 'frantic') }, 'so is an effort nobody offers';
+}
+
+sub past(Str $profile, Str $outcome, :$usd = 0.02, Str :$task = 'read', Str :$ctx = '') {
+    Work.new(id => 'r' ~ (^1e9).pick, agent => 'example.test/helper', harness => 'claudish', status => 'completed', basis => 'harness',
+        started => DateTime.now, :$usd, seconds => 30, attempts => 1, :$task, :$profile, :$outcome, context => $ctx);
+}
+
+subtest 'earlier comparable runs move the choice, and only when there are enough', {
+    my %c = default-curation();
+    my sub ask(@work, *%o) { curate(%c, objective => 'explain the build', agent => 'example.test/helper', :@work, |%o) }
+    is ask([ past('economy', 'rejected') xx 2 ]).profile, 'economy', 'two runs are too few to weigh';
+    ok ask([ past('economy', 'rejected') xx 2 ]).reasons.tail.contains('too few'), 'and the reasons say so';
+    my $w = ask([ |(past('economy', 'rejected') xx 2), past('economy', 'corrected'), past('economy', 'accepted') ]);
+    is $w.profile, 'standard', 'most comparable runs not accepted: one step up';
+    ok $w.reasons.first(*.contains('3 of 4 comparable runs on economy were not accepted')), 'with the count as the reason' or diag $w.reasons.raku;
+    is ask([ past('economy', '') xx 9 ]).profile, 'economy', 'runs nobody judged are not evidence';
+    is ask([ past('economy', 'rejected', task => 'change') xx 5 ]).profile, 'economy', 'other kinds of work are not comparable';
+    is ask([ past('economy', 'rejected', ctx => 'billing') xx 5 ], context => 'checkout').profile, 'economy', 'nor is work in another context';
+    $w = curate(%c, objective => 'fix the build', agent => 'example.test/helper',
+        work => [ past('economy', 'accepted', task => 'change') xx 5 ]);
+    is $w.profile, 'economy', 'a cheaper configuration that people accepted is used instead';
+    $w = curate(%c, objective => 'fix the build', agent => 'example.test/helper', max-usd => 0.50,
+        work => [ past('standard', 'accepted', task => 'change', usd => 2.00) xx 4 ]);
+    is $w.profile, 'economy', 'a budget below what comparable runs cost steps down';
+    ok $w.reasons.first(*.contains('the limit is $0.50')), 'and says so' or diag $w.reasons.raku;
+    $w = curate(%c, objective => 'fix the build', agent => 'example.test/helper', max-usd => 0.50,
+        work => [ past('standard', 'accepted', task => 'change', usd => Any) xx 4 ]);
+    is $w.profile, 'standard', 'runs that reported no cost say nothing about the budget';
+    is $w.evidence<usdRuns>, 0, 'and are not counted as costing nothing';
+}
+
+subtest 'the runtime pins the plan', {
+    my $want = curate(default-curation(), objective => 'explain the build');
+    my ($a, $plan, $rej) = pin-plan(reg(claude-like()), [], {}, '', $want, @models);
+    is ($a.name, $plan<modelName>, $plan<model>, $plan<effort>, $plan<harnessVersion>).join(' '), 'claudish haiku claude-haiku-5-5 low 9.9', 'harness, version, model and effort are pinned';
+    ok $plan<planDigest> ~~ / ^ 'sha256:' <[0..9a..f]> ** 64 $ / && plan-digest($plan) eq $plan<planDigest>, 'under a digest';
+    lives-ok { to-wire('ExecutionPlan', load('ExecutionPlan', $plan)) }, 'and the plan is a sound document';
+
+    # a harness that cannot enforce the package is never chosen for its model
+    my $weak = Engine.new(:called<weak>, :says(claude-like().says), :enf(%()));
+    my @reqs = Requirement.new(:feature(FEAT-TOOL-ALLOWLIST), :reason('grants are scoped'));
+    ($a, $plan, $rej) = pin-plan(reg($weak, codex-like()), @reqs, {}, '', $want, @models);
+    is $a.name, 'codexish', 'enforcement first: the harness that holds the package is used';
+    ok $plan<considered>.first({ .<harness> eq 'weak' && .<why>.contains('tool_allowlist') }), 'and the plan says why the other was not' or diag $plan<considered>.raku;
+    is $plan<modelName>, 'default', 'on its own model, since no priced one is known there';
+
+    ($a, $plan, $rej) = pin-plan(reg(codex-like(), claude-like()), [], {}, '', curate(default-curation(), objective => 'x', model => 'opus'), @models);
+    is ($a.name, $plan<modelName>).join(' '), 'claudish opus', 'a named model goes to the harness that reaches it';
+    ok @$rej.first({ .Str.contains("cannot reach 'opus'") }), 'the other is rejected in words' or diag @$rej.map(*.Str).raku;
+
+    ($a, $plan, $rej) = pin-plan(reg(claude-like()), [], {}, '', curate(default-curation(), objective => 'x', model => 'gpt-nine'), @models);
+    ok !$a.defined && !$plan.defined, 'a model no installed harness reaches pins nothing';
+
+    ($a, $plan, $rej) = pin-plan(reg(codex-like()), [], {}, '', curate(default-curation(), objective => 'refactor it', effort => 'max'), @models);
+    is $plan<effort>, 'high', 'an effort the harness does not offer falls to the nearest below';
+    ok $plan<reasons>.first(*.contains('effort max is not offered there')), 'and the plan says so';
+
+    ($a, $plan, $rej) = pin-plan(reg(claude-like(:!here), codex-like()), [], {}, '', $want, @models);
+    is $a.name, 'codexish', 'a harness that is not signed in is passed over';
+    ($a, $plan, $rej) = pin-plan(reg(claude-like(), codex-like()), [], %( preferred => ['codexish'] ), '', $want, @models);
+    is $a.name, 'codexish', 'local policy still orders the harnesses';
+    ($a, $plan, $rej) = pin-plan(reg(claude-like()), [], {}, '', Want.new, @models);
+    ok $a.name eq 'claudish' && $plan<model> eq '' && $plan<effort> eq '', 'asking for nothing leaves the harness its own model';
+}
+
+sub package(*@done) {
+    my %wp = pkg-for($agent, 'explain the build', |@done);
+    %wp<capabilities><limits><network> = NETWORK-OPEN;
+    %wp;
+}
+sub go($engine, %wp, *%o) {
+    runner(reg($engine)).run($bg, %wp, $agent, Options.new(:want(curate(default-curation(), objective => %wp<objective>, |%o)), :@models));
+}
+
+subtest 'a run carries its plan, and each attempt what it was given', {
+    my $e = claude-like();
+    my %r = go($e, package());
+    check-receipt(%r);
+    is %r<status>, STATUS-COMPLETED, 'the run completes';
+    is $e.given[0].join(' '), 'claude-haiku-5-5 low', 'the harness was given the pinned model and effort';
+    is (%r<plan><profile>, %r<plan><task>, %r<plan><taskFrom>, %r<plan><harness>).join(' '), 'economy read matched claudish', 'the receipt carries the plan';
+    is (%r<attempts>[0]<model>, %r<attempts>[0]<effort>, %r<attempts>[0]<profile>).join(' '), 'claude-haiku-5-5 low economy', 'and each attempt says what it ran on';
+    is %r<harness><version>, '9.9', 'pinned to the harness version';
+    ok receipt-digest(%r) eq %r<receiptDigest>, 'all under the receipt digest';
+}
+
+subtest 'a capability gap climbs one listed step, and no further', {
+    my $e = claude-like(:ends(['harness_error', STATUS-COMPLETED.Str]));
+    my %r = go($e, package());
+    is %r<status>, STATUS-COMPLETED, 'the second attempt finishes the work';
+    is $e.given.map(*.join(' ')).join(' / '), 'claude-haiku-5-5 low / claude-sonnet-5-5 medium', 'on the next step of the ladder';
+    is %r<plan><escalated>.elems, 1, 'the climb is on the receipt';
+    ok %r<plan><escalated>[0]<why>.contains('stopped before a result') && %r<plan><escalated>[0]<to>.contains('sonnet'), 'with its reason';
+    ok $e.told[1].contains('Do not repeat anything that is already done'), 'the next attempt is told not to redo what was done';
+    ok %r<plan><escalated>[0]<from>.contains('haiku') && %r<plan><modelName> eq 'sonnet', 'the plan says what it began on and what it ended on';
+    is (%r<attempts>[0]<profile>, %r<attempts>[1]<profile>).join(' '), 'economy standard', 'each attempt keeps its own configuration';
+
+    $e = claude-like(:ends(['harness_error']));
+    %r = go($e, package());
+    is %r<status>, STATUS-FAILED, 'a harness that keeps failing ends failed';
+    is $e.given.elems, 2, 'after the one climb the plan allowed: two attempts, not more';
+
+    $e = claude-like(:ends(['harness_error']), :usd(0.60));
+    my %wp = package();
+    %wp<capabilities><limits><maxUsd> = 0.50;
+    %r = go($e, %wp);
+    is $e.given.elems, 1, 'a spent budget stops the climb';
+    ok %r<status> eq STATUS-FAILED, 'and the run fails rather than spend more';
+
+    $e = claude-like(:ends(['harness_error', STATUS-COMPLETED.Str]));
+    %r = go($e, package(), model => 'haiku');
+    is $e.given.elems, 1, 'a model a person named is never climbed past';
+
+    # an unmet done condition is not a reason to climb unless the agent's curation says so
+    class Unmet is Engine {
+        method run(Cancel $ctx, Spec $spec, Control $ctl --> Outcome) {
+            self.given.push(($spec.model, $spec.effort));
+            my $out = Outcome.new(:cost(doc('Cost', usd => 0, turns => 1, basis => COST-HARNESS)), :session-ref('s1'));
+            $out.status = STATUS-COMPLETED; $out.end-reason = 'completed'; $out.summary = 'did what it could';
+            $out.conditions = [ %( met => False, proof => 'the test tool is not installed' ), ];
+            $out;
+        }
+    }
+    my $u = Unmet.new(:called<claudish>, :says(claude-like().says), :enf(%ALL));
+    %r = go($u, package('the tests pass'));
+    is $u.given.elems, 1, 'an unmet condition does not climb: it may be the machine, not the model';
+    ok !@(%r<plan><escalated> // []), 'and nothing more was spent on it';
+    my %opt = default-curation(); %opt<escalateOn> = ['harness_failure', 'unmet_conditions'];
+    $u = Unmet.new(:called<claudish>, :says(claude-like().says), :enf(%ALL));
+    %r = runner(reg($u)).run($bg, package('the tests pass'), $agent, Options.new(:want(curate(%opt, objective => 'explain the build')), :@models));
+    is $u.given.elems, 2, 'an agent whose curation opts in does climb, once';
+    ok %r<plan><escalated>[0]<why>.contains('done conditions were not met'), 'with that as the reason';
+
+    $e = claude-like(:ends([STATUS-BLOCKED.Str]));
+    %r = go($e, package());
+    is $e.given.elems, 1, 'a blocked run waits for a person: a larger model is not the answer';
+}
+
+subtest 'what was recorded is read back as evidence', {
+    my $h = temp-dir();
+    $h.chmod(0o700);
+    for ^4 -> $i {
+        my %r = go(claude-like(), package());
+        my $dir = $h.add('runs').add(%r<packageId>);
+        mkdir $dir;
+        $dir.add('receipt.json').spurt(to-pretty('RunReceipt', %r));
+        record-outcome($h, %r<packageId>, $i == 3 ?? 'accepted' !! 'rejected');
+    }
+    my @work = read-work($h);
+    is @work.elems, 4, 'four runs are read back';
+    is @work.map({ (.task, .profile, .model, .effort).join(' ') }).unique.join(';'), 'read economy haiku low', 'each with the configuration it ran on';
+    my $w = curate(default-curation(), objective => 'explain the build', agent => $agent.id, :@work);
+    is $w.profile, 'standard', 'and the next comparable job starts a step up';
+}
+
+done-testing;

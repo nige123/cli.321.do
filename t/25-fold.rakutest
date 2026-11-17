@@ -83,6 +83,21 @@ subtest 'what the host adds' => {
     ok $s.lines.first(*.text.contains('64 MB')), 'a capped log says so, with the size';
 }
 
+subtest 'what it runs on is what the runtime said, attempt by attempt' => {
+    my $s = fold([ev(1, 'host', 'host_started', :request('fix it')),
+                  ev(2, 'run', 'adapter_selected', :adapter('claude_code'), :model('haiku'), :effort('low'), :profile('economy')),
+                  ev(3, 'run', 'attempt_started', :attempt(1), :model('haiku'), :effort('low'))]);
+    is $s.ran-on, 'haiku, low effort', 'the model and effort the runtime pinned';
+    is $s.profile, 'economy', 'and the profile it came from';
+    ok $s.lines.first(*.text.contains('on haiku, low effort')), 'the log line says it';
+    $s = fold([ev(1, 'run', 'adapter_selected', :adapter('claude_code'), :model('haiku'), :effort('low')),
+               ev(2, 'run', 'attempt_started', :attempt(1), :model('haiku'), :effort('low')),
+               ev(3, 'run', 'attempt_started', :attempt(2), :model('sonnet'), :effort('medium'))]);
+    is $s.ran-on, 'sonnet, medium effort', 'a later attempt on a larger model is the one shown';
+    $s = fold([ev(1, 'run', 'adapter_selected', :adapter('codex')), ev(2, 'run', 'attempt_started', :attempt(1))]);
+    is $s.ran-on, '', 'where the runtime named no model, none is claimed';
+}
+
 subtest 'a refusal: the verdict once, then why, then the step that puts it right' => {
     my $s = fold([
         ev(1, 'host', 'host_started', :request('when is the match')),

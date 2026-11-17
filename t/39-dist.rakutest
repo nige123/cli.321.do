@@ -1,0 +1,35 @@
+# The distribution the Raku ecosystem installs.  META6.json is written by
+# hand, so these tests hold it to the tree: a module left out of it would
+# install a 321 that cannot find its own parts.
+use Test;
+use Do321::JSON;
+use Do321::CLI;
+use Do321::Host;
+
+my $root = $?FILE.IO.parent.parent;
+my %meta = parse-json($root.add('META6.json').slurp);
+
+sub modules-under(IO::Path $dir, Str $prefix = '') {
+    my @found;
+    for $dir.dir.sort(*.basename) -> $p {
+        if $p.d { @found.append(modules-under($p, $prefix ~ $p.basename ~ '/')) }
+        elsif $p.basename.ends-with('.rakumod') { @found.push($prefix ~ $p.basename) }
+    }
+    @found;
+}
+
+my @files = modules-under($root.add('lib')).map({ 'lib/' ~ $_ }).sort;
+my %provides = %meta<provides>.Hash;
+
+is-deeply %provides.values.sort.List, @files.List, 'every module in lib is provided, and nothing else';
+my @misnamed = %provides.keys.grep({ %provides{$_} ne 'lib/' ~ $_.subst('::', '/', :g) ~ '.rakumod' });
+is-deeply @misnamed, [], 'each module is named for the file that holds it';
+
+is %meta<version>, VERSION, 'the distribution carries the version 321 reports';
+is %meta<version>, HOST-VERSION, 'and the version the host reports';
+is %meta<auth>, 'zef:nige123', 'published under the author the ecosystem knows';
+ok %meta<description>.contains('Raku++'), 'the description says which Raku it needs';
+ok $root.add('bin').add('321').f, 'the command it installs is there';
+ok $root.add('LICENSE').f && %meta<license> eq 'Apache-2.0', 'the licence named is the licence shipped';
+
+done-testing;

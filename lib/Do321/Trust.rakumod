@@ -29,7 +29,7 @@ constant LEVEL-LOCAL       is export = 'local';
 constant MANIFEST-FILE is export = 'agent.json';
 
 #| Reserved names an alias may never shadow.
-constant RESERVED is export = <run agents whois packages trust doctor help version hooks hook harness iz4 status key receipt log completion tui start stop attach restart steer hold resume host value context lessons outcome skills registry record>;
+constant RESERVED is export = <run agents whois packages trust doctor help version hooks hook harness iz4 status key receipt log completion tui start stop attach restart steer hold resume host value context lessons outcome skills registry record models choose>;
 
 class X::Do321::Trust is Exception is export {
     has Str $.message;
@@ -229,6 +229,14 @@ class Loaded is export {
         @(%!manifest<skills> // []).map({ skill-note($!root, $_) }).List;
     }
 
+    #| The agent's own configuration of execution curation, as text, if
+    #| the package ships one; Str otherwise.  It is read, never run.
+    method curation(--> Str) {
+        my $file = (%!manifest<curation> // '').Str;
+        return Str if $file eq '';
+        read-inside($!root, $file);
+    }
+
     #| Adapter-specific tuning, if the package ships one; Str otherwise.
     method overlay(Str $adapter --> Str) {
         my %o = %!manifest<harness><overlays> // {};
@@ -292,7 +300,8 @@ sub read-inside(IO() $root, Str $rel --> Str) is export {
 
 sub check-references(IO::Path $root, %m) {
     my @refs = |@(%m<prompts> // []), |@(%m<skills> // []), |@(%m<evaluations> // []), %m<outputSchemas><default>,
-        |(%m<outputSchemas><byProcedure> // {}).values, |(%m<harness><overlays> // {}).values;
+        |(%m<outputSchemas><byProcedure> // {}).values, |(%m<harness><overlays> // {}).values,
+        |((%m<curation> // '') ne '' ?? (%m<curation>,) !! ());
     read-inside($root, $_) for @refs;
 }
 
@@ -350,7 +359,7 @@ sub load-resolved(Resolution $r --> Loaded) is export {
             trust-error("package {$r.id}: pinned version {$r.pin<version>} but the manifest says {$m<version>}") if $r.pin<version> ne $m<version>;
             trust-error("package {$r.id} is pinned as verified but has no SIGNATURE; pin it as development or sign it")
                 unless $r.path.IO.add(SIGNATURE-FILE).f;
-            my %sig = try read-signature-file($r.path.IO);
+            my %sig = (try read-signature-file($r.path.IO)) // %();
             trust-error("package {$r.id}: {$!.message}") if $!;
             try verify-against-keys($computed, %sig, $r.keys);
             trust-error("package {$r.id}: {$!.message}") if $!;

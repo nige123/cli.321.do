@@ -28,7 +28,7 @@ sub skill-doc(Int $v, Str $text, Bool :$body = True, Str :$digest = text-digest(
        purpose => 'catch what tests miss', version => $v, sharing => 'private', harnesses => ['claude_code'], requires => ['repo.read'],
        usedBy => [], provenance => { createdBy => 'acme', adoptedFrom => Nil }, :$digest, |($body ?? (instructions => $text) !! ()) );
 }
-sub serve(%doc) {
+sub publish(%doc) {
     $reg.add('api/agents').spurt(encode-json({ schema => 'agent-registry.v1', visibility => 'public', agents => [{ name => 'helper', displayName => 'Helper', description => 'helps' },] }));
     $reg.add('api/skills').add('acme/review').spurt(encode-json(%doc));
 }
@@ -47,7 +47,7 @@ sub cli(*@args, Str :$in = '', Str :$registry = "file://$reg" --> List) {
 sub flat(Str $t --> Str) { $t.subst(/\s+/, ' ', :g) }
 
 subtest 'the registry is read, a copy is kept, and a failure keeps the copy' => {
-    serve(skill-doc(1, "Read the diff twice.\n"));
+    publish(skill-doc(1, "Read the diff twice.\n"));
     my ($rc, $out) = cli('registry');
     ok $rc == 0 && $out.contains('never read') && $out.contains('321 registry sync'), 'before the first sync it says so, and how' or diag $out;
     ($rc, $out) = cli('registry', 'sync');
@@ -95,18 +95,18 @@ subtest 'a token is kept privately and never shown' => {
 subtest 'a skill is installed by name, checked, and the version it replaces is kept' => {
     my ($rc, $out, $err) = cli('skills', 'install', 'acme/nosuch');
     ok $rc != 0 && $err.contains('no such document') || $err.contains('nothing at'), 'a skill the registry does not have is said so' or diag $err;
-    serve(skill-doc(1, "Read the diff twice.\n", :digest('sha256:' ~ '0' x 64)));
+    publish(skill-doc(1, "Read the diff twice.\n", :digest('sha256:' ~ '0' x 64)));
     ($rc, $out, $err) = cli('skills', 'install', 'acme/review');
     ok $rc != 0 && $err.contains('does not match its digest') && !installed-skill($home, 'acme/review').defined, 'text that does not match its digest is not installed' or diag $err;
-    serve(skill-doc(1, "x", :!body));
+    publish(skill-doc(1, "x", :!body));
     ($rc, $out, $err) = cli('skills', 'install', 'acme/review');
     ok $rc != 0 && $err.contains('did not give the text'), 'a skill whose text this person may not read is not installed as an empty one' or diag $err;
-    serve(skill-doc(1, "Read the diff twice.\n"));
+    publish(skill-doc(1, "Read the diff twice.\n"));
     ($rc, $out, $err) = cli('skills', 'install', 'acme/review');
     ok $rc == 0 && $out.contains('acme/review installed') && $out.contains('matches the digest'), 'a good one is installed, and says it was checked' or diag "$out$err";
     ok $out.contains('repo.read') && flat($out).contains('it grants none'), 'what it asks for is shown as asking, not granting';
     is cli('--brief', 'skills', 'install', 'acme/review')[1].split("\t")[2], 'unchanged', 'installing the same version again changes nothing';
-    serve(skill-doc(2, "Read the diff twice, then the tests.\n"));
+    publish(skill-doc(2, "Read the diff twice, then the tests.\n"));
     ($rc, $out) = cli('skills', 'install', 'acme/review');
     ok $out.contains('updated') && $out.contains('version 1, which it replaced'), 'a newer version replaces it, and the old one is kept' or diag $out;
     is installed-skill($home, 'acme/review')<version>, '2', 'version 2 is current';

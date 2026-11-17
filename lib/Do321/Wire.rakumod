@@ -31,6 +31,7 @@ use Do321::Async;
 use Do321::Trust;
 use Do321::Run;
 use Do321::Keys;
+use Do321::Choose;
 
 constant EXIT-COMPLETED is export = 0;
 constant EXIT-BLOCKED   is export = 2;
@@ -77,6 +78,7 @@ class WireOptions is export {
     has Runner $.runner;
     has Bool $.signals = False;         # SIGTERM and SIGINT become a stop directive
     has Str $.home = '';                # ~/.321 (or DO_321_HOME): where a signing key would be
+    has $.asked;                        # what a person set by hand (Do321::Choose::Asked), or Any
 }
 
 #| Lines from a handle, pulled one at a time, so the first frame can be
@@ -310,7 +312,24 @@ sub serve(Cancel $ctx, WireOptions $opts --> Int) is export {
     my %receipt;
     my $agent = try load-agent($opts, $wp);
     if $! { %receipt = $opts.runner.deny($wp, 'the agent package could not be loaded', [$!.message], $run-options) }
-    else { %receipt = $opts.runner.run($run-ctx, $wp, $agent, $run-options) }
+    else {
+        # The agent's curation is asked here, for a package from anywhere:
+        # what it wants goes to the runtime with the run, and the runtime
+        # decides.
+        my $curation-error = '';
+        if $agent.defined && $opts.home ne '' {
+            # what the project pins is checked first: a run on another version is refused, and told why
+            my @differs = package-pin-problems($opts.home.IO, $agent, %$wp);
+            $curation-error = @differs.join('; ') ~ '. To fix: pin that version here, or change .321/pins.json with the team' if @differs;
+        }
+        if $curation-error eq '' && $agent.defined && $opts.home ne '' {
+            my $want = try want-for($opts.home.IO, $agent, %$wp, $opts.asked // Asked.new);
+            if $! { $curation-error = $!.message }
+            else { $run-options = Options.new(|%run-opts, :$want, :models(models-here($opts.home.IO))) }
+        }
+        if $curation-error ne '' { %receipt = $opts.runner.deny($wp, 'the run could not be planned', [$curation-error], $run-options) }
+        else { %receipt = $opts.runner.run($run-ctx, $wp, $agent, $run-options) }
+    }
     $run-ctx.cancel;
     %receipt = sign-receipt-if-keyed(%receipt, ($opts.home ne '' ?? $opts.home !! (%*ENV<DO_321_HOME> // $*HOME.add('.321').Str)).IO);
     trace('serve: run ended ' ~ %receipt<status>);

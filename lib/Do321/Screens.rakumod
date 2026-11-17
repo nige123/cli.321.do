@@ -147,6 +147,7 @@ sub log-json(@runs, %tally, Int :$days = 7, Str :$agent = '', Str :$dir = '' -->
                 seconds   => $r.seconds,
                 cost      => %( usd => $r.usd, basis => $r.basis ),
                 waitingOn => $r.waiting,
+                |($r.model ne '' || $r.effort ne '' ?? (ranOn => %( model => $r.model, effort => $r.effort, profile => $r.profile )) !! ()),
             ) }).List,
         ),
     ));

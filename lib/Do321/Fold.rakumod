@@ -28,6 +28,11 @@ class RunState is export {
     has Int $.tools is rw = 0;
     has Int $.attempts is rw = 0;
     has Str $.harness is rw = '';
+    #| The model and effort the attempt now running was started on, as the
+    #| runtime said; '' where it named none (the harness's own model).
+    has Str $.model is rw = '';
+    has Str $.effort is rw = '';
+    has Str $.profile is rw = '';
     has Rat $.usd is rw = 0.0;
     has Bool $.cost-reported is rw = False;
     #| Tokens as the harness counted them: by kind where it said, else 'total'.
@@ -55,6 +60,12 @@ class RunState is export {
         @p.push(n(%!usage<cacheRead>) ~ ' read from cache') if (%!usage<cacheRead> // 0) > 0;
         @p.push(n(%!usage<cacheWrite>) ~ ' written to cache') if (%!usage<cacheWrite> // 0) > 0;
         @p.join(', ');
+    }
+
+    #| What it is running on, in words; '' when the runtime named no model.
+    method ran-on(--> Str) {
+        return '' if $!model eq '' && $!effort eq '';
+        ($!model ne '' ?? $!model !! 'its own model') ~ ($!effort ne '' ?? ", $!effort effort" !! '');
     }
 
     method cost-text(--> Str) {
@@ -165,9 +176,16 @@ sub fold-event(RunState $s, %e) is export {
         }
         # --- what the runtime records
         when 'started'          { $s.activity = 'starting' }
-        when 'adapter_selected' { $s.harness = %p<adapter> // ''; say-line(:who<note>, :text("running in {%p<adapter> // '?'}"), :tone<dim>) }
+        when 'adapter_selected' {
+            $s.harness = %p<adapter> // '';
+            $s.model = (%p<model> // '').Str; $s.effort = (%p<effort> // '').Str; $s.profile = (%p<profile> // '').Str;
+            say-line(:who<note>, :text("running in {%p<adapter> // '?'}" ~ ($s.ran-on ne '' ?? " on {$s.ran-on}" !! '')), :tone<dim>)
+        }
         when 'attempt_started'  {
             $s.attempts = (%p<attempt> // ($s.attempts + 1)).Int;
+            # a later attempt may be on a larger model: the event says which
+            $s.model = %p<model>.Str if (%p<model> // '') ne '';
+            $s.effort = %p<effort>.Str if (%p<effort> // '') ne '';
             $s.activity = 'thinking';
             say-line(:who<note>, :text("attempt {$s.attempts}"), :tone<dim>) if $s.attempts > 1;
         }

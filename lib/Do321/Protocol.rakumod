@@ -621,6 +621,14 @@ sub validate-run-receipt(%r --> Problems) is export {
     if $c.require('receiptDigest', %r<receiptDigest>) {
         $c.add('receiptDigest', "does not match the receipt's content") if receipt-digest(%r) ne %r<receiptDigest>;
     }
+    # a plan, when the run was pinned to one, names its harness and is under its own digest
+    with %r<plan> -> %p {
+        $c.schema('plan.schema', %p<schema>, 'execution-plan.v1');
+        $c.require('plan.harness', %p<harness>);
+        $c.add('plan.planDigest', 'must be sha256:<hex>') if $c.require('plan.planDigest', %p<planDigest>) && !is-digest(%p<planDigest>);
+        $c.add('plan.effort', 'must be low, medium, high, xhigh or max') if (%p<effort> // '') ne '' && (%p<effort> // '') ne 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+        $c.add('plan.tier', 'must be small, medium or large') if (%p<tier> // '') ne '' && (%p<tier> // '') ne 'small' | 'medium' | 'large';
+    }
     # a signature, when there is one, has a shape; whether it verifies needs a key, and is a separate question
     with %r<signature> -> %s {
         $c.require('signature.keyId', %s<keyId>);

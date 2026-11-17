@@ -40,6 +40,11 @@ use Do321::Learn;
 use Do321::Registry;
 use Do321::Record;
 use Do321::Complete;
+use Do321::Models;
+use Do321::Plan;
+use Do321::Curate;
+use Do321::Choose;
+use Do321::Versions;
 
 #| Stamped at build time in the release workflow.
 constant VERSION is export = '0.5.1';
@@ -78,12 +83,16 @@ sub default-registry($stderr --> Registry) is export {
         # of the same stream to standard error would say every line twice on a
         # terminal.  :stderr carries the harness's error output, which nothing
         # else shows.
-        .register(ClaudeCode.new(:binary(%*ENV<DO_321_CLAUDE_BINARY> // ''), :stderr($stderr)))
+        # A promoted version still on disk is the one run, whatever PATH has
+        # moved to (321 harness pin); the test seam comes first.
+        .register(ClaudeCode.new(:binary(%*ENV<DO_321_CLAUDE_BINARY> // pinned-binary(versions-home(), 'claude_code')), :stderr($stderr)))
         # Codex is chosen only where its claims cover the package: it has
         # a sandbox, not a tool allowlist, so a package with tool grants is
         # never placed on it.
         .register(Codex.new(:binary(%*ENV<DO_321_CODEX_BINARY> // ''), :stderr($stderr)));
 }
+
+my sub versions-home(--> IO::Path) { (%*ENV<DO_321_HOME> // $*HOME.add('.321').Str).IO }
 
 #| DO_321_FAKE_CONTROLS is a test seam: a JSON object of control =>
 #| strength that makes the hidden fake adapter stand in for a harness with
@@ -141,6 +150,13 @@ class Global {
     #| --verbose: the whole transcript of a run (trust, grants, every
     #| event, every tool call); the default screen is the short one.
     has Bool $.verbose is rw = False;
+    #| --task, --profile, --model, --effort: what a person sets by hand
+    #| in place of the agent's own choice (Do321::Choose).
+    has Str $.task is rw = '';
+    has Str $.profile is rw = '';
+    has Str $.model is rw = '';
+    has Str $.effort is rw = '';
+    method asked(--> Asked) { Asked.new(task => $!task, profile => $!profile, model => $!model, effort => $!effort) }
 }
 
 #| The two switches a pipeline reaches for, taken from wherever they
@@ -182,6 +198,10 @@ sub parse-global(@args --> List) {
             when '--adapter'         { $g.adapter = need() }
             when '--network'         { $g.network = need() }
             when '--context'         { $g.context = need() }
+            when '--task'            { $g.task = need() }
+            when '--profile'         { $g.profile = need() }
+            when '--model'           { $g.model = need() }
+            when '--effort'          { $g.effort = need() }
             when '--skill'           { $g.skill.push(need()) }
             when '--attach'          { $g.attach.push(need()) }
             when '--done'            { $g.done.push(need()) }
@@ -347,6 +367,8 @@ sub cli-run(Env $env is copy --> Int) {
         when 'skills'   { return cmd-skills($env, $g, @rest[1 .. *]) }
         when 'registry' { return cmd-registry($env, $g, @rest[1 .. *]) }
         when 'record'   { return cmd-record($env, $g, @rest[1 .. *]) }
+        when 'models'   { return cmd-models($env, $g, @rest[1 .. *]) }
+        when 'choose'   { return cmd-choose($env, $g, @rest[1 .. *]) }
         when 'completion' { return cmd-completion($env, $g, @rest[1 .. *]) }
         when 'key'      { return cmd-key($env, $g, @rest[1 .. *]) }
         when 'receipt'  { return cmd-receipt($env, $g, @rest[1 .. *]) }
@@ -400,7 +422,7 @@ sub cmd-key(Env $env, Global $g, @args --> Int) {
     my $sub = @args ?? @args[0] !! 'show';
     given $sub {
         when 'new' {
-            my %pub = try new-key($home);
+            my %pub = (try new-key($home)) // %();
             if $! { $env.stderr.say("321 key: {$!.message}"); return EXIT-FAILED }
             if $g.json-out { $env.stdout.say(encode-json(%pub)); return 0 }
             if $g.brief { $env.stdout.say(brief-line(%pub<keyId>, %pub<publicKey>, key-path($home))); return 0 }
@@ -509,7 +531,7 @@ sub cmd-help(Env $env, @args --> Int) {
 #| ended, and the question it is waiting on if it ended blocked.  A
 #| directory with a package but no receipt is a run that has not ended.
 sub run-summary(IO::Path $dir, %alias-of --> Hash) {
-    my %wp = try parse-json($dir.add('work-package.json').slurp);
+    my %wp = (try parse-json($dir.add('work-package.json').slurp)) // %();
     my %r  = $dir.add('receipt.json').f ?? (try parse-json($dir.add('receipt.json').slurp)) // %() !! %();
     my $id = (%wp<agent><id> // %r<agent><id> // '').Str;
     my $agent = %alias-of{$id} // $id;
@@ -581,7 +603,7 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
     if $iz4.defined && $iz4.f {
         my $controller = controller-named('iz4');
         for harness-adapters($env).grep({ .detect.available }) -> $a {
-            my %s = try enforcement-status($a, $controller, $workspace.IO);
+            my %s = (try enforcement-status($a, $controller, $workspace.IO)) // %();
             next unless %s;
             @harnesses.push(%( harness => $a.name, headline => (%s<headline> // '').Str ));
         }
@@ -674,6 +696,7 @@ sub cmd-status(Env $env, Global $g, @args --> Int) {
 
 sub cmd-run(Env $env, Global $g, @args --> Int) {
     my %o = package-source => '-', package-dir => $g.package-dir, workspace => $g.workspace, adapter => $g.adapter;
+    my %asked = task => $g.task, profile => $g.profile, model => $g.model, effort => $g.effort;
     my $i = 0;
     while $i < @args {
         my $a = @args[$i];
@@ -694,6 +717,10 @@ sub cmd-run(Env $env, Global $g, @args --> Int) {
                 when '--run-id'      { %o<run-id> = need() }
                 when '--history-dir' { %o<history-dir> = need() }
                 when '--adapter'     { %o<adapter> = need() }
+                when '--task'        { %asked<task> = need() }
+                when '--profile'     { %asked<profile> = need() }
+                when '--model'       { %asked<model> = need() }
+                when '--effort'      { %asked<effort> = need() }
                 when '--continue'    { %o<continue-from> = need() }
                 when '--follows'     { %o<follows-from> = need() }
                 when '--stop-first'  { %o<stop-first> = True }
@@ -706,7 +733,7 @@ sub cmd-run(Env $env, Global $g, @args --> Int) {
     }
     my $cfg = try trust-of($env);
     if $! { $env.stderr.say("321 run: {$!.message}"); return EXIT-INTERNAL }
-    my $opts = WireOptions.new(|%o, :stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :runner(runner-of($env)),
+    my $opts = WireOptions.new(|%o, :asked(Asked.new(|%asked)), :stdin($env.stdin), :stdout($env.stdout), :stderr($env.stderr), :runner(runner-of($env)),
         :signals($env.signals), :trust($cfg), :home(home-of($env).Str));
     serve(Cancel.new, $opts);
 }
@@ -1142,7 +1169,8 @@ sub cmd-outcome(Env $env, Global $g, @args --> Int) {
         $env.stderr.say(next-text('see your runs and their ids', '321 status'));
         return EXIT-USAGE;
     }
-    my %o = record-outcome($home, @m[0], $word, note => @a[2 .. *].join(' '), by => who-am-i());
+    my %o = (try record-outcome($home, @m[0], $word, note => @a[2 .. *].join(' '), by => who-am-i())) // %();
+    if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
     if $json { $env.stdout.say(encode-json(%o)); return 0 }
     if $g.brief { $env.stdout.say(brief-line(@m[0], $word)); return 0 }
     my $had = $home.add('runs').add(@m[0]).add('receipt.json').e;
@@ -1213,7 +1241,7 @@ sub cmd-context(Env $env, Global $g, @args --> Int) {
                 $env.stderr.say(next-text('a private context needs its organisation\'s token', '321 registry token'));
                 return EXIT-FAILED;
             }
-            my %c = try pull-context($home, $doc.Hash, registry-url($home));
+            my %c = (try pull-context($home, $doc.Hash, registry-url($home))) // %();
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
             if $json { $w.say(encode-json(%c)); return 0 }
             if $g.brief { $w.say(brief-line(%c<name>, 'pulled', %c<sharing>, %c<notes>.elems)); return 0 }
@@ -1796,6 +1824,49 @@ sub cmd-trust(Env $env, Global $g, @args --> Int) {
             $env.stdout.say(next-text('check that every agent named here loads', '321 trust check'));
             return 0;
         }
+        when 'project' {
+            # what this project pins (.321/pins.json), beside what is here
+            my ($root, $kind) = resolve-workspace($g.workspace);
+            if $root eq '' { $env.stderr.say('321: this is not inside a project: there is no directory to keep pins in'); return EXIT-USAGE }
+            my $home = home-of($env);
+            my @rest = @args[1 .. *].grep({ $_ ne '--plain' && $_ ne '--json' && $_ ne '--brief' });
+            if @rest && @rest[0] eq 'pin' {
+                return usage-error($env, 'trust', 'name the agent to pin: 321 trust project pin b1ll') unless @rest[1].defined;
+                my ($agent, $err) = load-agent-named($cfg, $g, @rest[1]);
+                with $err { $env.stderr.say("321: $err"); return EXIT-USAGE }
+                my $done = try { write-project-pins($root, $home, $agent, @($g.skill)); True };
+                if $! { $env.stderr.say("321: {$!.message.trim}"); return EXIT-FAILED }
+            }
+            elsif @rest { return usage-error($env, 'trust', "it is project, or project pin AGENT, not 'project {@rest[0]}'") }
+            my %p = read-project-pins($root);
+            my @rows;
+            for (%p<agents> // {}).sort(*.key) -> $kv {
+                my ($a, $e) = load-agent-named($cfg, $g, $kv.key);
+                my $here = $a.defined ?? $a.digest !! '';
+                @rows.push(%( kind => 'agent', id => $kv.key, version => ($kv.value<version> // ''), digest => ($kv.value<digest> // ''),
+                    here => ($a.defined ?? ($a.manifest<version> // '') !! ''), same => $here eq ($kv.value<digest> // '') ));
+            }
+            for (%p<skills> // {}).sort(*.key) -> $kv {
+                my $d = (try installed-skill($home, $kv.key)) // Any;
+                @rows.push(%( kind => 'skill', id => $kv.key, version => ($kv.value<version> // ''), digest => ($kv.value<digest> // ''),
+                    here => (($d // {})<version> // ''), same => (($d // {})<digest> // '') eq ($kv.value<digest> // '') ));
+            }
+            if $g.json-out || so @args.first('--json') { $env.stdout.say(encode-json-pretty(%( schema => 'project-pins-status.v1', project => $root, file => project-pins-file($root).Str, pins => [ |@rows ] ))); return 0 }
+            if $g.brief || so @args.first('--brief') { $env.stdout.say(brief-line('pin', .<kind>, .<id>, .<version>, (.<same> ?? 'same' !! 'differs'), .<here>)) for @rows; return 0 }
+            my @l = header('trust project', $root), '';
+            @l.push: '  nothing is pinned for this project yet' unless @rows;
+            for @rows -> %r {
+                @l.push: sprintf('  %s %-6s %-26s %-8s %s', (%r<same> ?? glyph('yes') !! glyph('no')), %r<kind>, %r<id>, %r<version>,
+                    %r<same> ?? 'the same here' !! %r<here> eq '' ?? 'not here' !! "here it is {%r<here>}, with other content");
+            }
+            @l.push: '';
+            my $off = @rows.first({ !.<same> });
+            @l.push: !@rows ?? next-text('pin the agent this project is worked on with', '321 trust project pin <agent>')
+                !! $off.defined ?? next-text('get the pinned version here, or change the pin with the team: runs with it are refused until they agree', '321 trust show')
+                !! all-well('pinned', "{many-of(@rows.elems, 'pin')} in .321/pins.json match what is here; commit the file to share them.");
+            learn-say($env, @l);
+            return 0;
+        }
         when 'check' {
             my $w = $env.stdout;
             my @rows; my @failed;
@@ -2157,7 +2228,8 @@ sub parse-harness-options(Env $env, Global $g, @args, Str $what --> List) {
 
 sub cmd-harness(Env $env, Global $g, @args --> Int) {
     return cmd-mission($env, $g, ['harnesses', |@args[1 .. *]]) if @args && @args[0] eq 'can';
-    return usage-error($env, 'harness detect', @args ?? "there is no 'harness {@args[0]}'" !! 'say what to do: detect or can') if !@args || @args[0] ne 'detect';
+    return cmd-harness-versions($env, $g, @args) if @args && @args[0] eq 'check' | 'pin' | 'rollback';
+    return usage-error($env, 'harness detect', @args ?? "there is no 'harness {@args[0]}'" !! 'say what to do: detect, can, check, pin or rollback') if !@args || @args[0] ne 'detect';
     my ($workspace, $, $json, $, $verbose) = try parse-harness-options($env, $g, @args[1 .. *], 'harness detect');
     if $! { return usage-error($env, 'harness detect', $!.message) }
     my @records;
@@ -2206,6 +2278,207 @@ sub cmd-harness(Env $env, Global $g, @args --> Int) {
         ?? next-text('see what the IZ4 here is held by, harness by harness', '321 iz4 status')
         !! next-text('install a harness 321 knows, then look again', '321 harness detect'));
     $w.say(next-text('the controls each harness offers a controller', '321 harness detect --verbose').subst(/^ 'next:'/, 'then:')) unless $verbose;
+    0;
+}
+
+
+# ------------------------------------------------- models and the choice
+
+#| `321 models`: what a harness here can be asked for.  The harness is
+#| the one that signs in and pays; 321 names a model to it and holds no
+#| key.  A price is the provider's list rate on the day stated.
+sub cmd-models(Env $env, Global $g, @args --> Int) {
+    my @a = @args.grep({ $_ ne '--plain' });
+    my $json = $g.json-out || so @a.first('--json');
+    $g.brief = True if @a.first('--brief');
+    @a = @a.grep({ $_ ne '--json' && $_ ne '--brief' });
+    return usage-error($env, 'models', "there is no 'models {@a[0]}'") if @a;
+    my $home = home-of($env);
+    my ($models, $skipped) = catalogue($home);
+    my @rows;
+    for $env.adapters.all.grep({ @(.manifest<providers> // []) }) -> $a {
+        my %m = $a.manifest;
+        my $d = $a.detect;
+        my @reach = models-for(@$models, @(%m<providers>)).grep({ .access eq %m<access> });
+        @rows.push(%( harness => $a.name, available => $d.available, version => $d.version, reason => $d.reason,
+            access => %m<access>, efforts => [ |@(%m<efforts> // []) ], reportsUsd => so %m<reports><usd>, reportsTokens => so %m<reports><tokens>,
+            spendCap => so %m<spend-cap>,
+            models => [ @reach.map({ %( provider => .provider, id => .id, name => .label, tier => .tier, contextTokens => .context-tokens,
+                efforts => [ |.efforts ], priceIn => .price-in, priceOut => .price-out, priceAsOf => .price-as-of, source => .source ) }) ] ));
+    }
+    my $w = $env.stdout;
+    if $json { $w.say(encode-json-pretty(%( schema => 'models.v1', harnesses => [ |@rows ], skipped => [ |@$skipped ] ))); return 0 }
+    if $g.brief {
+        for @rows -> %r {
+            $w.say(brief-line('harness', %r<harness>, (%r<available> ?? 'ready' !! 'not here'), %r<version>, %r<reason>));
+            $w.say(brief-line('model', %r<harness>, .<name>, .<tier>, (.<priceIn> // '?'), (.<priceOut> // '?'), .<id>)) for @(%r<models>);
+        }
+        return 0;
+    }
+    my @l = header('models', 'what a harness here can be asked for'), '';
+    for @rows -> %r {
+        @l.push: "  {harness-label(%r<harness>)}" ~ (%r<version> ne '' ?? " {bare-version(%r<version>)}" !! '') ~ (%r<available> ?? '' !! "   not here: {%r<reason>}");
+        for @(%r<models>) -> %m {
+            my $price = %m<priceIn>.defined ?? sprintf('$%.2f in, $%.2f out per million tokens', %m<priceIn>, %m<priceOut>) !! 'price not recorded';
+            @l.push: sprintf('    %-9s %-7s %s', %m<name>, %m<tier>, $price);
+        }
+        @l.push: '    reports: ' ~ (%r<reportsUsd> ?? 'what a run cost' !! 'tokens, and no cost: a run there is priced as unknown');
+        @l.push: '';
+    }
+    @l.push: '  no harness that runs a model is known to this 321', '' unless @rows;
+    @l.append: row-lines('prices:', 'list rates, for estimates only. What a run cost is on its receipt, as its harness reported it.');
+    @l.append: row-lines('left out:', $_) for @$skipped;
+    @l.push: '';
+    my $first = (try trust-of($env).aliases.keys.sort.head) // 'helper';
+    @l.push: next-text('see what an agent would run a request on', "321 choose $first <request...>");
+    learn-say($env, @l);
+    0;
+}
+
+#| `321 choose AGENT <request...>`: the plan a run would be pinned to,
+#| and why.  Nothing is run and nothing is recorded.
+sub cmd-choose(Env $env, Global $g, @args --> Int) {
+    my @a = @args.grep({ $_ ne '--plain' });
+    my $json = $g.json-out || so @a.first('--json');
+    @a = @a.grep({ $_ ne '--json' });
+    return usage-error($env, 'choose', 'name an agent and say the request: 321 choose b1ll fix the failing test') if @a < 2;
+    my $name = @a[0];
+    my $request = @a[1 .. *].join(' ').trim;
+    my $cfg = try trust-of($env);
+    if $! { $env.stderr.say("321: {$!.message}"); return EXIT-INTERNAL }
+    my ($agent, $err) = load-agent-named($cfg, $g, $name);
+    with $err { $env.stderr.say("321: $err"); return EXIT-USAGE }
+    my ($workspace, $kind) = resolve-workspace($g.workspace);
+    ($workspace, $kind) = ('', 'none') unless touches-workspace($agent.manifest);
+    my $home = home-of($env);
+    my %wp = (try build-package($cfg, $agent, $g, $request, $workspace, $kind, :$home, :!learn)) // %();
+    if $! { $env.stderr.say("321: {$!.message}"); return EXIT-USAGE }
+    my $want = try want-for($home, $agent, %wp, $g.asked);
+    if $! { $env.stderr.say("321: {$!.message}"); return EXIT-USAGE }
+    my @reqs = requirements($agent.manifest, %wp, @(%wp<capabilities><granted>));
+    my ($chosen, $plan, $rejections) = pin-plan($env.adapters, @reqs, $cfg.policy<adapters> // {}, $g.adapter, $want, models-here($home));
+    my $w = $env.stdout;
+    without $chosen {
+        if $json { $w.say(encode-json-pretty(%( schema => 'choice.v1', agent => $agent.id, plan => Any, rejected => [ @$rejections.map(*.Str) ] ))); return EXIT-FAILED }
+        my @l = header("choose $name", $request.subst(/\s+/, ' ', :g)), '';
+        @l.push: "{glyph('no')} nothing here can run this as asked";
+        @l.push: "  $_" for @$rejections.map(*.Str);
+        @l.push: '';
+        @l.push: next-text('see what each harness here can be asked for', '321 models');
+        learn-say($env, @l);
+        return EXIT-FAILED;
+    }
+    if $json { $w.say(encode-json-pretty(%( schema => 'choice.v1', agent => $agent.id, plan => parse-json(to-wire('ExecutionPlan', load('ExecutionPlan', $plan))) ))); return 0 }
+    my %p = %$plan;
+    my @l = header("choose $name", $request.subst(/\s+/, ' ', :g)), subtitle('nothing was run', $agent.id), '';
+    @l.append: row-lines('would run on:', plan-words(%p) ~ profile-note(%p));
+    @l.append: row-lines('harness:', harness-label(%p<harness>) ~ ((%p<harnessVersion> // '') ne '' ?? " {bare-version(%p<harnessVersion>)}" !! ''));
+    @l.append: row-lines('why:', $_) for @(%p<reasons> // []);
+    @l.append: row-lines('set by you:', @(%p<overrides>).join(', ')) if @(%p<overrides> // []);
+    with %p<evidence> -> %e {
+        if %e<usdRuns> > 0 {
+            @l.append: row-lines('earlier:', sprintf('about %s and %s a run, over %s that reported a cost', usd-words(%e<medianUsd>), duration-words(%e<medianSeconds>), many-of(%e<usdRuns>, 'comparable run')));
+        }
+    }
+    my @ladder = @(%p<ladder> // []);
+    my $max = %p<maxEscalations> // 0;
+    @l.append: row-lines('if harder:', @ladder && $max > 0
+        ?? "one step up to {@ladder[0]<profile>}, when " ~ (@(%p<escalateOn> // []).first('unmet_conditions') ?? 'the harness fails or a done condition is unmet' !! 'the harness fails') ~ '; ' ~ ($max == 1 ?? 'then it stops' !! "$max steps at most") ~ ', and never past the budget'
+        !! 'it does not climb: the choice was made by hand');
+    @l.append: row-lines('not used:', "{harness-label(.<harness>)}: {.<why>}") for @(%p<considered> // []);
+    @l.push: '';
+    @l.push: next-text('run it', ('321', |$g.asked.argv, $name, $request).join(' '));
+    @l.push: 'then:  set it yourself with --profile, --model or --effort before the agent name' unless $g.asked.any;
+    learn-say($env, @l);
+    0;
+}
+
+my sub duration-words($seconds --> Str) {
+    my $s = ($seconds // 0).Int;
+    $s >= 3600 ?? sprintf('%dh %02dm', $s div 3600, ($s mod 3600) div 60) !! $s >= 60 ?? sprintf('%dm %02ds', $s div 60, $s mod 60) !! "{$s}s";
+}
+
+
+#| `321 harness check | pin | rollback`: which version of a harness is
+#| trusted here.  check reads the installed harness against what its
+#| adapter depends on, and calls no model.
+sub cmd-harness-versions(Env $env, Global $g, @args --> Int) {
+    my $sub = @args[0];
+    my @a = @args[1 .. *].grep({ $_ ne '--plain' });
+    my $json = $g.json-out || so @a.first('--json');
+    $g.brief = True if @a.first('--brief');
+    @a = @a.grep({ $_ ne '--json' && $_ ne '--brief' });
+    my $home = home-of($env);
+    my $w = $env.stdout;
+    my @adapters = $env.adapters.all.grep({ .executable ne '' || @(.manifest<providers> // []) });
+    my sub named(Str $n) { @adapters.first({ .name eq $n || harness-label(.name).lc eq $n.lc }) }
+    if $sub eq 'check' {
+        return usage-error($env, 'harness check', "there is no harness '{@a[0]}' here") if @a && !named(@a[0]).defined;
+        my @rows = (@a ?? (named(@a[0]),) !! @adapters).map(-> $ad {
+            my %c = contract-check($ad);
+            my %k = known-good($home, $ad.name);
+            %c<promoted> = (%k<version> // '').Str;
+            %c<previous> = ((%k<previous> // {})<version> // '').Str;
+            %c<held> = (%k<binary> // '') ne '' && (%k<binary> // '').IO.f;
+            # only what its help has stopped naming since the promotion is news
+            my %known = @(%k<undocumented> // []).map({ $_ => True });
+            %c<changed> = [ @(%c<undocumented>).grep({ %c<promoted> eq '' || !%known{$_} }) ];
+            %c<verdict> = !%c<available> ?? 'not ready' !! @(%c<changed>) ?? 'look' !! %c<promoted> eq '' ?? 'fits, not promoted'
+                !! %c<promoted> eq %c<installed> ?? 'fits, promoted' !! 'fits, newer than promoted';
+            %c;
+        });
+        if $json { $w.say(encode-json-pretty(%( schema => 'harness-check.v1', harnesses => [ |@rows ] ))); return 0 }
+        if $g.brief { $w.say(brief-line('harness', .<harness>, .<verdict>, .<installed>, .<promoted>, @(.<changed>).join(','))) for @rows; return 0 }
+        my @l = header('harness check', 'the harnesses here against what 321 asks of them'), '';
+        for @rows -> %r {
+            my $mark = %r<verdict>.starts-with('fits') ?? glyph('yes') !! %r<verdict> eq 'look' ?? glyph('unknown') !! glyph('no');
+            @l.push: "  $mark {harness-label(%r<harness>)} {%r<installed>}".trim-trailing ~ (%r<available> ?? '' !! "   {%r<reason>}");
+            @l.push: '      ' ~ (@(%r<flags>) ?? "{@(%r<flags>).grep(*<documented>).elems} of {@(%r<flags>).elems} flags 321 passes are in its help" !! 'its help could not be read') if %r<available> || @(%r<flags>);
+            @l.push: "      not in its help: {@(%r<changed>).join(', ')} (a run may still take it; try one before promoting)" if @(%r<changed>);
+            @l.push: '      promoted: ' ~ (%r<promoted> eq '' ?? 'none yet' !! %r<promoted> ~ (%r<held> ?? ', and 321 runs that one' !! %r<promoted> eq %r<installed> ?? '' !! ', which is not what is installed now')
+                ~ (%r<previous> ne '' ?? "; before it {%r<previous>}" !! ''));
+            @l.push: "      kept on disk: {%r<beside>.keys.sort.join(', ')}" if %r<beside>.elems > 1;
+            @l.push: '';
+        }
+        my $new = @rows.first({ .<verdict> eq 'fits, not promoted' | 'fits, newer than promoted' | 'look' });
+        @l.push: $new.defined
+            ?? next-text('after a run on it that you accepted, promote it', "321 harness pin {$new<harness>}")
+            !! next-text('see what each can be asked for', '321 models');
+        learn-say($env, @l);
+        return 0;
+    }
+    return usage-error($env, "harness $sub", 'name the harness: 321 harness ' ~ $sub ~ ' claude_code') unless @a;
+    my $ad = named(@a[0]);
+    return usage-error($env, "harness $sub", "there is no harness '{@a[0]}' here") without $ad;
+    my %now;
+    if $sub eq 'pin' {
+        my %c = contract-check($ad);
+        my $version = (@a[1] // %c<installed>).Str;
+        if $version eq '' { $env.stderr.say("321: {$ad.name} is not here, so there is no version to promote"); return EXIT-FAILED }
+        my $binary = (%c<beside>{$version} // '').Str;
+        if @a[1].defined && $version ne %c<installed> && $binary eq '' {
+            $env.stderr.say("321: {$ad.name} $version is not on this machine; installed is {%c<installed>}" ~ (%c<beside> ?? ", kept: {%c<beside>.keys.sort.join(', ')}" !! ''));
+            return EXIT-FAILED;
+        }
+        %now = promote($home, $ad.name, $version, $binary, undocumented => @(%c<undocumented>));
+    }
+    else {
+        %now = (try roll-back($home, $ad.name)) // %();
+        if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
+    }
+    my $held = (%now<binary> // '') ne '' && %now<binary>.IO.f;
+    if $json { $w.say(encode-json-pretty(%( schema => 'harness-pin.v1', harness => $ad.name, |%now, held => $held ))); return 0 }
+    if $g.brief { $w.say(brief-line('promoted', $ad.name, %now<version>, ($held ?? 'held' !! 'recorded'), ((%now<previous> // {})<version> // ''))); return 0 }
+    my @l = header("harness $sub", "{harness-label($ad.name)} {%now<version>}"), '';
+    @l.append: row-lines('promoted:', %now<version> ~ ($sub eq 'rollback' ?? ', the one promoted before' !! ''));
+    @l.append: row-lines('runs on:', $held ?? "that version, from {%now<binary>}, whatever the command on PATH moves to"
+        !! "whatever version is installed: this harness keeps one version at a time, so 321 records {%now<version>} and cannot hold it. To have it, install that version");
+    @l.append: row-lines('before it:', (%now<previous> // {})<version>) if ((%now<previous> // {})<version> // '') ne '';
+    @l.push: '';
+    @l.push: ((%now<previous> // {})<version> // '') ne '' && $sub eq 'pin'
+        ?? next-text('go back to the one before, if this one disappoints', "321 harness rollback {$ad.name}")
+        !! next-text('see it against what 321 asks of it', '321 harness check');
+    learn-say($env, @l);
     0;
 }
 
@@ -2571,7 +2844,7 @@ sub mint-operator-approval(%p, Str $by, Str :$kind = 'operator' --> Hash) {
 }
 
 sub operator-plan(Env $env, Global $g, Config $cfg, Loaded $agent, Str $plan-request --> Hash) {
-    my %plan-wp = try build-package($cfg, $agent, $g, $plan-request, '', 'none', :!learn);
+    my %plan-wp = (try build-package($cfg, $agent, $g, $plan-request, '', 'none', :!learn)) // %();
     return Hash if $!;
     my $raw = to-wire('WorkPackage', %plan-wp).encode('utf-8');
     my %receipt = runner-of($env).run(Cancel.new, %plan-wp, $agent, Options.new(:sink(SinkFunc.new(:f(-> % {}))), :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw)));
@@ -2699,7 +2972,7 @@ sub build-package(Config $cfg, Loaded $agent, Global $g, Str $request, Str $work
     # What is already known: the work context this run belongs to, and the
     # lessons whose scope matches it.  They go in as known things, beside
     # the task and under it; nothing here adds a grant or moves a limit.
-    my $ctx = $g.context ne '' ?? $g.context !! (%*ENV<DO_321_CONTEXT> // '');
+    my $ctx = $g.context ne '' ?? $g.context !! (%*ENV<DO_321_CONTEXT> // '').Str;
     my @lesson-ids;
     # A skill selected for this job is words in its package: checked
     # against the digest it was installed with, and no grant.
@@ -2801,6 +3074,16 @@ sub brief-event-text(%e --> Str) {
 #| for (changed, proposal, cost when a model was used, receipt); then the
 #| next step.  The tool calls and a cost of none are --verbose.  The words
 #| are the receipt's own; nothing here says the work is right.
+my sub harness-label(Str $n --> Str) { $n eq 'claude_code' ?? 'Claude Code' !! $n eq 'codex' ?? 'Codex' !! $n }
+#| A harness's version as a bare number: its own name is said beside it.
+my sub bare-version(Str $v --> Str) { ($v ~~ / (\d+ [ '.' \d+ ]+ <[\w.-]>*) / ?? ~$0 !! $v).Str }
+#| The profile a plan ran on, in brackets; a model named by hand is said so instead.
+my sub profile-note(%p --> Str) {
+    return ' (the model you named)' if @(%p<overrides> // []).first(*.starts-with('model '));
+    my $what = (%p<task> // '') ne '' ?? " for {%p<task>} work" !! '';
+    (%p<profile> // '') ne '' ?? " ({%p<profile>}$what)" !! '';
+}
+
 sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefix = '', Str :$workspace = '', Bool :$lead = True, Bool :$verbose = False) {
     my sub row(Str $k, Str $v) { $w.say($_) for flat row-lines($k, $v) }
     my $status = %r<status>;
@@ -2838,8 +3121,23 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
             !! 'it is a plan, not an approval, and nothing was deployed';
         detail("written to {$run-dir.add('proposal.json')}; $note");
     }
+    # What the run was pinned to, in a line; the reasons are a step away.
+    with %r<plan> -> %p {
+        if (%p<modelName> // '') ne '' || (%p<profile> // '') ne '' {
+            my @climbed = @(%p<escalated> // []);
+            my $first = @climbed ?? @climbed[0]<from> !! plan-words(%p);
+            row('ran on:', $first ~ (@climbed ?? '' !! profile-note(%p)));
+            row('', "then {.<to>}, from attempt {.<attempt> + 1}: {.<why>}") for @climbed;
+            if $verbose {
+                row('harness:', harness-label(%p<harness>) ~ ((%p<harnessVersion> // '') ne '' ?? " {bare-version(%p<harnessVersion>)}" !! ''));
+                row('why:', $_) for @(%p<reasons> // []);
+                row('set by you:', @(%p<overrides>).join(', ')) if @(%p<overrides> // []);
+                row('not used:', "{.<harness>}: {.<why>}") for @(%p<considered> // []);
+            }
+        }
+    }
     my $attempts = @(%r<attempts>).elems;
-    my $spent = sprintf('$%.2f, ', %r<cost><usd>) ~ many-of(%r<cost><turns>.Int, 'turn') ~ ', ' ~ many-of($attempts, 'attempt');
+    my $spent = usd-words(%r<cost><usd>) ~ ', ' ~ many-of(%r<cost><turns>.Int, 'turn') ~ ', ' ~ many-of($attempts, 'attempt');
     given %r<cost><basis> {
         when COST-NONE { row('cost:', 'none (no model was used)') if $verbose }
         when COST-HARNESS { row('cost:', "$spent, as the harness reported") }
@@ -2890,8 +3188,20 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     # whatever repository the terminal happens to be in is not evidence
     # of anything the run did.
     ($workspace, $kind) = ('', 'none') unless touches-workspace($agent.manifest);
-    my %wp = try build-package($cfg, $agent, $g, $request, $workspace, $kind, home => home-of($env));
+    my %wp = (try build-package($cfg, $agent, $g, $request, $workspace, $kind, home => home-of($env))) // %();
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-USAGE }
+
+    # What the agent asks the runtime for, for this request: read from its
+    # own curation and what was recorded here, and from what was set by hand.
+    my $want = try want-for(home-of($env), $agent, %wp, $g.asked);
+    if $! { $env.stderr.say("321: {$!.message}"); return EXIT-USAGE }
+    # What the project pins: a run on another version of the agent or of a
+    # skill is refused before anything starts, and told what differs.
+    if package-pin-problems(home-of($env), $agent, %wp) -> @differs {
+        $env.stderr.say("{glyph('no')} 321 $name: $_") for @differs;
+        $env.stderr.say(next-text('see what this project pins beside what is here', '321 trust project'));
+        return EXIT-DENIED;
+    }
 
     # The CLI invocation is itself the human approval: for an interactive
     # operator `go`, plan first and attach an approval bound to that plan.
@@ -2967,7 +3277,8 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
                     ?? SinkFunc.new(:f(-> %e { my $t = brief-event-text(%e); if $t ne '' { live-line($out, "  {glyph('dot')} $t"); $live = True } }))
                     !! SinkFunc.new(:f(-> % {}));
     my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$signals, :$sink, :history-dir($run-dir.Str),
-        :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8'))));
+        :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8')),
+        :$want, :models(models-here(home-of($env)))));
     $ctx.cancel;
     wipe-live($out) if $live;
     %receipt = sign-receipt-if-keyed(%receipt, home-of($env));

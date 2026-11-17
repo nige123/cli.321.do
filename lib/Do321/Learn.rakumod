@@ -300,6 +300,10 @@ class Work is export {
     has Str $.signature = '';       # its value, '' for a receipt nobody signed
     has Str $.signed-by = '';       # the id of the key that signed it
     has DateTime $.started;
+    has Str $.task = '';            # the kind of work, as the plan read it
+    has Str $.profile = '';         # the configuration the run ended on
+    has Str $.model = '';           # the model's name there, '' when the harness used its own
+    has Str $.effort = '';
     method who(--> Str) { $!agent.contains('/') ?? $!agent.split('/').tail !! $!agent }
     method finished(--> Bool) { so $!status eq 'completed' | 'no_change' }
 }
@@ -333,6 +337,8 @@ sub read-work(IO::Path $home, Int :$days = 30, Int :$cap = 2000, DateTime :$now 
             receipt-digest => ($doc<receiptDigest> // '').Str, signature => (($doc<signature> // {})<value> // '').Str, signed-by => (($doc<signature> // {})<keyId> // '').Str,
             context => ((%ap{$id} // {})<context> // '').Str,
             lessons => @((%ap{$id} // {})<lessons> // []),
+            task => (($doc<plan> // {})<task> // '').Str, profile => (($doc<plan> // {})<profile> // '').Str,
+            model => (($doc<plan> // {})<modelName> // '').Str, effort => (($doc<plan> // {})<effort> // '').Str,
             outcome => ((%oc{$id} // {})<outcome> // '').Str));
     }
     @out.List;

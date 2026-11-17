@@ -74,7 +74,8 @@
         "byProcedure": { "type": "object", "additionalProperties": { "$ref": "#/$defs/safeRelPath" } }
       }
     },
-    "evaluations": { "type": "array", "items": { "$ref": "#/$defs/safeRelPath" } }
+    "evaluations": { "type": "array", "items": { "$ref": "#/$defs/safeRelPath" } },
+    "curation": { "$ref": "#/$defs/safeRelPath", "description": "The agent's configuration of execution curation (curation.v1): the kinds of work it tells apart, the size class of model and the effort it asks for each, and the steps it may climb. It asks; the runtime decides. It names no vendor, grants nothing and moves no limit." }
   },
   "$defs": {
     "safeRelPath": { "type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))[^\\\\]+$", "description": "Relative, forward slashes, no . or .. segments, no absolute prefix, no backslash." },

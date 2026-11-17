@@ -1,0 +1,167 @@
+# The commands a person sees the choice through: what a harness can be
+# asked for, what an agent would run a request on, setting it by hand,
+# and which version of a harness is trusted here.  The same plan comes
+# back whether the run is asked at a terminal or handed over as a package.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Adapter;
+use Do321::Codex;
+use Do321::Versions;
+
+my $home = temp-dir();
+$home.chmod(0o700);
+my $dir = fixture('example.test/helper');
+my $trust = temp-dir().add('trust.json');
+$trust.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+    publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+    aliases => { helper => 'example.test/helper' } })));
+
+# A harness that keeps its versions side by side, the command a link to one.
+my $bin = temp-dir();
+my $versions = $bin.add('versions');
+$versions.mkdir;
+for <1.0.0 1.1.0> -> $v {
+    my $f = $versions.add($v);
+    $f.spurt(fake-claude().slurp.subst('fake-claude 0.0.1', "$v (Fake)"));
+    $f.chmod(0o755);
+}
+my $link = $bin.add('claude');
+run 'ln', '-s', $versions.add('1.1.0').Str, $link.Str;
+my $log = temp-dir().add('argv.log');
+
+my %ENV = DO_321_HOME => $home.Str, DO_321_CONTEXT => '', PATH => "{$bin}:{%*ENV<PATH>}", FAKE_CLAUDE_LOG => $log.Str, DO_321_CODEX_BINARY => '/nonexistent/codex';
+sub cli(*@args --> List) { x321('--trust', $trust.Str, |@args, env => %ENV, cwd => $home) }
+sub last-receipt(--> Hash) { parse-json($home.add('runs').dir.grep(*.d).sort(*.basename).tail.add('receipt.json').slurp) }
+
+subtest 'what a harness here can be asked for' => {
+    my ($rc, $out) = cli('--plain', 'models');
+    is $rc, 0, 'models answers';
+    ok $out.contains('haiku') && $out.contains('small') && $out.contains('$0.10 in, $0.50 out per million tokens'), 'a model, its size and its list price' or diag $out;
+    ok $out.contains('for estimates only'), 'a price is called an estimate';
+    ok $out.contains('price not recorded') && $out.contains('priced as unknown'), 'a harness that reports no cost is said to, never shown as free';
+    my %j = parse-json(cli('--json', 'models')[1]);
+    is %j<schema>, 'models.v1', 'as a document for a program';
+    ok %j<harnesses>.first({ .<harness> eq 'claude_code' })<models>.elems == 3, 'with each model a harness reaches';
+    my @b = cli('--brief', 'models')[1].lines;
+    is @b.grep(*.starts-with("model\tclaude_code\thaiku\tsmall\t0.1\t0.5")).elems, 1, 'and a record per model in a pipeline' or diag @b.raku;
+    $home.add('models').mkdir;
+    $home.add('models').add('broken.json').spurt('{"schema":"model-connector.v1"}');
+    ok cli('--plain', 'models')[1].contains('left out:') , 'a connector file that is not sound is named, not silently dropped';
+    $home.add('models').add('broken.json').unlink;
+}
+
+subtest 'what an agent would run a request on' => {
+    my ($rc, $out) = cli('--plain', 'choose', 'helper', 'explain', 'the', 'build');
+    is $rc, 0, 'choose answers';
+    ok $out.contains('nothing was run'), 'and says nothing ran';
+    ok $out.contains('would run on: haiku, low effort (economy for read work)'), 'the choice, in a line' or diag $out;
+    ok $out.contains("it says 'explain'"), 'and the reason';
+    ok $out.contains('if harder:') && $out.contains('never past the budget'), 'and how far it may climb';
+    nok $home.add('runs').d && $home.add('runs').dir.elems, 'no run was recorded';
+    ($rc, $out) = cli('--plain', '--profile', 'deep', 'choose', 'helper', 'explain', 'it');
+    ok $out.contains('opus, high effort') && $out.contains('set by you:   profile deep'), 'a profile set by hand is used and said' or diag $out;
+    ok $out.contains('321 --profile deep helper explain it'), 'and the next command keeps it';
+    my %j = parse-json(cli('--json', '--model', 'sonnet', 'choose', 'helper', 'explain', 'it')[1]);
+    ok %j<schema> eq 'choice.v1' && %j<plan><modelName> eq 'sonnet' && %j<plan><schema> eq 'execution-plan.v1', 'the plan as a document';
+    my ($r2, $o2, $e2) = cli('--model', 'gpt-nine', 'choose', 'helper', 'explain', 'it');
+    ok $r2 != 0 && ($o2 ~ $e2).contains('gpt-nine'), 'a model nothing here reaches is refused in words' or diag "$o2\n$e2";
+    ($r2, $o2, $e2) = cli('--profile', 'heroic', 'choose', 'helper', 'explain', 'it');
+    ok $r2 == 64 && $e2.contains('heroic'), 'so is a profile the agent does not have';
+    is cli('choose', 'helper')[0], 64, 'and a request is needed';
+}
+
+subtest 'a run is pinned to its plan, at a terminal or handed over' => {
+    $log.spurt('');
+    my ($rc, $out, $err) = cli('--plain', '--network', 'open', 'helper', 'explain', 'the', 'build');
+    is $rc, 0, 'the run completes' or diag "$out\n$err";
+    ok $log.slurp.contains('--model claude-haiku-5-5') && $log.slurp.contains('--effort low'), 'the harness was given the model and the effort' or diag $log.slurp;
+    ok $out.contains('ran on:       haiku, low effort (economy for read work)'), 'the receipt screen says what it ran on' or diag $out;
+    my %r = last-receipt();
+    is (%r<plan><harness>, %r<plan><harnessVersion>, %r<plan><model>, %r<plan><effort>).join(' '), 'claude_code 1.1.0 (Fake) claude-haiku-5-5 low', 'and the receipt pins harness, version, model and effort';
+    is validate-run-receipt(%r).list.elems, 0, 'the receipt is sound' or diag validate-run-receipt(%r).list.raku;
+
+    $log.spurt('');
+    ($rc, $out, $err) = cli('--plain', '--network', 'open', '--model', 'opus', '--effort', 'max', 'helper', 'explain', 'the', 'build');
+    ok $log.slurp.contains('--model claude-opus-5-5') && $log.slurp.contains('--effort max'), 'what a person set by hand is what ran' or diag $log.slurp;
+    is last-receipt()<plan><overrides>.join('; '), 'effort max; model opus', 'and the receipt says a person set it';
+
+    # the same package, handed over the way a work system does
+    my %wp = %( |%r<package> ) if %r<package>:exists;
+    my $pkg-file = $home.add('runs').dir.grep(*.d).sort(*.basename).tail.add('work-package.json');
+    if $pkg-file.f {
+        my %p = parse-json($pkg-file.slurp);
+        %p<packageId> = new-ulid();
+        $log.spurt('');
+        my ($r3, $o3, $e3) = x321('--trust', $trust.Str, 'run', '--package', '-', in => encode-json(%p), env => %ENV, cwd => $home);
+        my %got = parse-json($o3.lines.tail);
+        is %got<plan><modelName>, 'haiku', 'a package handed over is curated the same way' or diag "$o3\n$e3";
+        ok $log.slurp.contains('--model claude-haiku-5-5'), 'and reaches the harness the same';
+        ($r3, $o3, $e3) = x321('--trust', $trust.Str, 'run', '--package', '-', '--profile', 'standard', in => encode-json(%( |%p, packageId => new-ulid() )), env => %ENV, cwd => $home);
+        is parse-json($o3.lines.tail)<plan><modelName>, 'sonnet', 'and takes the same words to set it by hand' or diag "$o3\n$e3";
+    }
+    else { skip 'no package file beside the receipt', 3 }
+}
+
+subtest 'which version of a harness is trusted here' => {
+    my ($rc, $out) = cli('--brief', 'harness', 'check');
+    my @claude = $out.lines.first(*.contains('claude_code')).split("\t");
+    is @claude[2, 3].join(' '), 'look 1.1.0', 'a version nobody promoted, with a flag its help does not name, is worth a look' or diag $out;
+    ok $out.lines.first(*.contains('codex')).contains('not ready'), 'a harness that is not here is not ready';
+    is cli('--brief', 'harness', 'pin', 'claude_code', '1.0.0')[1].trim, "promoted\tclaude_code\t1.0.0\theld", 'an earlier version kept on disk can be promoted';
+    is pinned-binary($home, 'claude_code'), $versions.add('1.0.0').Str, 'and is then the executable 321 runs';
+    $log.spurt('');
+    cli('--plain', '--network', 'open', 'helper', 'explain', 'the', 'build');
+    is last-receipt()<harness><version>, '1.0.0 (Fake)', 'a run is on the promoted version, though the command points at a newer one';
+    is cli('--brief', 'harness', 'check', 'claude_code')[1].split("\t")[1 .. 4].join(' '), 'claude_code fits, newer than promoted 1.1.0 1.0.0', 'check says a newer one is installed';
+    is cli('--brief', 'harness', 'pin', 'claude_code')[1].trim, "promoted\tclaude_code\t1.1.0\theld\t1.0.0", 'promoting with no version takes the one installed';
+    is cli('--brief', 'harness', 'check', 'claude_code')[1].split("\t")[2], 'fits, promoted', 'what its help lacked when promoted is no longer news';
+    is cli('--brief', 'harness', 'rollback', 'claude_code')[1].trim, "promoted\tclaude_code\t1.0.0\theld\t1.1.0", 'rollback goes back to the one before';
+    cli('--plain', '--network', 'open', 'helper', 'explain', 'the', 'build');
+    is last-receipt()<harness><version>, '1.0.0 (Fake)', 'and runs are on it again';
+    my ($r2, $o2, $e2) = cli('harness', 'pin', 'claude_code', '9.9.9');
+    ok $r2 != 0 && $e2.contains('is not on this machine'), 'a version that is not here cannot be promoted';
+    $versions.add('1.0.0').unlink;
+    is pinned-binary($home, 'claude_code'), '', 'a promoted version that has gone from disk leaves the choice to PATH';
+    ($r2, $o2, $e2) = cli('harness', 'rollback', 'codex');
+    ok $r2 != 0 && $e2.contains('nothing is promoted'), 'and there is nothing to go back from where nothing was promoted';
+    is versions-beside('/nonexistent/x').elems, 0, 'a harness installed in place keeps no versions beside it';
+}
+
+subtest 'an agent carries its own configuration of the shared curation' => {
+    my $careful = fixture('example.test/careful');
+    my $t2 = temp-dir().add('trust.json');
+    $t2.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => {
+            helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT },
+            careful => { path => $careful.Str, version => '1.2.0', digest => compute($careful)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { helper => 'example.test/helper', careful => 'example.test/careful' } })));
+    my sub c2(*@args) { x321('--trust', $t2.Str, |@args, env => %ENV, cwd => $home) }
+    my %a = parse-json(c2('--json', 'choose', 'helper', 'explain', 'the', 'build')[1])<plan>;
+    my %b = parse-json(c2('--json', 'choose', 'careful', 'explain', 'the', 'build')[1])<plan>;
+    is (%a<profile>, %a<modelName>, %a<effort>).join(' '), 'economy haiku low', 'one agent reads the request as light work';
+    is (%b<profile>, %b<modelName>, %b<effort>, %b<taskFrom>).join(' '), 'careful opus high default', 'another, by its own curation, gives the same request its careful profile';
+    is (%b<maxEscalations> // 0), 0, 'and keeps its own bound on climbing';
+    is parse-json(c2('--json', 'choose', 'careful', 'find', 'the', 'config')[1])<plan><profile>, 'quick', 'its own marking words are its own';
+    # a curation that reaches for a limit stops the run before any harness starts
+    my $bad = temp-dir().add('careful');
+    copy-tree($careful, $bad);
+    $bad.add('curation.json').spurt('{"schema":"curation.v1","profiles":{"a":{"tier":"small"}},"order":["a"],"default":"a","limits":{"maxUsd":500}}');
+    $bad.add('DIGEST').spurt(compute($bad)[0] ~ "\n");
+    $log.spurt('');
+    my $t3 = temp-dir().add('trust.json');
+    $t3.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => {
+            careful => { path => $bad.Str, version => '1.2.0', digest => compute($bad)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { careful => 'example.test/careful' } })));
+    my ($rc, $out, $err) = x321('--trust', $t3.Str, '--network', 'open', 'careful', 'explain', 'it', env => %ENV, cwd => $home);
+    ok $rc != 0 && ($out ~ $err).contains('moves no limit'), 'a curation that reaches for a limit is refused in words' or diag "$rc\n$out\n$err";
+    is $log.slurp, '', 'and no harness was started';
+}
+
+done-testing;

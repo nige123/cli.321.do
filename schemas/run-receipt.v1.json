@@ -26,7 +26,7 @@
     "attempts": {
       "type": "array",
       "items": { "type": "object", "additionalProperties": false, "required": ["n", "adapter", "startedAt", "endedAt", "endReason", "cost"],
-        "properties": { "n": { "type": "integer" }, "adapter": { "type": "string" }, "startedAt": { "type": "string" }, "endedAt": { "type": "string" }, "endReason": { "type": "string" }, "sessionRef": { "type": "string" }, "cost": { "$ref": "#/$defs/cost" } } }
+        "properties": { "n": { "type": "integer" }, "adapter": { "type": "string" }, "startedAt": { "type": "string" }, "endedAt": { "type": "string" }, "endReason": { "type": "string" }, "sessionRef": { "type": "string" }, "cost": { "$ref": "#/$defs/cost" }, "model": { "type": "string", "description": "The model this attempt was pinned to, as the harness names it; absent when the harness used its own." }, "effort": { "type": "string" }, "profile": { "type": "string" } } }
     },
     "directives": {
       "type": "object", "additionalProperties": false, "required": ["received", "applied", "rejected"],
@@ -84,6 +84,27 @@
     "stop": { "type": "object", "required": ["issuer", "at"], "properties": { "issuer": { "type": "object", "properties": { "kind": { "type": "string" }, "id": { "type": "string" }, "url": { "type": "string" } } }, "at": { "type": "string" }, "reason": { "type": "string" }, "directiveId": { "type": "string" } } },
     "denied": { "type": "object", "required": ["reason"], "properties": { "reason": { "type": "string" }, "details": { "type": "array", "items": { "type": "string" } } } },
     "uncertain": { "type": "array", "items": { "type": "string" }, "description": "Effects the runtime cannot confirm or undo, stated honestly." },
+    "plan": {
+      "type": "object", "additionalProperties": false, "required": ["schema", "harness", "planDigest"],
+      "description": "The execution plan the run was pinned to before it began (execution-plan.v1). The agent's curation asked for a size class of model and an effort; the runtime chose a harness that enforces the package and can run it, and recorded why. Changed only between attempts, by a step the plan itself lists; each such step is in escalated. planDigest is over the plan as first pinned.",
+      "properties": {
+        "schema": { "const": "execution-plan.v1" },
+        "task": { "type": "string" }, "taskFrom": { "enum": ["stated", "matched", "default"] }, "profile": { "type": "string" },
+        "harness": { "type": "string" }, "harnessVersion": { "type": "string" },
+        "provider": { "type": "string" }, "model": { "type": "string" }, "modelName": { "type": "string" },
+        "tier": { "enum": ["small", "medium", "large"] }, "access": { "enum": ["harness", "runtime"] }, "effort": { "type": "string" },
+        "skills": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string" }, "version": { "type": "string" }, "digest": { "type": "string" } } } },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "considered": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["harness", "why"], "properties": { "harness": { "type": "string" }, "why": { "type": "string" } } } },
+        "overrides": { "type": "array", "items": { "type": "string" } },
+        "ladder": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["profile", "tier"], "properties": { "profile": { "type": "string" }, "tier": { "type": "string" }, "effort": { "type": "string" } } } },
+        "maxEscalations": { "type": "integer" },
+        "escalateOn": { "type": "array", "items": { "enum": ["harness_failure", "unmet_conditions"] } },
+        "escalated": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["attempt", "from", "to", "why"], "properties": { "attempt": { "type": "integer" }, "from": { "type": "string" }, "to": { "type": "string" }, "why": { "type": "string" } } } },
+        "evidence": { "type": "object", "additionalProperties": false, "required": ["comparable", "judged", "accepted", "basis"], "description": "The earlier comparable runs the choice rested on. medianUsd rests on usdRuns runs that reported a cost; it is absent when none did, never zero.", "properties": { "comparable": { "type": "integer" }, "judged": { "type": "integer" }, "accepted": { "type": "integer" }, "medianUsd": { "type": "number" }, "medianSeconds": { "type": "integer" }, "usdRuns": { "type": "integer" }, "basis": { "type": "string" } } },
+        "planDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
     "receiptDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "sha256 over the canonical JSON of this receipt with receiptDigest empty and signature absent." },
     "signature": { "type": "object", "required": ["keyId", "algorithm", "value"], "properties": { "keyId": { "type": "string" }, "algorithm": { "const": "ed25519" }, "value": { "type": "string" } } }
   },

@@ -17,6 +17,8 @@ use Do321::Adapter;
 use Do321::Trust;
 use Do321::Controller;
 use Do321::Enforcement;
+use Do321::Models;
+use Do321::Plan;
 
 #| Receives run events in order.  Implementations must not block for
 #| long: the wire layer buffers and coalesces; tests collect.
@@ -68,6 +70,11 @@ class Options is export {
     #| The controllers to drive (an IZ4 driver, say).  Unset means the
     #| defaults; an empty list means none.
     has $.controllers;
+    #| What the agent's curation asks for this run (Do321::Plan::Want);
+    #| undefined asks for nothing, and the harness's own model is used.
+    has $.want;
+    #| The models known here (Do321::Models), for pinning the plan.
+    has @.models;
 }
 
 # --------------------------------------------------------------- prompt
@@ -562,6 +569,8 @@ class Session is export {
     has %.receipt;
     has @.grants is rw;
     has $.adapter is rw;
+    has %.plan is rw;                    # the execution plan this run is pinned to
+    has @!carry;                         # what the next attempt is told of the one before it
     has $.procedure is rw;
     has %.captures is rw;
     has Lock $!mu = Lock.new;
@@ -790,9 +799,12 @@ class Session is export {
             my $attempt-ctx = $run-ctx.child;
             $!dir.attempt-started($attempt-ctx, %live);
             my ($instructions, $applying) = $!dir.take-instructions;
+            if @!carry { $instructions = [ |@!carry, |@$instructions ]; @!carry = () }
             self.refresh-controllers($n);
             my $spec = self.spec($n, @$instructions, $last.session-ref);
-            self.emit(EVENT-ATTEMPT-STARTED, %( attempt => $n, adapter => $!adapter.name, instructions => @$instructions.elems, resumed => $spec.session-ref ne '' ));
+            self.emit(EVENT-ATTEMPT-STARTED, %( attempt => $n, adapter => $!adapter.name, instructions => @$instructions.elems, resumed => $spec.session-ref ne '',
+                |((%!plan<modelName> // '') ne '' ?? (model => %!plan<modelName>) !! ()),
+                |((%!plan<effort> // '') ne '' ?? (effort => %!plan<effort>) !! ()) ));
             $!dir.applied($_) for @$applying;
             my $started = &!now();
             my ($out, $err) = self.run-attempt($attempt-ctx, $spec);
@@ -805,7 +817,8 @@ class Session is export {
             }
             %!spent = add-cost(%!spent, $out.cost);
             %!receipt<attempts>.push(doc('Attempt', n => $n, adapter => $!adapter.name, startedAt => $started, endedAt => &!now(),
-                endReason => end-reason($out, $boundary, $run-ctx), sessionRef => $out.session-ref, cost => $out.cost));
+                endReason => end-reason($out, $boundary, $run-ctx), sessionRef => $out.session-ref, cost => $out.cost,
+                model => $spec.model, effort => $spec.effort, profile => (%!plan<profile> // '')));
             if $out.session-ref ne '' {
                 %!receipt<harness><sessionRefs> = [ |@(%!receipt<harness><sessionRefs> // []), $out.session-ref ];
             }
@@ -842,9 +855,24 @@ class Session is export {
                 $last.session-ref = '' unless enforces(%live, FEAT-SESSION-CONTINUE);
                 next;
             }
+            # A check showed the work needs more than this configuration
+            # gave: climb one step of the plan's own ladder and go on, while
+            # the budget and the plan's bound allow.  Nothing done is redone:
+            # the harness session carries over where the harness keeps one.
+            my $gap = self.capability-gap($out);
+            if $gap ne '' && self.budget-exhausted eq '' {
+                my $moved = escalate-plan(%!plan, $!adapter, $!opts.models, $n, $gap);
+                if $moved ne '' {
+                    self.emit(EVENT-PROGRESS, %( text => "$gap; going on with more: $moved" ));
+                    @!carry.push("The attempt before this one did not finish the work ($gap). Go on from where it stopped. Do not repeat anything that is already done.");
+                    $last.session-ref = '' unless enforces(%live, FEAT-SESSION-CONTINUE);
+                    next;
+                }
+            }
             %!receipt<status> = $out.status;
             last;
         }
+        %!receipt<plan> = %!plan if %!plan;
         $!dir.finish-run;
         self.fill($last);
         self.check-controllers;
@@ -1118,6 +1146,32 @@ class Session is export {
             humanDecision => ($g.human ne '' ?? $g.human !! 'none was needed'), gaps => [ |$g.gaps.unique ]);
     }
 
+    #| Why the attempt that just ended calls for a stronger configuration,
+    #| or '' when it does not.  Only what 321 saw counts: the harness
+    #| failing or ending with no result, or the agent itself reporting a
+    #| done condition unmet.  An attempt that acted outside the workspace
+    #| is never followed by another on its account, and a blocked attempt
+    #| is a question for a person, not for a larger model.
+    method capability-gap(Outcome $out --> Str) {
+        return '' unless %!plan && @(%!plan<ladder> // []);
+        return '' if $!procedure.defined || $out.external-action.defined || $out.denials;
+        # What a climb may answer is the plan's own list.  A harness that
+        # failed is the default and the only one: an unmet condition is as
+        # often something missing on the machine as a model too small, and a
+        # larger model cannot install it.  An agent's curation may add it.
+        my %on = @(%!plan<escalateOn> // ['harness_failure']).map({ $_ => True });
+        if $out.status eq STATUS-FAILED {
+            return 'the harness stopped before a result' if %on<harness_failure> && $out.end-reason eq 'harness_error' | 'no_result';
+            return '';
+        }
+        if %on<unmet_conditions> && is-in($out.status, [STATUS-COMPLETED, STATUS-NO-CHANGE]) {
+            my @want = @(%!wp<completion><conditions> // []);
+            my @unmet = @want.keys.grep({ !(($out.conditions[$_] // {})<met>) });
+            return "{+@unmet} of {+@want} done conditions were not met" if @want && @unmet;
+        }
+        '';
+    }
+
     method run-attempt(Cancel $ctx, Spec $spec --> List) {
         my %live = $!adapter.enforcement;
         my $self = self;
@@ -1141,7 +1195,7 @@ class Session is export {
         Spec.new(:package(%!wp), :agent($!agent), :attempt($n), :workspace(%!wp<workspace><path>),
             :prompt(render-prompt(%!wp, $!agent, @!grants, @instructions, :policy($!policy-text))), :@instructions, :grants(@!grants),
             :%limits, :$session-ref, :output-schema($schema // ''), :procedure($!procedure), :captures(%!captures),
-            :overlay($overlay // Str), |self.hook-spec);
+            :overlay($overlay // Str), :model((%!plan<model> // '').Str), :effort((%!plan<effort> // '').Str), |self.hook-spec);
     }
 
     #| What this attempt may still spend: the package limits less
@@ -1264,11 +1318,16 @@ class Runner is export {
         with $proc {
             $ad = $!adapters.get('procedure');
             return $s.deny('no procedure executor is registered', []) without $ad;
+            $s.plan = procedure-plan($ad);
             $s.emit(EVENT-PROCEDURE-SELECTED, %( procedure => $proc<name> ));
         }
         else {
             my @reqs = requirements($agent.manifest, %wp, @$grants);
-            my ($chosen, $rejections) = $!adapters.select(@reqs, $opts.policy<adapters> // {}, $opts.adapter);
+            # The agent's curation asked; here the runtime answers.  The
+            # harness must enforce the package first, and then be able to
+            # run what was asked: never the other way about.
+            my $want = $opts.want // Want.new;
+            my ($chosen, $plan, $rejections) = pin-plan($!adapters, @reqs, $opts.policy<adapters> // {}, $opts.adapter, $want, $opts.models);
             without $chosen {
                 my @details = @$rejections.map(*.Str);
                 @details.push('required enforcement: ' ~ @reqs.map(*.feature).join(', ')) if @reqs;
@@ -1279,7 +1338,11 @@ class Runner is export {
                 return $s.deny('no installed adapter can enforce what this package requires', @details);
             }
             $ad = $chosen;
-            $s.emit(EVENT-ADAPTER-SELECTED, %( adapter => $ad.name, version => $ad.detect.version ));
+            $s.plan = %$plan;
+            $s.emit(EVENT-ADAPTER-SELECTED, %( adapter => $ad.name, version => $plan<harnessVersion>,
+                |(($plan<modelName> // '') ne '' ?? (model => $plan<modelName>) !! ()),
+                |(($plan<effort> // '') ne '' ?? (effort => $plan<effort>) !! ()),
+                |(($plan<profile> // '') ne '' ?? (profile => $plan<profile>) !! ()) ));
         }
         $s.adapter = $ad;
         $s.procedure = $proc;

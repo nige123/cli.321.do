@@ -46,6 +46,8 @@ class Spec is export {
     has $.procedure;             # a Procedure document, or Any
     has %.captures;
     has Str $.overlay;           # adapter-specific tuning, or Str
+    has Str $.model = '';        # the model this attempt is pinned to, as the harness names it; '' is its own default
+    has Str $.effort = '';       # the effort setting pinned for this attempt; '' is the harness's own
     has %.hook-controls;         # controller name => the controls to register for this run
     has Str $.hook-self = '';    # the 321 command the harness should call back
     has %.hook-env;              # extra environment for the harness, so its hooks can report back
@@ -83,6 +85,26 @@ role Adapter is export {
     method detect(--> Detection) { ... }
     method enforcement(--> Hash) { ... }
     method run(Cancel $cancel, Spec $spec, Control $ctl --> Outcome) { ... }
+    #| What this harness can be asked for, beyond what it enforces: whose
+    #| models it reaches and how, whether a model and an effort can be
+    #| named for one run, and what it reports of a run's cost.  Claim only
+    #| what it really does: a run is placed by these words.
+    #|   providers   the model providers it reaches (model-connector.v1)
+    #|   access      'harness' when it signs in and calls the provider itself
+    #|   sets-model  a model can be named for one run
+    #|   efforts     the effort settings it can be given, least first
+    #|   reports     usd and tokens: whether a run's own figures come back
+    #|   spend-cap   a money limit is held by the harness itself
+    method manifest(--> Hash) {
+        %( providers => [], access => 'none', sets-model => False, efforts => [], reports => %( usd => False, tokens => False ), spend-cap => False )
+    }
+    #| The harness's executable as found here ('' when there is none), how
+    #| its help is asked for, and the flags this adapter passes it: what
+    #| `321 harness check` reads to see a new version still fits.
+    method executable(--> Str) { '' }
+    method command-name(--> Str) { '' }
+    method help-argv(--> List) { () }
+    method flags-used(--> List) { () }
     #| Which controls this harness lets a controller operate, and how
     #| strongly: a Hash of control => strength.  Absent means none.  Claim
     #| only what the harness really does.
@@ -172,8 +194,10 @@ class Rejection is export {
     has Str $.unavailable = '';
     has @.missing;
     has Bool $.denied = False;
+    has Str $.unfit = '';        # it enforces enough, and cannot run what the plan asks
     method Str {
         return "$!adapter: denied by policy" if $!denied;
+        return "$!adapter: $!unfit" if $!unfit ne '';
         return "$!adapter: unavailable: $!unavailable" if $!unavailable ne '';
         "$!adapter: cannot enforce {@!missing.join(', ')}";
     }
@@ -216,6 +240,31 @@ class Registry is export {
             @rejections.push(Rejection.new(:adapter($only), :unavailable('no such adapter')));
         }
         (Adapter, @rejections);
+    }
+
+    #| Every adapter that select could have returned, in the same order,
+    #| with the rejections: a plan is pinned to the first of them that can
+    #| also run the model it asks for.
+    method qualifying(@reqs, %policy, Str $only = '' --> List) {
+        my %denied = @(%policy<denied> // []).map({ $_ => True });
+        my @preferred = @(%policy<preferred> // []);
+        my %preferred = @preferred.map({ $_ => True });
+        my (@ok, @rejections);
+        for self!ordered(@preferred) -> $a {
+            next if $only ne '' && $a.name ne $only;
+            next if %!hidden{$a.name} && $only ne $a.name && !%preferred{$a.name};
+            if %denied{$a.name} { @rejections.push(Rejection.new(:adapter($a.name), :denied)); next }
+            my $det = $a.detect;
+            unless $det.available { @rejections.push(Rejection.new(:adapter($a.name), :unavailable($det.reason))); next }
+            my %enf = $a.enforcement;
+            my @missing = @reqs.grep({ !enforces(%enf, .feature) }).map({ "{.feature} ({.reason})" });
+            if @missing { @rejections.push(Rejection.new(:adapter($a.name), :@missing)); next }
+            @ok.push($a);
+        }
+        if $only ne '' && !self.get($only) {
+            @rejections.push(Rejection.new(:adapter($only), :unavailable('no such adapter')));
+        }
+        (@ok.List, @rejections.List);
     }
 
     method !ordered(@preferred --> List) {
@@ -308,8 +357,13 @@ class ProcedureAdapter does Adapter is export {
     has %.tools;                # name => Tool
     has %.fake-controls;        # fake mode: the controls a stand-in harness claims
     has Bool $.fake-install-fails = False;
+    has %.fake-manifest;        # fake mode: what a stand-in harness says it can be asked for
 
     method name(--> Str) { $!adapter-name }
+    method manifest(--> Hash) {
+        %!fake-manifest ?? %!fake-manifest
+            !! %( providers => [], access => 'none', sets-model => False, efforts => [], reports => %( usd => False, tokens => False ), spend-cap => False )
+    }
     method detect(--> Detection) { Detection.new(:available, :version<built-in>) }
     method enforcement(--> Hash) { %( features().map({ $_ => True }) ) }
     #| Deterministic steps have no model, so there is no tool call, write or
@@ -782,8 +836,8 @@ sub build-proposal(Spec $spec, %data --> Hash) is export {
 sub new-procedure(:%tools --> ProcedureAdapter) is export { ProcedureAdapter.new(:adapter-name<procedure>, :%tools) }
 
 #| The deterministic fake adapter with an optional script.
-sub new-fake($script = Any, :%controls, Bool :$install-fails = False, Str :$name = 'fake' --> ProcedureAdapter) is export {
-    ProcedureAdapter.new(:adapter-name($name), :$script, :fake-controls(%controls), :fake-install-fails($install-fails));
+sub new-fake($script = Any, :%controls, Bool :$install-fails = False, Str :$name = 'fake', :%manifest --> ProcedureAdapter) is export {
+    ProcedureAdapter.new(:adapter-name($name), :$script, :fake-controls(%controls), :fake-install-fails($install-fails), :fake-manifest(%manifest));
 }
 
 # ------------------------------------------------------------ claude code
@@ -972,8 +1026,20 @@ class ClaudeCode does Adapter is export {
     has %.env;                       # replaces the environment when given (tests)
 
     method name(--> Str) { 'claude_code' }
+    method manifest(--> Hash) {
+        %( providers => ['anthropic'], access => 'harness', sets-model => True, efforts => [<low medium high xhigh max>],
+           reports => %( usd => True, tokens => True ), spend-cap => True )
+    }
 
     method !binary(--> Str) { $!binary ne '' ?? $!binary !! 'claude' }
+    method executable(--> Str) {
+        my $bin = self!binary;
+        my $path = ($bin.contains('/') || $bin.contains('\\')) ?? ($bin.IO.f ?? $bin.IO !! IO::Path) !! on-path($bin);
+        $path.defined ?? $path.Str !! '';
+    }
+    method command-name(--> Str) { 'claude' }
+    method help-argv(--> List) { ('--help',) }
+    method flags-used(--> List) { <--print --output-format --json-schema --model --effort --max-budget-usd --max-turns --permission-mode --resume --settings --verbose> }
 
     method detect(--> Detection) {
         my $bin = self!binary;
@@ -1053,10 +1119,16 @@ class ClaudeCode does Adapter is export {
             my $settings = claude-run-settings($spec.hook-self, $spec.hook-controls);
             @args.push('--settings', $settings) if $settings ne '';
         }
-        with $spec.overlay {
-            my $o = try parse-json($_);
-            @args.push('--model', $o<model>) if !$! && $o ~~ Associative && $o<model> ~~ Str && $o<model> ne '';
+        # The pinned plan names the model; a package's own overlay is the
+        # older way and stands only when no plan named one.
+        if $spec.model ne '' { @args.push('--model', $spec.model) }
+        else {
+            with $spec.overlay {
+                my $o = try parse-json($_);
+                @args.push('--model', $o<model>) if !$! && $o ~~ Associative && $o<model> ~~ Str && $o<model> ne '';
+            }
         }
+        @args.push('--effort', $spec.effort) if $spec.effort ne '';
         @args.List;
     }
 

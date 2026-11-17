@@ -1,0 +1,110 @@
+# Two people, one repository.  Each has a home of their own (their runs,
+# their trust file, their lessons); what the project knows and what it
+# pins are files in the repository, shared by committing them.  A pin
+# grants nothing: it can refuse a run on another version, and say why.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Registry;
+use Do321::Choose;
+
+my $dir = fixture('example.test/helper');
+my $repo = temp-dir();
+run 'git', 'init', '-q', $repo.Str;
+$repo.add('README.md').spurt("a project\n");
+my $log = temp-dir().add('argv.log');
+
+sub person(Str $pkg-dir = $dir.Str) {
+    my $home = temp-dir(); $home.chmod(0o700);
+    my $trust = temp-dir().add('trust.json');
+    $trust.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+        publishers => { 'example.test' => { packages => { helper => { path => $pkg-dir, version => '1.2.0', digest => compute($pkg-dir.IO)[0], trust => LEVEL-DEVELOPMENT } } } },
+        aliases => { helper => 'example.test/helper' } })));
+    %( home => $home, trust => $trust,
+       env => %( DO_321_HOME => $home.Str, DO_321_CONTEXT => '', DO_321_CLAUDE_BINARY => fake-claude().Str, DO_321_CODEX_BINARY => '/nonexistent/codex', FAKE_CLAUDE_LOG => $log.Str ) );
+}
+sub as(%who, *@args) { x321('--trust', %who<trust>.Str, |@args, env => %who<env>, cwd => $repo) }
+sub skill(%who, Str $text, Str $version) {
+    install-skill-doc(%who<home>, %( id => 'acme/review', version => $version, instructions => $text, digest => text-digest($text), description => 'how to review' ));
+}
+
+my %ann = person();
+my %bob = person();
+
+subtest 'what one learns, the other is given' => {
+    my ($rc, $out, $err) = as(%ann, '--plain', 'lessons', 'add', '--agent', 'helper', 'run', 'the', 'tests', 'with', 'prove', '-j4');
+    is $rc, 0, 'one person records a lesson' or diag "$out\n$err";
+    my $id = %ann<home>.add('lessons').dir(test => /'.json'$/).head.basename.subst('.json', '');
+    is as(%ann, '--plain', 'lessons', 'share', $id)[0], 0, 'and shares it into the repository';
+    ok $repo.add('.321/lessons').dir.elems == 1, 'it is a file in the project, for the team to review and commit';
+    $log.spurt('');
+    ($rc, $out, $err) = as(%bob, '--plain', '--network', 'open', 'helper', 'explain', 'the', 'build');
+    is $rc, 0, 'the other person runs the agent in the same repository' or diag "$out\n$err";
+    nok %bob<home>.add('lessons').d && %bob<home>.add('lessons').dir.elems, 'having no lesson of their own';
+    my $package = parse-json(%bob<home>.add('runs').dir.grep(*.d).head.add('work-package.json').slurp);
+    ok to-json-text($package).contains('prove -j4'), 'and the run is told what the project knows' or diag to-json-text($package).substr(0, 600);
+}
+
+sub to-json-text($v) { encode-json($v) }
+
+subtest 'the project pins an agent and a skill; both people run the same' => {
+    skill(%ann, "Read the diff before the description.\n", '1.0.0');
+    skill(%bob, "Read the diff before the description.\n", '1.0.0');
+    my ($rc, $out, $err) = as(%ann, '--plain', '--skill', 'acme/review', 'trust', 'project', 'pin', 'helper');
+    is $rc, 0, 'one person pins what they run with' or diag "$out\n$err";
+    my %pins = read-project-pins($repo.Str);
+    is %pins<agents><example.test/helper><digest>, compute($dir)[0], 'the agent, by the digest of its package';
+    is %pins<skills><acme/review><digest>, text-digest("Read the diff before the description.\n"), 'and the skill, by the digest of its text';
+    ok $out.contains('All pinned'), 'and is told it matches' or diag $out;
+    my @b = as(%bob, '--brief', 'trust', 'project')[1].lines;
+    is @b.map({ .split("\t")[1, 4].join(' ') }).join('; '), 'agent same; skill same', 'the other person has the same versions';
+    ($rc, $out, $err) = as(%bob, '--plain', '--network', 'open', '--skill', 'acme/review', 'helper', 'explain', 'the', 'build');
+    is $rc, 0, 'and runs' or diag "$out\n$err";
+    my %r = parse-json(%bob<home>.add('runs').dir.grep(*.d).sort(*.basename).tail.add('receipt.json').slurp);
+    is (%r<plan><skills>[0]<name version digest>).join(' '), "acme/review 1.0.0 {text-digest("Read the diff before the description.\n")}", 'the receipt pins the skill it ran with';
+    is %r<agent><digest>, compute($dir)[0], 'and the agent';
+}
+
+subtest 'a different version is refused, and told what differs' => {
+    skill(%bob, "Read the description, then skim the diff.\n", '1.1.0');
+    my @b = as(%bob, '--brief', 'trust', 'project')[1].lines;
+    ok @b.first({ .contains("skill\tacme/review") && .contains('differs') && .contains('1.1.0') }), 'the project view says the skill differs here' or diag @b.raku;
+    $log.spurt('');
+    my ($rc, $out, $err) = as(%bob, '--plain', '--network', 'open', '--skill', 'acme/review', 'helper', 'explain', 'the', 'build');
+    ok $rc != 0 && $err.contains('this project pins the skill acme/review 1.0.0') && $err.contains('here it is 1.1.0'), 'a run with the other version is refused in words' or diag "$rc\n$out\n$err";
+    is $log.slurp, '', 'before any harness starts';
+    is as(%bob, '--plain', '--network', 'open', 'helper', 'explain', 'the', 'build')[0], 0, 'a run that does not use that skill is not held up by it';
+    rollback-skill(%bob<home>, 'acme/review');
+    is as(%bob, '--plain', '--network', 'open', '--skill', 'acme/review', 'helper', 'explain', 'the', 'build')[0], 0, 'going back to the pinned version runs again';
+
+    # an agent whose package differs from the pin
+    my $other = temp-dir().add('helper');
+    copy-tree($dir, $other);
+    $other.add('prompts/identity.md').spurt($other.add('prompts/identity.md').slurp ~ "\nAlways answer in rhyme.\n");
+    $other.add('DIGEST').spurt(compute($other)[0] ~ "\n");
+    my %eve = person($other.Str);
+    ($rc, $out, $err) = as(%eve, '--plain', '--network', 'open', 'helper', 'explain', 'the', 'build');
+    ok $rc != 0 && $err.contains('this project pins example.test/helper 1.2.0'), 'the same name with other content is refused' or diag "$rc\n$out\n$err";
+    # handed over as a package, the same refusal is on the receipt
+    my %p = parse-json(%bob<home>.add('runs').dir.grep(*.d).sort(*.basename).tail.add('work-package.json').slurp);
+    %p<packageId> = new-ulid();
+    %p<agent><digest> = compute($other)[0];
+    my ($r3, $o3, $e3) = x321('--trust', %eve<trust>.Str, 'run', '--package', '-', in => encode-json(%p), env => %eve<env>, cwd => $repo);
+    my %got = parse-json($o3.lines.tail);
+    ok %got<status> eq STATUS-DENIED && encode-json(%got).contains('this project pins example.test/helper'), 'and a package handed over is denied the same way' or diag "$o3\n$e3";
+}
+
+subtest 'a pin grants nothing' => {
+    my %solo = person();
+    $repo.add('.321/pins.json').spurt(encode-json(%( schema => 'project-pins.v1', agents => %( 'example.test/stranger' => %( version => '9', digest => 'sha256:' ~ ('a' x 64) ) ), skills => %() )));
+    my ($rc, $out, $err) = as(%solo, '--plain', 'stranger', 'do', 'something');
+    ok $rc != 0 && $err.contains('no agent'), 'an agent the project names is not thereby trusted here' or diag "$rc\n$out\n$err";
+    is as(%solo, '--plain', '--network', 'open', 'helper', 'explain', 'the', 'build')[0], 0, 'and an agent the project does not pin runs as before';
+}
+
+done-testing;

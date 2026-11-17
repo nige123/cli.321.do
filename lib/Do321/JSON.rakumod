@@ -162,6 +162,10 @@ sub write-value(Any $v, Str $out is rw, Bool :$canonical = False, Int :$indent) 
     my $wire = !$canonical;
     given $v {
         when Bool       { $out ~= $v ?? 'true' !! 'false' }
+        # Text that also reads as a number (an empty environment variable is
+        # the number 0 and the string ''): when its text is not a number's
+        # text, it is written as the text it is, never as nothing.
+        when { $_ ~~ Str && $_ ~~ Numeric && $_.Str !~~ / ^ '-'? \d / } { $out ~= escape-string($v.Str, :$wire) }
         when Int        { $out ~= $v.Str }
         when Numeric    { $out ~= format-number($v) }
         when Str        { $out ~= escape-string($v, :$wire) }
