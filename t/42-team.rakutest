@@ -107,4 +107,27 @@ subtest 'a pin grants nothing' => {
     is as(%solo, '--plain', '--network', 'open', 'helper', 'explain', 'the', 'build')[0], 0, 'and an agent the project does not pin runs as before';
 }
 
+subtest 'runs that end together each keep their line' => {
+    # Several processes say what came of their runs at the same moment,
+    # into one home.  Every line must be read back whole: a torn or lost
+    # line would be a run whose outcome silently went missing.
+    my $h = temp-dir();
+    $h.chmod(0o700);
+    my $lib = $?FILE.IO.parent.parent.add('lib').Str;
+    my $code = q:to/RAKU/;
+        use Do321::Learn;
+        my ($home, $who) = @*ARGS;
+        record-outcome($home.IO, "run-$who-$_", 'accepted', :note('x' x 200), :by($who)) for ^40;
+        RAKU
+    my @procs = (^6).map(-> $n { Proc::Async.new($*EXECUTABLE, "-I$lib", '-e', $code, $h.Str, "p$n") });
+    my @done = @procs.map({ my $p = $_; $p.stdout.tap(-> $ {}); $p.stderr.tap(-> $ {}); $p.start });
+    my @ends = await @done;
+    is @ends.grep({ .exitcode == 0 }).elems, 6, 'every writer finished';
+    my @lines = $h.add('learn/outcomes.ndjson').lines;
+    is @lines.elems, 240, 'a line for every outcome said';
+    is @lines.grep({ (try parse-json($_)) ~~ Associative }).elems, 240, 'and each one whole';
+    use Do321::Learn;
+    is run-outcomes($h).elems, 240, 'read back, none is missing';
+}
+
 done-testing;
