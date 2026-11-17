@@ -41,7 +41,10 @@ my constant KEEP  = 2000;
 #| Where a project's records live: one file per project, named by a digest
 #| of the key (the IZ4's path, or the workspace when there is none).
 sub exercised-file(IO::Path $home, Str $key --> IO::Path) is export {
-    $home.add('exercised').add(sha256-hex($key.IO.absolute.Str.encode).substr(0, 16) ~ '.ndjson');
+    # The path as the filesystem has it: a hook that could not reach the
+    # controller names the directory it was given, the controller names
+    # the real one, and where a link lies between them both must agree.
+    $home.add('exercised').add(sha256-hex($key.IO.absolute.IO.resolve.Str.encode).substr(0, 16) ~ '.ndjson');
 }
 
 #| The outcome to record for one hook call, from the controller's answer;

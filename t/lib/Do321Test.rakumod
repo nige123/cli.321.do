@@ -44,6 +44,9 @@ sub copy-fixture(Str $rel --> IO::Path) is export {
 }
 
 sub copy-tree(IO::Path $src, IO::Path $dst) is export {
+    # the order a directory lists in is the filesystem's: do not rely on a
+    # subdirectory coming first to make the destination
+    $dst.mkdir unless $dst.d;
     for $src.dir -> $e {
         my $t = $dst.add($e.basename);
         if $e.d { $t.mkdir; copy-tree($e, $t) }

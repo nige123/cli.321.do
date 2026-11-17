@@ -105,7 +105,7 @@ subtest 'one agent on two harnesses at once, each in a worktree of its own' => {
     ok $wa.IO.add('README').e && $wb.IO.add('README').e, 'each a checkout of the workspace';
     is ($a.run<workspace>, $b.run<workspace>), ($wa, $wb), 'and each run works in its own';
     my $list = git('worktree', 'list');
-    ok $list.contains($wa) && $list.contains($wb), 'git knows them as worktrees of the workspace';
+    ok $list.contains($wa.IO.resolve.Str) && $list.contains($wb.IO.resolve.Str), 'git knows them as worktrees of the workspace';
     is $a.run<isolation><base>, git('rev-parse', 'HEAD').trim, 'made from its last commit';
     isnt $a.id, $b.id, 'two runs';
 }

@@ -72,7 +72,7 @@ subtest 'project knowledge lives in the project, and gets there on purpose' => {
     my $repo = $home.add('shop');
     $repo.mkdir;
     for (<init -q>, <config user.email t@example.test>, <config user.name t>) -> @a { my $p = run 'git', '-C', $repo.Str, |@a, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close) }
-    is project-root($repo.Str), $repo.Str, 'a repository is a project';
+    is project-root($repo.Str), $repo.resolve.Str, 'a repository is a project';
     is project-root($home.Str), '', 'a plain directory is not';
     my %mine = add-lesson($home, 'migrations go through make migrate', %( agent => 'b1ll' ), %( from => 'person', by => 'tester' ));
     nok lessons($home, :project($repo.Str)).first({ .<kept-in> eq 'project' }), 'a person\'s lesson is not the project\'s';

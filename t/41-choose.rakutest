@@ -114,7 +114,7 @@ subtest 'which version of a harness is trusted here' => {
     is @claude[2, 3].join(' '), 'look 1.1.0', 'a version nobody promoted, with a flag its help does not name, is worth a look' or diag $out;
     ok $out.lines.first(*.contains('codex')).contains('not ready'), 'a harness that is not here is not ready';
     is cli('--brief', 'harness', 'pin', 'claude_code', '1.0.0')[1].trim, "promoted\tclaude_code\t1.0.0\theld", 'an earlier version kept on disk can be promoted';
-    is pinned-binary($home, 'claude_code'), $versions.add('1.0.0').Str, 'and is then the executable 321 runs';
+    is pinned-binary($home, 'claude_code').IO.resolve.Str, $versions.add('1.0.0').resolve.Str, 'and is then the executable 321 runs';
     $log.spurt('');
     cli('--plain', '--network', 'open', 'helper', 'explain', 'the', 'build');
     is last-receipt()<harness><version>, '1.0.0 (Fake)', 'a run is on the promoted version, though the command points at a newer one';

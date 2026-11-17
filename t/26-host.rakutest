@@ -118,7 +118,9 @@ subtest 'steer, hold and resume, one at a time from the shell' => {
 
 subtest 'a host killed outright: lost, then stopped by force' => {
     my $r = @runs[2];
-    sleep 2.5;   # a heartbeat, so the host has noted what runs below it
+    # wait until the host has noted what runs below it, however busy the
+    # machine is: a fixed pause loses that race under load
+    wait-for({ @((read-json-file($r.dir.add('tree.json')) // {})<processes> // []).elems >= 2 }, 15e0);
     my %h = $r.host;
     my $rt = %h<runtimePid>.Int;
     # a crash: host and runtime die at once, so nothing writes a receipt
