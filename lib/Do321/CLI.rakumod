@@ -47,7 +47,7 @@ use Do321::Choose;
 use Do321::Versions;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.5.1';
+constant VERSION is export = '0.6.0';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
