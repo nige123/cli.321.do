@@ -1243,11 +1243,21 @@ sub cmd-context(Env $env, Global $g, @args --> Int) {
             }
             my %c = (try pull-context($home, $doc.Hash, registry-url($home))) // %();
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
-            if $json { $w.say(encode-json(%c)); return 0 }
-            if $g.brief { $w.say(brief-line(%c<name>, 'pulled', %c<sharing>, %c<notes>.elems)); return 0 }
+            # the lessons kept there for it: a registry that has none to
+            # give, or will not give them, leaves the ones here as they were
+            my $why = '';
+            my $got = try registry-get($home, "/api/lessons?context={%c<name>}");
+            if $! { $why = $!.message }
+            elsif $got<lessons> ~~ Positional { %c = pull-context-lessons($home, %c<name>, @($got<lessons>)) }
+            else { $why = 'the registry\'s answer held no list of lessons' }
+            my $held = context-lessons(%c).elems;
+            if $json { $w.say(encode-json(%( |%c, |($why ne '' ?? (lessonsNote => $why) !! ()) ))); return 0 }
+            if $g.brief { $w.say(brief-line(%c<name>, 'pulled', %c<sharing>, %c<notes>.elems, $held, ($why ne '' ?? 'lessons not refreshed' !! 'lessons refreshed'))); return 0 }
             learn-say($env, [header('context pull', %c<name>), '', |row-lines('for:', %c<purpose>),
                 |row-lines('owned by:', %c<owner>), |row-lines('sharing:', %c<sharing> eq 'public' ?? 'public: its organisation shares it with everyone' !! 'private to its organisation'),
                 |row-lines('history:', many-of(@(%c<notes>).grep({ (.<from> // '') eq 'registry' }).elems, 'entry').subst('entrys', 'entries') ~ ' from the registry; notes made here stay here'),
+                |row-lines('lessons:', $why eq '' ?? "{$held} from the registry; runs in it are told them as advice"
+                    !! "not refreshed: $why. " ~ ($held ?? "The {$held} kept from before " ~ ($held == 1 ?? 'is' !! 'are') ~ ' still in use' !! 'None are kept here')),
                 |row-lines('copy:', "from {%c<source>}; pull again to refresh it"), '',
                 next-text('run something in it', "321 --context {%c<name>} <agent> <request...>")]);
             return 0;
@@ -1269,7 +1279,8 @@ sub cmd-context(Env $env, Global $g, @args --> Int) {
             my @work = read-work($home, :days(3650)).grep({ .context eq %c<name> });
             my %s = sums(@work);
             my @ls = lessons($home).grep({ ((.<scope> // {})<context> // '') eq %c<name> });
-            if $json { $w.say(encode-json(%( |%c, runs => sums-doc(%s), lessons => [ @ls.map(*<id>) ] ))); return 0 }
+            my @kept = context-lessons(%c);
+            if $json { $w.say(encode-json(%( |%c, runs => sums-doc(%s), lessons => [ @ls.map(*<id>) ], registryLessons => [ |@kept ] ))); return 0 }
             if $g.brief { $w.say(brief-line(%c<name>, %s<runs>, (%s<priced-runs> ?? %s<usd> !! '?'), %c<purpose>)); return 0 }
             my @l = header('context', %c<name>), '', |row-lines('for:', %c<purpose> // '');
             my $owner = (%c<owner> // '') || context-owner(%c<name>);
@@ -1277,6 +1288,7 @@ sub cmd-context(Env $env, Global $g, @args --> Int) {
             @l.append: row-lines('copy of:', "{%c<source>}, pulled {age-text(%c<pulledAt> // '')}; {(%c<sharing> // 'private') eq 'public' ?? 'shared with everyone' !! 'private to its organisation'}") if (%c<source> // '') ne '';
             for @(%c<notes> // []) -> %n { @l.append: row-lines((%n<kind> eq 'decision' ?? 'decided:' !! %n<kind> eq 'rejected' ?? 'rejected:' !! 'noted:'), %n<text>) }
             @l.append: row-lines('lessons:', @ls ?? @ls.map({ "{.<id>} ({.<state>})" }).join(', ') !! 'none scoped to it');
+            @l.append: row-lines('registry:', "{many-of(@kept.elems, 'lesson')} kept there, pulled {age-text(%c<lessonsPulledAt> // '')}") if %c<lessonsPulledAt>:exists;
             @l.push: '';
             if @work { @l.append: sum-rows(%s) } else { @l.push: 'No runs in it yet.' }
             @l.append: '', next-text('run something in it', "321 --context {%c<name>} <agent> <request...>");
@@ -1318,15 +1330,29 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
         when 'list' {
             my @ls = lessons($home, :$project);
             my @work = read-work($home, :days(365));
-            if $json { $w.say(encode-json(%( lessons => [ @ls.map({ %( |$_, comparison => compare-lesson($_, @work) ) }) ] ))); return 0 }
-            if $g.brief { $w.say(brief-line(.<id>, .<state>, .<kept-in>, scope-text($_), .<text>)) for @ls; return 0 }
-            my @l = header('lessons', @ls ?? many-of(@ls.elems, 'lesson') !! 'none yet'), '';
+            # those a registry keeps, held in the contexts pulled from it: read only here
+            my @there = registry-lessons($home);
+            if $json { $w.say(encode-json(%( lessons => [ @ls.map({ %( |$_, comparison => compare-lesson($_, @work) ) }) ], registry => [ |@there ] ))); return 0 }
+            if $g.brief {
+                $w.say(brief-line(.<id>, .<state>, .<kept-in>, scope-text($_), .<text>)) for @ls;
+                $w.say(brief-line(.<id>, .<state>, 'registry', (.<at> ne '' ?? "context {.<at>}" !! 'this organisation'), .<text>)) for @there;
+                return 0;
+            }
+            my @l = header('lessons', (@ls ?? many-of(@ls.elems, 'lesson') !! @there ?? 'none of yours yet' !! 'none yet') ~ (@there ?? ", {@there.elems} from the registry" !! '')), '';
             for @ls -> %x {
                 my $n = @work.grep({ %x<id> (elem) .lessons }).elems;
                 @l.push: sprintf('  %-7s %-9s %-10s %s', %x<id>, %x<state>, (%x<kept-in> eq 'project' ?? 'project' !! 'yours'), "{scope-text(%x)}; applied to {many-of($n, 'run')}");
                 @l.append: wrap-at(%x<text>, 66).map({ (' ' x 10) ~ $_ });
             }
-            @l.push: '' if @ls;
+            if @there {
+                @l.append: '' if @ls;
+                @l.push: 'from the registry, read only here:';
+                for @there -> %x {
+                    @l.push: sprintf('  %-28s %-9s %s', (%x<name> ne '' ?? %x<name> !! %x<id>), %x<state>, 'in ' ~ (%x<at> ne '' ?? %x<at> !! 'this organisation'));
+                    @l.append: wrap-at(%x<text>, 66).map({ (' ' x 10) ~ $_ });
+                }
+            }
+            @l.push: '' if @ls || @there;
             @l.push: @ls ?? next-text('see whether one helps: the runs with it against the runs without', "321 lessons show {@ls[0]<id>}")
                          !! next-text('add one; it is tried from the next run it applies to', '321 lessons add --agent <agent> <what was learnt...>');
             learn-say($env, @l);
@@ -1334,28 +1360,87 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
         }
         when 'add' {
             my (%scope, $from);
+            my ($when, $because) = '', '';
             while @a && @a[0].starts-with('--') {
                 my $f = @a.shift;
                 my $v = (@a.shift // '').Str;
                 return usage-error($env, 'lessons', "$f needs a value") if $v eq '';
                 given $f {
                     when '--agent'   { %scope<agent> = $v }
-                    when '--context' { return usage-error($env, 'lessons', "no work context is called '$v'") unless context($home, $v).defined; %scope<context> = $v }
+                    when '--context' { return usage-error($env, 'lessons', "no work context is called '$v'") unless context-for($home, $v).defined; %scope<context> = $v }
                     when '--skill'   { %scope<skill> = $v }
                     when '--harness' { %scope<harness> = $v }
                     when '--from'    { $from = $v }
-                    default { return usage-error($env, 'lessons', "add takes --agent, --context, --skill, --harness and --from, not '$f'") }
+                    when '--when'    { $when = $v }
+                    when '--because' { $because = $v }
+                    default { return usage-error($env, 'lessons', "add takes --agent, --context, --skill, --harness, --from, --when and --because, not '$f'") }
                 }
             }
             %scope<context> = $g.context if $g.context ne '' && !(%scope<context>:exists);
             return usage-error($env, 'lessons', 'say what was learnt: 321 lessons add [--agent NAME] <words...>') unless @a;
-            my %l = add-lesson($home, @a.join(' '), %scope, %( from => ($from.defined ?? 'run' !! 'person'), |($from.defined ?? (runId => $from) !! ()), by => who-am-i() ));
+            my %l = add-lesson($home, @a.join(' '), %scope, %( from => ($from.defined ?? 'run' !! 'person'), |($from.defined ?? (runId => $from) !! ()), by => who-am-i() ), :$when, :$because);
             if $json { $w.say(encode-json(%l)); return 0 }
             if $g.brief { $w.say(brief-line(%l<id>, 'trial')); return 0 }
             learn-say($env, [header('lessons add', %l<id>), '', |row-lines('lesson:', %l<text>), |row-lines('applies to:', scope-text(%l)),
                 |row-lines('state:', 'on trial: runs it applies to are given it as advice, and record that they were'),
                 |row-lines('kept in:', '~/.321/lessons, yours alone until you share it'), '',
                 next-text('after a few runs, see whether it helps', "321 lessons show {%l<id>}")]);
+            return 0;
+        }
+        when 'teach' {
+            # the one way a lesson leaves this machine for a registry: a
+            # person types it, for one lesson, and is told where it went
+            my ($when, $because) = '', '';
+            my @ids;
+            while @a {
+                my $f = @a.shift;
+                if $f eq '--when' | '--because' {
+                    my $v = (@a.shift // '').Str;
+                    return usage-error($env, 'lessons', "$f needs a value") if $v eq '';
+                    if $f eq '--when' { $when = $v } else { $because = $v }
+                }
+                elsif $f.starts-with('--') { return usage-error($env, 'lessons', "teach takes --when and --because, not '$f'") }
+                else { @ids.push($f) }
+            }
+            return usage-error($env, 'lessons', 'say which lesson: 321 lessons teach ID [--when <words>] [--because <words>]') unless @ids.elems == 1;
+            my %l = (need-lesson(@ids[0]) // return EXIT-USAGE).Hash;
+            my %t = %l<taught> ~~ Associative ?? %l<taught>.Hash !! {};
+            if (%t<id> // '') ne '' {
+                if $json { $w.say(encode-json(%( |%l, alreadyTaught => True ))); return 0 }
+                if $g.brief { $w.say(brief-line(%l<id>, 'already taught', %t<id>, %t<at> // '')); return 0 }
+                learn-say($env, [header('lessons teach', "{%l<id>} was already taught"), '', |row-lines('lesson:', %l<text>),
+                    |row-lines('taught to:', "{%t<at> // '?'}, {%t<when> // '?'}"), |row-lines('known as:', %t<id>),
+                    |row-lines('sent:', 'nothing this time'), '', next-text('see them all', '321 lessons')]);
+                return 0;
+            }
+            my %s = %l<scope> ~~ Associative ?? %l<scope>.Hash !! {};
+            my $to = (%s<context> // '').Str;
+            return usage-error($env, 'lessons', "a lesson is taught to a work context, and {%l<id>} is scoped to none: add it again with --context NAME") if $to eq '';
+            $when = (%l<when> // '').Str if $when eq '';
+            $because = (%l<because> // '').Str if $because eq '';
+            return usage-error($env, 'lessons', "say when it applies: 321 lessons teach {%l<id>} --when <words>") if $when eq '';
+            return usage-error($env, 'lessons', "say why it holds: 321 lessons teach {%l<id>} --because <words>") if $because eq '';
+            my %body = context => $to, when => $when, do => (%l<text> // '').Str, because => $because;
+            %body<agent> = %s<agent>.split('/').tail if (%s<agent> // '') ne '';
+            my $card = try registry-get($home, '/api/lessons', send => encode-json(%body));
+            if $! {
+                $env.stderr.say("321: {$!.message}");
+                $env.stderr.say(next-text('nothing was taught, and the lesson here is as it was; see which registry this is and who you are to it', '321 registry'));
+                return EXIT-FAILED;
+            }
+            if ($card<id> // '') eq '' {
+                $env.stderr.say('321: the registry answered, but not with a lesson: it is not recorded here as taught');
+                return EXIT-FAILED;
+            }
+            my $at = ($card<at> // '').Str || $to;
+            my %n = mark-taught(%l, $card<id>.Str, $at, :$when, :$because);
+            if $json { $w.say(encode-json(%( |%n, card => $card ))); return 0 }
+            if $g.brief { $w.say(brief-line(%n<id>, 'taught', %n<taught><id>, $at)); return 0 }
+            learn-say($env, [header('lessons teach', "{%n<id>} taught to $at"), '', |row-lines('lesson:', %n<text>),
+                |row-lines('when:', $when), |row-lines('because:', $because),
+                |row-lines('known as:', "{%n<taught><id>} at {registry-url($home)}, " ~ (($card<state> // '') eq 'trial' ?? 'on trial there' !! ($card<state> // '') ne '' ?? "{$card<state>} there" !! 'as the registry keeps it')),
+                |row-lines('told to:', "runs in $at and the names under it, once their copy is pulled again"), '',
+                next-text('refresh your own copy', "321 context pull $at")]);
             return 0;
         }
         when 'show' | 'keep' | 'revert' | 'remove' | 'share' {
@@ -1370,6 +1455,7 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                     learn-say($env, [header('lessons show', %l<id>), '', |row-lines('lesson:', %l<text>), |row-lines('applies to:', scope-text(%l)),
                         |row-lines('state:', %l<state>), |row-lines('kept in:', %l<kept-in> eq 'project' ?? "this project ({%l<file>})" !! '~/.321/lessons, yours alone'),
                         |row-lines('came from:', (%p<from> eq 'run' ?? "run {%p<runId>}" !! 'a person') ~ ", {%p<by> // '?'}, {%p<at> // '?'}" ~ ((%p<sharedBy> // '') ne '' ?? "; shared by {%p<sharedBy>}" !! '')),
+                        |((%l<taught> // {})<id> ?? row-lines('taught:', "to {%l<taught><at>}, as {%l<taught><id>}") !! ()),
                         |row-lines('evidence:', verdict(%c)),
                         |row-lines('mind:', 'the runs are not a controlled trial: other things may differ between them'), '',
                         next-text('yours to say', "321 lessons keep {%l<id>}    or    321 lessons revert {%l<id>}")]);
@@ -1409,7 +1495,7 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                 }
             }
         }
-        default { return usage-error($env, 'lessons', "it is add, show, keep, revert, remove or share, not '$sub'") }
+        default { return usage-error($env, 'lessons', "it is add, show, keep, revert, remove, share or teach, not '$sub'") }
     }
 }
 
@@ -2983,7 +3069,7 @@ sub build-package(Config $cfg, Loaded $agent, Global $g, Str $request, Str $work
     }
     if $learn {
         X::Do321::Usage.new(message => "no work context is called '$ctx'; make it with: 321 context new $ctx <what it is for>").throw
-            if $ctx ne '' && !context($home, $ctx).defined;
+            if $ctx ne '' && !context-for($home, $ctx).defined;
         my ($lines, $ids) = known-lines($home, agent => $agent.id, context => $ctx, :$harness, :$workspace,
             skills => (|@(%m<skills> // []).grep(Str).map({ my @p = .split('/'); @p > 1 ?? @p[*-2] !! @p[0] }), |$g.skill, |$g.skill.map(*.split('/').tail)).List);
         %wp<context><lines> = [ |@$lines ] if @$lines;

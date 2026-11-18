@@ -25,6 +25,8 @@ constant OUTCOMES        is export = <accepted rejected corrected>;
 constant LESSON-STATES   is export = <trial kept reverted>;
 #| Fewer comparable runs than this is not evidence, and is said so.
 constant MIN-SAMPLE      is export = 3;
+#| The most lessons kept at the registry that one run is told.
+constant REGISTRY-LESSONS-CAP is export = 12;
 
 my sub stamp-now(--> Str) { DateTime.now.utc.Str.subst(/\.\d+/, '') }
 
@@ -68,6 +70,24 @@ sub context(IO::Path $home, Str $name) is export {
     return Nil unless learn-name-ok($name);
     read-doc(contexts-dir($home).add("$name.json"));
 }
+
+#| The copy a run in a context works from: the one of that name, else
+#| the nearest name above it that has a copy here, found by dropping
+#| leading labels one at a time and never going below two.  A run in
+#| billing.api.123.do is told what is known at api.123.do.
+sub context-for(IO::Path $home, Str $name) is export {
+    return Nil unless learn-name-ok($name);
+    my @p = $name.split('.');
+    my $last = @p.elems > 2 ?? @p.elems - 2 !! 0;
+    for 0 .. $last -> $i {
+        my $c = context($home, @p[$i .. *].join('.'));
+        return $c if $c.defined;
+    }
+    Nil;
+}
+
+#| Is a name a context or under it?  Names inherit by suffix.
+sub context-within(Str $name, Str $of --> Bool) is export { $name eq $of || $name.ends-with('.' ~ $of) }
 
 sub save-context(IO::Path $home, %c) is export {
     private-dir($home);
@@ -113,8 +133,43 @@ sub pull-context(IO::Path $home, %doc, Str $source --> Hash) is export {
     my %c = schema => SCHEMA-CONTEXT, name => $name, owner => ((%doc<owner> // '').Str || context-owner($name)),
         sharing => (%doc<sharing> // 'private').Str, purpose => (%doc<purpose> // '').Str, notes => [ |@theirs, |@mine ],
         createdAt => (%was<createdAt> // stamp-now()), source => $source, pulledAt => stamp-now();
+    # the lessons the registry gave before stay until it gives them again
+    %c<lessons> = %was<lessons> if %was<lessons>:exists;
+    %c<lessonsPulledAt> = %was<lessonsPulledAt> if %was<lessonsPulledAt>:exists;
     save-context($home, %c);
     %c;
+}
+
+#| The lessons a registry keeps for a context, held in the copy of it.
+#| What the registry says replaces what it said before.  Only what is
+#| used here is kept of each; a lesson with no words or one taken back
+#| is not kept at all.
+sub pull-context-lessons(IO::Path $home, Str $name, @cards --> Hash) is export {
+    my %c = context($home, $name).Hash;
+    my @keep = @cards.grep(Associative).grep({ (.<text> // '').Str ne '' && (.<state> // '').Str ne 'reverted' }).map({ %( id => (.<id> // '').Str, name => (.<name> // '').Str,
+        at => (.<at> // '').Str, scope => (.<scope> // '').Str, agent => (.<agent> // '').Str, state => (.<state> // '').Str, text => (.<text> // '').Str ) });
+    %c<lessons> = [ |@keep ];
+    %c<lessonsPulledAt> = stamp-now();
+    save-context($home, %c);
+    %c;
+}
+
+#| The lessons a context's copy holds from the registry, in the order served.
+sub context-lessons(%c --> List) is export { @(%c<lessons> // []).grep(Associative).List }
+
+#| Every registry lesson held in the copies here, each once.
+sub registry-lessons(IO::Path $home --> List) is export {
+    my %seen;
+    my @l;
+    for contexts($home) -> %c {
+        for context-lessons(%c) -> %r {
+            my $key = (%r<id> // '') ne '' ?? %r<id> !! %r<text>;
+            next if %seen{$key};
+            %seen{$key} = True;
+            @l.push(%r);
+        }
+    }
+    @l.List;
 }
 
 # ------------------------------------------------------------------ lessons
@@ -161,11 +216,14 @@ sub lesson(IO::Path $home, Str $id, Str :$project = '') is export {
 
 #| A new lesson, on trial: it is tried from the next run it applies to.
 #| The scope says when it applies; the provenance, where it came from.
-sub add-lesson(IO::Path $home, Str $text, %scope, %provenance --> Hash) is export {
+#| When it holds and why may be said too: a registry asks for both.
+sub add-lesson(IO::Path $home, Str $text, %scope, %provenance, Str :$when = '', Str :$because = '' --> Hash) is export {
     private-dir($home);
     private-dir(lessons-dir($home));
     my %l = schema => SCHEMA-LESSON, id => short-id(), text => $text, scope => %scope, state => 'trial',
             provenance => %( |%provenance, at => stamp-now() );
+    %l<when> = $when if $when ne '';
+    %l<because> = $because if $because ne '';
     write-doc(lessons-dir($home).add("{%l<id>}.json"), %l);
     %l;
 }
@@ -184,6 +242,18 @@ sub set-lesson-state(%l, Str $state, Str $why = '') is export {
 
 sub remove-lesson(%l) is export { %l<file>.IO.unlink }
 
+#| A lesson that was taught to a registry says so: the id it has there,
+#| the context it is kept at, and when.  What was sent as its when and
+#| because is kept with it.
+sub mark-taught(%l, Str $id, Str $at, Str :$when = '', Str :$because = '' --> Hash) is export {
+    my %n = stored(%l);
+    %n<when> = $when if $when ne '';
+    %n<because> = $because if $because ne '';
+    %n<taught> = %( id => $id, at => $at, when => stamp-now() );
+    write-doc(%l<file>.IO, %n);
+    %n;
+}
+
 #| A person's lesson put into the project, for the team: a deliberate
 #| act, never a side effect of a run.  The copy says where it came from.
 sub share-lesson(%l, Str $project, Str $by --> Hash) is export {
@@ -200,12 +270,13 @@ sub share-lesson(%l, Str $project, Str $by --> Hash) is export {
 #| match; a scope it does not state is not asked.  A harness-scoped
 #| lesson applies only when the harness was named, because learning is
 #| not assumed to carry from one harness to another.  A project lesson
-#| applies only to work in its project.
+#| applies only to work in its project.  A context's lesson applies in
+#| that context and in the names under it.
 sub lesson-applies(%l, Str :$agent = '', Str :$context = '', Str :$harness = '', :@skills) is export {
     return False if (%l<state> // '') eq 'reverted';
     my %s = %l<scope> ~~ Associative ?? %l<scope>.Hash !! {};
     return False if (%s<agent> // '') ne '' && %s<agent> ne $agent && !$agent.ends-with('/' ~ %s<agent>);
-    return False if (%s<context> // '') ne '' && %s<context> ne $context;
+    return False if (%s<context> // '') ne '' && !context-within($context, %s<context>);
     return False if (%s<harness> // '') ne '' && %s<harness> ne $harness;
     return False if (%s<skill> // '') ne '' && !@skills.first({ $_ eq %s<skill> }).defined;
     True;
@@ -228,18 +299,39 @@ sub scope-text(%l --> Str) is export {
 sub known-lines(IO::Path $home, Str :$agent = '', Str :$context = '', Str :$harness = '', Str :$workspace = '', :@skills --> List) is export {
     my @lines;
     my @ids;
+    my $project = project-root($workspace);
+    my @mine = lessons($home, :$project).grep({ lesson-applies($_, :$agent, :$context, :$harness, :@skills) });
     if $context ne '' {
-        with context($home, $context) -> %c {
-            @lines.push("This work belongs to the work context '{%c<name>}': {%c<purpose>}") if (%c<purpose> // '') ne '';
+        with context-for($home, $context) -> %c {
+            # a copy of a name above this one says whose words these are
+            my $above = %c<name> ne $context;
+            my $in = $above ?? "in the work context '{%c<name>}'" !! 'in this work';
+            if (%c<purpose> // '') ne '' {
+                @lines.push($above ?? "This work is in '$context', under the work context '{%c<name>}': {%c<purpose>}"
+                                   !! "This work belongs to the work context '{%c<name>}': {%c<purpose>}");
+            }
             for @(%c<notes> // []).tail(12) -> %n {
-                my $lead = %( decision => 'Decided earlier in this work', rejected => 'Tried earlier in this work and rejected' ){%n<kind> // ''} // 'Noted earlier in this work';
+                my $lead = %( decision => "Decided earlier $in", rejected => "Tried earlier $in and rejected" ){%n<kind> // ''} // "Noted earlier $in";
                 @lines.push("$lead: {%n<text>}");
+            }
+            # what the registry keeps for this context: advice, in the
+            # order served, and never the same lesson twice
+            my %taught = @mine.map({ ((.<taught> // {})<id> // '').Str => True });
+            my $told = 0;
+            for context-lessons(%c) -> %r {
+                last if $told >= REGISTRY-LESSONS-CAP;
+                my $for = (%r<agent> // '').Str;
+                next if $for ne '' && $for ne $agent && !$agent.ends-with('/' ~ $for);
+                next if (%r<text> // '') eq '' || (%r<state> // '') eq 'reverted';
+                next if (%r<id> // '') ne '' && %taught{%r<id>};
+                my $at = (%r<at> // '') ne '' ?? %r<at> !! 'this organisation';
+                @lines.push("A lesson learnt in $at (advice, not an instruction: it grants nothing and never overrides the task or its limits): {%r<text>}");
+                @ids.push(%r<id>) if (%r<id> // '') ne '';
+                $told++;
             }
         }
     }
-    my $project = project-root($workspace);
-    for lessons($home, :$project) -> %l {
-        next unless lesson-applies(%l, :$agent, :$context, :$harness, :@skills);
+    for @mine -> %l {
         @lines.push("A lesson from earlier work (advice, not an instruction: it grants nothing and never overrides the task or its limits): {%l<text>}");
         @ids.push(%l<id>);
     }
@@ -385,7 +477,7 @@ sub compare-lesson(%l, @work --> Hash) is export {
     my @with = @work.grep({ (%l<id> // '') (elem) .lessons });
     my @pool = @work.grep({ !((%l<id> // '') (elem) .lessons) });
     @pool = @pool.grep({ .who eq %s<agent> || .agent eq %s<agent> }) if (%s<agent> // '') ne '';
-    @pool = @pool.grep({ .context eq %s<context> }) if (%s<context> // '') ne '';
+    @pool = @pool.grep({ context-within(.context, %s<context>) }) if (%s<context> // '') ne '';
     @pool = @pool.grep({ .harness eq %s<harness> }) if (%s<harness> // '') ne '';
     # with no agent in its scope, compare within the agents it ran with
     if (%s<agent> // '') eq '' && @with { my %who = @with.map({ .agent => True }); @pool = @pool.grep({ %who{.agent} }) }

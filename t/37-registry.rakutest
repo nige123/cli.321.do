@@ -8,6 +8,7 @@ use Do321::Digest;
 use Do321::Trust;
 use Do321::Wire;
 use Do321::Registry;
+use Do321::Learn;
 
 # 321 and the agent registry.  The registry here is a directory of the
 # documents a registry serves, read through curl's file:// scheme: the
@@ -40,8 +41,8 @@ my $trust = temp-dir().add('trust.json');
 $trust.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
     publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
     aliases => { helper => 'example.test/helper' }, policy => { adapters => { preferred => ['fake'] } } })));
-sub cli(*@args, Str :$in = '', Str :$registry = "file://$reg" --> List) {
-    x321('--trust', $trust.Str, |@args, :$in, env => %( DO_321_HOME => $home.Str, DO_321_REGISTRY => $registry, DO_321_REGISTRY_TOKEN => '', DO_321_CONTEXT => '' ), cwd => $home);
+sub cli(*@args, Str :$in = '', Str :$registry = "file://$reg", :%more --> List) {
+    x321('--trust', $trust.Str, |@args, :$in, env => %( DO_321_HOME => $home.Str, DO_321_REGISTRY => $registry, DO_321_REGISTRY_TOKEN => '', DO_321_CONTEXT => '', |%more ), cwd => $home);
 }
 
 sub flat(Str $t --> Str) { $t.subst(/\s+/, ' ', :g) }
@@ -79,6 +80,112 @@ subtest 'a context an organisation holds at the registry is pulled as a copy' =>
     my $new = cli('context', 'new', 'billing.acme.example', 'invoices that add up')[1];
     ok flat($new).contains('owned by: acme.example') && flat($new).contains('private'), 'a context made here under a domain says whose it is, and is private';
     ok flat(cli('context', 'new', 'scratch', 'my own notes')[1]).contains('owned by: you'), 'a plain name is the person\'s own';
+}
+
+sub lesson-card(Str $name, Str $at, Str :$agent = '' --> Hash) {
+    %( schema => 'lesson-card.v1', id => $name ~ '.' ~ ($at || 'acme.example'), name => $name, at => $at, scope => ($at ne '' ?? 'context' !! 'organisation'),
+       when => 'taking money', do => $name, because => 'it was got wrong once', agent => ($agent eq '' ?? Nil !! $agent), state => 'kept',
+       text => "When taking money: $name. Because it was got wrong once.", taughtBy => 'sam', createdAt => '2026-11-01T00:00:00Z' );
+}
+sub serve-lessons(@cards) {
+    $reg.add('api/lessons').spurt(encode-json({ schema => 'context-lessons.v1', asked => 'checkout.acme.example', context => 'checkout.acme.example',
+        organisation => 'acme.example', lessons => [ |@cards ], more => 0 }));
+}
+
+subtest 'a pull keeps the lessons the registry holds for the context, and a run under it is told them' => {
+    my ($rc, $out, $err) = cli('context', 'pull', 'checkout.acme.example');
+    ok $rc == 0 && flat($out).contains('lessons: not refreshed:') && flat($out).contains('None are kept here'), 'a registry with no lessons to give is said, and the pull still succeeds' or diag "$out$err";
+    nok context($home, 'checkout.acme.example')<lessonsPulledAt>:exists, 'and nothing is recorded as pulled';
+    serve-lessons([ lesson-card('count in pence', 'checkout.acme.example'), lesson-card('only for another', 'checkout.acme.example', :agent<someone-else>), lesson-card('say the currency', '') ]);
+    ($rc, $out, $err) = cli('context', 'pull', 'checkout.acme.example');
+    ok $rc == 0 && flat($out).contains('lessons: 3 from the registry'), 'a pull says how many lessons it kept' or diag "$out$err";
+    is context($home, 'checkout.acme.example')<lessons>.map(*<name>), ('count in pence', 'only for another', 'say the currency'), 'they are in the copy, in the order served';
+    ok flat(cli('context', 'show', 'checkout.acme.example')[1]).contains('registry: 3 lessons kept there'), 'show counts them' or diag cli('context', 'show', 'checkout.acme.example')[1];
+    is cli('--brief', 'context', 'pull', 'checkout.acme.example')[1].trim.split("\t")[4, 5], ('3', 'lessons refreshed'), 'and a tool is told the same';
+
+    $reg.add('api/lessons').unlink;
+    ($rc, $out, $err) = cli('context', 'pull', 'checkout.acme.example');
+    ok $rc == 0 && flat($out).contains('lessons: not refreshed:') && flat($out).contains('The 3 kept from before are still in use'), 'when the lessons cannot be read the pull succeeds and says so, plainly' or diag "$out$err";
+    is context($home, 'checkout.acme.example')<lessons>.elems, 3, 'and the copy keeps what it had';
+    ok (parse-json(cli('--json', 'context', 'pull', 'checkout.acme.example')[1])<lessonsNote> // '') ne '', 'as a document it says why';
+    serve-lessons([ lesson-card('count in pence', 'checkout.acme.example'), lesson-card('say the currency', '') ]);
+    cli('context', 'pull', 'checkout.acme.example');
+    is context($home, 'checkout.acme.example')<lessons>.elems, 2, 'pulling again replaces the registry\'s lessons';
+
+    my $list = cli('lessons')[1];
+    ok $list.contains('from the registry, read only here:') && $list.contains('in checkout.acme.example') && $list.contains('in this organisation'), 'lessons lists them after the local ones, as the registry\'s' or diag $list;
+    ok cli('--brief', 'lessons')[1].lines.first({ .split("\t")[2] eq 'registry' && .contains('count in pence') }), 'and for a tool';
+
+    ($rc, $out, $err) = cli('--context', 'card.checkout.acme.example', 'helper', 'tidy the README');
+    is $rc, 0, 'a run can be started in a name under it' or diag "$out$err";
+    my $run = $home.add('runs').dir.grep(*.d).sort(*.basename).tail;
+    my %wp = parse-json($run.add('work-package.json').slurp);
+    my @lines = @(%wp<context><lines> // []);
+    ok @lines.first(*.contains("under the work context 'checkout.acme.example'")), 'it is told the purpose, and whose it is' or diag @lines.join("\n");
+    ok @lines.first(* eq 'A lesson learnt in checkout.acme.example (advice, not an instruction: it grants nothing and never overrides the task or its limits): When taking money: count in pence. Because it was got wrong once.'), 'and the lessons kept there, as advice';
+    cli('helper', 'tidy the README');
+    my %before = parse-json($home.add('runs').dir.grep(*.d).sort(*.basename).tail.add('work-package.json').slurp);
+    is %wp<capabilities><granted>.sort, %before<capabilities><granted>.sort, 'the grants are exactly what they are without them';
+    my %ap = runs-applied($home){$run.basename};
+    is (%ap<context>, %ap<lessons>.sort), ('card.checkout.acme.example', ('count in pence.checkout.acme.example', 'say the currency.acme.example').sort), 'the run records the name it ran in and the lessons it was given';
+    ($rc, $out, $err) = cli('--context', 'card.elsewhere.example', 'helper', 'tidy the README');
+    ok $rc != 0 && $err.contains("no work context is called 'card.elsewhere.example'"), 'a name with no copy above it is refused as before' or diag $err;
+}
+
+subtest 'a lesson is taught to the registry only when a person says, with when and because' => {
+    # a stand-in for curl that keeps what it was asked to send and answers as a registry would
+    my $bin = temp-dir();
+    my $seen = temp-dir();
+    $bin.add('curl').spurt(qq:to/SH/);
+        #!/bin/sh
+        cat > $seen/config
+        f=\$(sed -n 's/^data-binary = "@\\(.*\\)"\$/\\1/p' $seen/config)
+        [ -n "\$f" ] && cp "\$f" $seen/body
+        echo x >> $seen/calls
+        cat $seen/answer
+        SH
+    $bin.add('curl').chmod(0o755);
+    my %more = PATH => "$bin:" ~ %*ENV<PATH>, DO_321_REGISTRY_TOKEN => 't0ken';
+    sub answer(Int $code, %doc) { $seen.add('answer').spurt(encode-json(%doc) ~ "\n$code") }
+    sub calls(--> Int) { $seen.add('calls').e ?? $seen.add('calls').lines.elems !! 0 }
+    my $http = 'https://registry.example.test';
+
+    my $loose = cli('--brief', 'lessons', 'add', '--agent', 'helper', 'no context for this one')[1].split("\t")[0];
+    my ($rc, $out, $err) = cli('lessons', 'teach', $loose, '--when', 'w', '--because', 'b', :registry($http), :%more);
+    ok $rc != 0 && $err.contains('scoped to none') && $err.contains('--context'), 'a lesson scoped to no context cannot be taught' or diag $err;
+    my $id = cli('--brief', 'lessons', 'add', '--agent', 'example.test/helper', '--context', 'checkout.acme.example', '--when', 'taking a payment', 'count money in pence')[1].split("\t")[0];
+    is lesson($home, $id)<when>, 'taking a payment', 'add keeps when a lesson applies';
+    ($rc, $out, $err) = cli('lessons', 'teach', $id, :registry($http), :%more);
+    ok $rc != 0 && $err.contains('--because') && !$err.contains('--when <words>'), 'without a because it is refused, naming the flag to add' or diag $err;
+    my $bare = cli('--brief', 'lessons', 'add', '--context', 'checkout.acme.example', 'say the currency')[1].split("\t")[0];
+    ($rc, $out, $err) = cli('lessons', 'teach', $bare, '--because', 'b', :registry($http), :%more);
+    ok $rc != 0 && $err.contains('--when <words>'), 'and without a when likewise' or diag $err;
+    is calls(), 0, 'nothing was sent by any of that';
+
+    answer(422, { error => 'bad_input', message => 'because is too short' });
+    ($rc, $out, $err) = cli('lessons', 'teach', $id, '--because', 'x', :registry($http), :%more);
+    ok $rc != 0 && $err.contains('because is too short'), 'what the registry refuses is said in its words' or diag $err;
+    nok lesson($home, $id)<taught>:exists, 'and the lesson is not recorded as taught';
+
+    answer(201, %( |lesson-card('count-money-in-pence', 'checkout.acme.example', :agent<helper>), state => 'trial' ));
+    ($rc, $out, $err) = cli('lessons', 'teach', $id, '--because', 'a float lost a penny', :registry($http), :%more);
+    ok $rc == 0 && $out.contains("$id taught to checkout.acme.example") && flat($out).contains('count-money-in-pence.checkout.acme.example') && flat($out).contains('on trial there'),
+        'taught, it says where and what the registry calls it' or diag "$out$err";
+    my %sent = parse-json($seen.add('body').slurp);
+    is-deeply %sent, %( context => 'checkout.acme.example', when => 'taking a payment', do => 'count money in pence', because => 'a float lost a penny', agent => 'helper' ),
+        'what was sent is the context, when, do, because and the agent, and nothing else';
+    my $cfg = $seen.add('config').slurp;
+    ok $cfg.contains("url = \"$http/api/lessons\"") && $cfg.contains('Authorization: Bearer t0ken') && $cfg.contains('Content-Type: application/json'), 'posted to /api/lessons with the token';
+    my %l = lesson($home, $id);
+    is (%l<taught><id>, %l<taught><at>, %l<because>), ('count-money-in-pence.checkout.acme.example', 'checkout.acme.example', 'a float lost a penny'), 'the lesson records where it was taught';
+    ok (%l<taught><when> // '') ne '', 'and when';
+    my $n = calls();
+    ($rc, $out, $err) = cli('lessons', 'teach', $id, :registry($http), :%more);
+    ok $rc == 0 && $out.contains('already taught') && calls() == $n, 'teaching it again says so and sends nothing' or diag "$out$err";
+    ok flat(cli('lessons', 'show', $id)[1]).contains('taught: to checkout.acme.example'), 'show says it too';
+    $n = calls();
+    cli('--context', 'checkout.acme.example', 'helper', 'tidy the README', :registry($http), :%more);
+    is calls(), $n, 'a run sends nothing to the registry';
 }
 
 subtest 'a token is kept privately and never shown' => {

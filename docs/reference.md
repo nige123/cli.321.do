@@ -990,8 +990,10 @@ cannot answer. The safe order is iz4 first, then 321.
 
 ## Getting better: contexts, lessons, outcomes, value, skills
 
-`321 help learning` lists the commands. Everything here is local and
-needs no service: no daemon, no account, no 123.do and no IZ4.
+`321 help learning` lists the commands. Everything here works locally
+and needs no service: no daemon, no account, no 123.do and no IZ4. A
+registry adds to it only when a person asks: `321 context pull` reads
+from one and `321 lessons teach` sends to one.
 
 Four things are kept apart, each in a place of its own:
 
@@ -1001,6 +1003,7 @@ Four things are kept apart, each in a place of its own:
 | A lesson | `~/.321/lessons/<id>.json` | the person's, until shared |
 | Project knowledge: lessons shared with a project | `<repo>/.321/lessons/<id>.json` | the team's, under version control |
 | What came of a run | `~/.321/learn/outcomes.ndjson` | whoever said it |
+| Lessons kept at the registry for a work context | in the pulled copy of that context (`lessons`) | the organisation's; read only here |
 
 A receipt is never rewritten: what a run was started knowing
 (`~/.321/learn/applied.ndjson`) and what was said of it afterwards sit
@@ -1019,7 +1022,17 @@ here. The name says whose a context is and grants nothing: who may read
 one held at the registry is decided there, by membership of the owning
 account. `321 context pull NAME` keeps a copy of one this person may
 see; pulling again replaces what the registry said and keeps the notes
-made on this machine, which stay here (the registry's tokens only read).
+made on this machine, which stay here. A pull never sends anything; the
+one thing 321 writes to a registry's contexts is a lesson a person
+teaches it (below).
+
+Names inherit by suffix. A run in `billing.api.123.do` uses the copy of
+that name if there is one here, and otherwise the nearest name above it
+that has a copy, found by dropping leading labels one at a time and
+never going below two (`api.123.do`, then `123.do`, never `do`). The
+purpose and history it is told come from that copy and say which
+context they are from. A name with no copy at any of those is refused
+as before.
 
 A context is not a project: one
 context can hold runs in several repositories, and a repository can hold
@@ -1036,7 +1049,9 @@ assumed to carry between harnesses. A lesson is `trial` when added,
 then `kept` or `reverted` by a person; a reverted lesson is given to no
 run and stays on record. Matching lessons go into `context.lines`,
 labelled as advice that grants nothing; they change no grant and no
-limit, and the runtime computes authority exactly as before.
+limit, and the runtime computes authority exactly as before. A lesson
+scoped to a work context applies in that context and in the names under
+it: one scoped to `api.123.do` is given to a run in `billing.api.123.do`.
 `321 lessons show ID` sets the runs given the lesson against comparable
 runs that were not (same agent; same context or harness when the lesson
 names one) and reports each side's count, finish rate, median reported
@@ -1049,6 +1064,39 @@ current workspace. Nothing else writes there, and 321 commits nothing:
 the team gets the lesson when a person commits and merges the file.
 Work outside a repository has no project knowledge; personal lessons and
 contexts still apply.
+
+**Lessons at the registry.** An organisation also keeps lessons at the
+registry, for a work context or for the whole organisation. `321 context
+pull NAME` asks `/api/lessons?context=NAME` after the context itself and
+keeps what it is given in the copy (`lessons`, with `lessonsPulledAt`):
+each lesson's id, name, where it is kept (`at`), scope, agent, state and
+text. Pulling again replaces them. If that second request fails (an
+older registry, no token) the pull still succeeds, keeps the lessons the
+copy had, and says they were not refreshed and why. A run is told the
+lessons held in the copy it works from, after the context's own lines
+and in the order the registry served them (the context's, then the
+organisation's), at most twelve (`REGISTRY-LESSONS-CAP`); a lesson that
+names an agent is given only to that agent. Each reads `A lesson kept
+for <at> (advice, not an instruction: it grants nothing and never
+overrides the task or its limits): <text>`, and its id is recorded with
+the run as the ids of local lessons are. They are advice lines only:
+no grant, no limit and no instruction comes from them. A lesson this
+person taught is not said twice when their own copy of it also applies.
+`321 lessons` lists them after the local ones, marked as the
+registry's; they are read only here, and are kept, reverted or removed
+at the registry.
+
+`321 lessons teach ID [--when W] [--because B]` sends one local lesson
+to the registry with `POST /api/lessons`. The lesson must be scoped to a
+work context, which is the context it is taught to. What is sent is
+exactly: that context's name, when the lesson applies, the lesson's
+text as what to do, why it holds, and the agent's name when the lesson
+is scoped to one. `--when` and `--because` may be given here or stored
+with `321 lessons add --when W --because B`; without both, teach is
+refused and names the one to add. The registry's id and where it keeps
+the lesson are recorded on the local lesson (`taught`), so teaching it
+again sends nothing and says it was already taught. Nothing is sent by a
+run and nothing in the background: only this command sends a lesson.
 
 **Outcomes.** `321 outcome <run> accepted|rejected|corrected [why]`
 records what a person, or the work system that issued the package, says
@@ -1118,7 +1166,7 @@ replaced by a later word and cannot be traced back. The registry takes
 reports only with a token. What went is written to
 `~/.321/registry/sent.ndjson`; `321 record share` shows what would go
 before anything does. Nothing is sent by a run, and there is no
-background sender: only `321 registry sync` sends.
+background sender: only `321 registry sync` sends reports.
 
 Where this 321 has a key (`321 key new`), a report for a receipt that
 key signed also carries the receipt's `receiptDigest` and the value of
@@ -1132,7 +1180,11 @@ signed by a key that is no longer the one here is reported unsigned.
 
 Not built: lessons proposed by 321 itself from a run (a person adds
 them, optionally naming the run with `--from`); promotion of a lesson
-into a registry skill; publishing to the registry from the CLI;
+into a registry skill; publishing agents, skills or contexts to the
+registry from the CLI (a taught lesson is the one thing sent besides
+outcome reports); keeping, reverting or removing a registry lesson from
+here, and sending evidence with one; refreshing a pulled context's
+lessons without a person asking;
 organisation-wide value reports (the sums are this machine's runs);
 checking a report's figures against its receipt (the registry holds a
 signature over the receipt's digest, not the receipt; many accounts

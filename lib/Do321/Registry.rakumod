@@ -106,14 +106,14 @@ sub registry-get(IO::Path $home, Str $path, Str :$send = '') is export {
         fail-with("no such document at the registry: $path") if $url.starts-with('file:') && $rc == 37;
         fail-with("the registry at {registry-url($home)} could not be reached" ~ ($err ne '' ?? " ({$err.subst(/^ 'curl: ' /, '')})" !! ''));
     }
-    if $code eq '422' | '413' | '400' {
+    if $code eq '422' | '413' | '400' | '429' || ($code eq '404' && $send ne '') {
         my $said = try parse-json($body);
         fail-with('the registry refused what was sent' ~ ($said ~~ Associative && ($said<message> // '') ne '' ?? ": {$said<message>}" !! " ($code)"));
     }
     fail-with('the registry takes this only from someone it knows: set your token with 321 registry token') if $code eq '401' && $token eq '';
     fail-with('the registry did not recognise the token, or it has been revoked: set a new one with 321 registry token') if $code eq '401';
     fail-with("the registry has nothing at $path that you may see") if $code eq '404';
-    fail-with("the registry answered $code for $path") unless $code eq '200' | '000';
+    fail-with("the registry answered $code for $path") unless $code eq '200' | '201' | '000';
     my $doc = try parse-json($body);
     fail-with("the registry's answer for $path was not a JSON document") unless $doc ~~ Associative;
     $doc;

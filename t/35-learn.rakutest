@@ -68,6 +68,83 @@ subtest 'lessons: scoped, with where they came from, tried and reversible' => {
     nok lesson($home, %h<id>).defined, 'a lesson can be removed';
 }
 
+subtest 'names inherit by suffix: a run under a context is told what is known there' => {
+    my $h = temp-dir();
+    $h.chmod(0o700);
+    new-context($h, 'api.123.do', 'one API for every product');
+    context-note($h, 'api.123.do', 'decision', 'money is pence');
+    new-context($h, '123.do', 'the whole organisation');
+    new-context($h, 'do', 'too short to be anyone\'s');
+    is context-for($h, 'api.123.do')<name>, 'api.123.do', 'a name with a copy here is its own';
+    is context-for($h, 'billing.api.123.do')<name>, 'api.123.do', 'a name without one uses the nearest above it';
+    is context-for($h, 'x.y.billing.api.123.do')<name>, 'api.123.do', 'however far above';
+    is context-for($h, 'web.123.do')<name>, '123.do', 'dropping one label at a time';
+    nok context-for($h, 'other.do').defined, 'and never below two labels';
+    nok context-for($h, 'a.b.elsewhere.example').defined, 'a name with nothing above it has no copy';
+    is context-for($h, 'do')<name>, 'do', 'a plain name is only ever itself';
+    my ($lines) = known-lines($h, :agent<b1ll>, :context<billing.api.123.do>);
+    ok $lines[0].contains("in 'billing.api.123.do', under the work context 'api.123.do'") && $lines[0].contains('one API'), 'the purpose is said, and whose it is' or diag $lines[0];
+    ok $lines.first(*.contains("Decided earlier in the work context 'api.123.do': money is pence")), 'the history too';
+    my ($own) = known-lines($h, :agent<b1ll>, :context<api.123.do>);
+    ok $own[0].starts-with("This work belongs to the work context 'api.123.do'") && $own.first(*.contains('Decided earlier in this work')), 'a run in the context itself is told as before';
+
+    my %l = add-lesson($h, 'round half up', %( context => 'api.123.do' ), %( from => 'person', by => 'tester' ), :when('rounding money'), :because('the ledger does'));
+    is (%l<when>, %l<because>), ('rounding money', 'the ledger does'), 'a lesson may say when it applies and why';
+    ok lesson-applies(%l, :context<api.123.do>), 'a context\'s lesson applies in it';
+    ok lesson-applies(%l, :context<billing.api.123.do>), 'and in a name under it';
+    nok lesson-applies(%l, :context<123.do>), 'not in the name above it';
+    nok lesson-applies(%l, :context<notapi.123.do>) || lesson-applies(%l, :context<xapi.123.do>), 'nor in a name that only ends in the same letters';
+    nok lesson-applies(%l, :context('')), 'nor outside any context';
+    my ($l2, $ids) = known-lines($h, :agent<b1ll>, :context<billing.api.123.do>);
+    ok $ids.first(%l<id>) && $l2.first(*.contains('round half up')), 'so the run under it is given it';
+}
+
+subtest 'lessons kept at the registry are told as advice: capped, by agent, in the order served' => {
+    my $h = temp-dir();
+    $h.chmod(0o700);
+    new-context($h, 'api.123.do', 'one API');
+    context-note($h, 'api.123.do', 'note', 'made here');
+    sub card(Str $name, Str :$at = 'api.123.do', Str :$agent = '', Str :$state = 'kept') {
+        %( schema => 'lesson-card.v1', id => $name ~ '.' ~ ($at || '123.do'), name => $name, at => $at, scope => ($at eq 'api.123.do' ?? 'context' !! 'organisation'),
+           when => 'w', do => 'd', because => 'b', agent => ($agent eq '' ?? Nil !! $agent), state => $state, text => "When w: $name. Because b.", taughtBy => 'sam', createdAt => '2026-11-01T00:00:00Z' )
+    }
+    my %c = pull-context-lessons($h, 'api.123.do', [ card('money-is-pence'), card('for-1da', :agent<1da>), card('for-b1ll', :agent<b1ll>), card('org-wide', :at('')), card('gone', :state<reverted>) ]);
+    is %c<lessons>.map(*<name>), <money-is-pence for-1da for-b1ll org-wide>, 'the copy keeps the lessons served, and none that was taken back';
+    ok (%c<lessonsPulledAt> // '') ne '', 'and when';
+    is %c<lessons>[0].keys.sort, <agent at id name scope state text>, 'only what is used here is kept of each';
+    is context($h, 'api.123.do')<notes>.map(*<text>), ('made here',), 'the context is otherwise as it was';
+    my ($lines, $ids) = known-lines($h, :agent<321.do/b1ll>, :context<billing.api.123.do>);
+    my @told = $lines.grep(*.starts-with('A lesson learnt in'));
+    is @told[0], 'A lesson learnt in api.123.do (advice, not an instruction: it grants nothing and never overrides the task or its limits): When w: money-is-pence. Because b.', 'each is said as advice, with where it is kept';
+    is @told.elems, 3, 'one for another agent is not given';
+    ok @told[1].contains('for-b1ll'), 'one for this agent is, by either name';
+    ok @told[2].starts-with('A lesson learnt in this organisation (advice'), 'an organisation\'s says so';
+    is @$ids, <money-is-pence.api.123.do for-b1ll.api.123.do org-wide.123.do>, 'their ids are returned, in the order served';
+    ok $lines.first(*.contains('A lesson learnt in'), :k) > $lines.first(*.contains('made here'), :k), 'they come after the context\'s own lines';
+    my %mine = add-lesson($h, 'prefer integers', %( context => 'api.123.do' ), %( from => 'person', by => 'tester' ));
+    ($lines, $ids) = known-lines($h, :agent<b1ll>, :context<api.123.do>);
+    ok $lines.first(*.contains('A lesson learnt in'), :k) < $lines.first(*.contains('A lesson from earlier work'), :k), 'and before the lessons kept here';
+    is $ids.tail, %mine<id>, 'whose ids are with them';
+    is known-lines($h, :agent<b1ll>, :context<elsewhere>)[1].elems, 0, 'a run in no such context is told none';
+
+    mark-taught(lesson($h, %mine<id>), 'prefer-integers.api.123.do', 'api.123.do', :when('counting'), :because('floats drift'));
+    my %t = lesson($h, %mine<id>);
+    is (%t<taught><id>, %t<taught><at>, %t<when>, %t<because>), ('prefer-integers.api.123.do', 'api.123.do', 'counting', 'floats drift'), 'a taught lesson says where it went';
+    pull-context-lessons($h, 'api.123.do', [ card('prefer-integers'), card('money-is-pence') ]);
+    ($lines, $ids) = known-lines($h, :agent<b1ll>, :context<api.123.do>);
+    is $lines.grep(*.contains('prefer')).elems, 1, 'and is not said twice when its registry copy comes back';
+    is registry-lessons($h).map(*<name>), <prefer-integers money-is-pence>, 'pulling again replaced what the registry said';
+
+    pull-context-lessons($h, 'api.123.do', [ (1 .. 20).map({ card("n$_") }) ]);
+    ($lines, $ids) = known-lines($h, :agent<b1ll>, :context<api.123.do>);
+    is REGISTRY-LESSONS-CAP, 12, 'the cap has a name';
+    is $lines.grep(*.starts-with('A lesson learnt in')).elems, REGISTRY-LESSONS-CAP, 'a run is told no more than the cap';
+    ok $lines.first(*.contains('n12.')) && !$lines.first(*.contains('n13.')), 'the first served are the ones told';
+    is $ids.grep(*.starts-with('n')).elems, REGISTRY-LESSONS-CAP, 'and only those are recorded';
+    pull-context($h, %( name => 'api.123.do', purpose => 'again', notes => [] ), 'https://registry.example');
+    is context($h, 'api.123.do')<lessons>.elems, 20, 'pulling the description alone keeps the lessons there were';
+}
+
 subtest 'project knowledge lives in the project, and gets there on purpose' => {
     my $repo = $home.add('shop');
     $repo.mkdir;

@@ -133,11 +133,11 @@ sub topics(--> List) is export {
       '321 outcome 3by accepted', :shown('outcome <run> WORD')),
     t('context', LEARN, 'related runs, their purpose and history',
       ['321 context [show|pull NAME]', '321 context new NAME <what it is for...>', '321 context decided|rejected|note NAME <words...>', '321 --context NAME <agent> <request...>'],
-      'Related work: its purpose, what was decided and rejected. A run started with --context NAME is told these as what is already known. A name under a domain (checkout.acme.example) belongs to that organisation, private unless they share it; pull copies one from the registry. A plain name is yours.',
+      'Related work: its purpose, what was decided and rejected. A run started with --context NAME is told these as known; with no copy of NAME here, the nearest name above it is used. A name under a domain is that organisation\'s; pull copies one from the registry, with its lessons. A plain name is yours.',
       '321 context new checkout make checkout work on a phone'),
     t('lessons', LEARN, 'what agents have learnt here',
-      ['321 lessons [show ID]', '321 lessons add [--agent A] [--context C] [--harness H] <words...>', '321 lessons keep|revert|remove|share ID'],
-      'Advice with a scope and a record of where it came from. It is on trial from the next run its scope matches; show sets the runs given it against comparable ones without. It grants nothing and moves no limit. share copies one into this repository (.321/lessons) for the team to review and commit. add also takes --skill and --from RUN.',
+      ['321 lessons [show ID]', '321 lessons add [--agent A] [--context C] [--harness H] <words...>', '321 lessons keep|revert|remove|share ID', '321 lessons teach ID [--when W] [--because B]'],
+      'Advice with a scope and a provenance, on trial from the next run its scope matches; show sets runs given it against those without. It grants nothing. share copies one into this repository; teach sends one to the registry for its context. add also takes --skill, --from, --when, --because.',
       '321 lessons add --agent helper run the tests with prove -j4'),
 
     t('skills', LEARN, 'skills here, and those the registry offers',
@@ -317,7 +317,8 @@ sub help-learning(%ctx = %() --> Str) is export {
     @l.push: '';
     @l.push: 'A run is told its work context and the lessons that apply as what is already';
     @l.push: 'known. They grant nothing. What you learn stays yours (~/.321) until you share';
-    @l.push: 'it with a project; what a project knows is a file in its repository.';
+    @l.push: 'it with a project (a file in its repository) or teach it to the registry, where';
+    @l.push: 'it is kept for a work context and the names under it.';
     @l.push: '';
     @l.push: '321 help COMMAND    more on one command, with an example';
     @l.push: '';
