@@ -1,7 +1,7 @@
 {
   "meta-version": "1",
   "name": "Do321",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "auth": "zef:nige123",
   "api": "1",
   "raku": "6.d",
