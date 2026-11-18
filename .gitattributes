@@ -1,3 +1,17 @@
 # Package and protocol fixtures are digested byte for byte: never convert
 # their line endings (actions/checkout on Windows would write CRLF).
 testdata/** -text
+
+# What raku.land carries is the tool, its docs and its tests.  These stay in
+# the repository: 'tools/raku-land' builds the package with git archive,
+# which leaves them out.  ('fez upload' on its own ignores this file, and
+# would send the whole working tree, ignored files included.)
+tools            export-ignore
+.claude          export-ignore
+.github          export-ignore
+CLAUDE.md        export-ignore
+AGENTS.md        export-ignore
+321.yml          export-ignore
+.goreleaser.yaml export-ignore
+.gitignore       export-ignore
+.gitattributes   export-ignore

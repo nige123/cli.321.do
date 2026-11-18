@@ -26,6 +26,13 @@ suite against it, and on a `v*` tag publishes them as a GitHub release with
 a `.sha256` beside each. During development invoke the binary by its build
 path. Nothing here installs anything onto `PATH`.
 
+`tools/raku-land` makes the package the Raku ecosystem carries: `git archive`
+of the release tag, so it holds the tool, its docs and its tests and nothing
+`.gitattributes` marks `export-ignore`. `tools/raku-land check` installs that
+package with its tests under Raku++ and dry-runs the upload;
+`tools/raku-land upload` then asks a person at a terminal before sending it.
+Never run a plain `fez upload` here: it sends the whole working tree.
+
 ## Identity
 
 An agent's canonical identity is `<publisher-domain>/<name>`, for example

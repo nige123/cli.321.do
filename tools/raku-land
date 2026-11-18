@@ -1,0 +1,88 @@
+#!/bin/sh
+# tools/raku-land: the package raku.land carries, made the same way each time.
+#
+#   tools/raku-land build     make the package from the release tag
+#   tools/raku-land check     build it, install it with its tests, dry-run the upload
+#   tools/raku-land upload    check it, then ask a person, then upload
+#
+# The package is 'git archive' of the tag v<version in META6.json>, so it is
+# exactly what was released and leaves out what .gitattributes marks
+# export-ignore.  A plain 'fez upload' would send the whole working tree,
+# files git ignores among them.  An upload cannot be withdrawn, so only a
+# person at a terminal starts one.
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+
+say()  { printf '%s\n' "$*"; }
+stop() { printf 'raku-land: %s\n' "$*" >&2; exit 1; }
+
+version=$(sed -n 's/^ *"version" *: *"\([^"]*\)".*/\1/p' META6.json | head -1)
+[ -n "$version" ] || stop "no version in META6.json"
+tag="v$version"
+out="${RAKU_LAND_OUT:-$root/dist}"
+pkg="$out/Do321-$version.tar.gz"
+RAKUPP="${RAKUPP:-rakupp}"
+
+build() {
+    git rev-parse -q --verify "refs/tags/$tag" >/dev/null || stop "there is no tag $tag: release $version first"
+    [ "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)" ] \
+        || stop "HEAD is not $tag: check out the release before packaging it"
+    mkdir -p "$out"
+    part="$pkg.part"
+    rm -f "$pkg" "$part"
+    git archive --format=tar.gz --prefix="Do321-$version/" -o "$part" "$tag"
+    # what must be in it, and what must not; a package that fails is not left behind
+    list=$(tar tzf "$part")
+    for want in META6.json LICENSE README.md bin/321 lib/Do321/CLI.rakumod; do
+        printf '%s\n' "$list" | grep -qx "Do321-$version/$want" || { rm -f "$part"; stop "the package lacks $want"; }
+    done
+    for never in tools .claude .github CLAUDE.md AGENTS.md 321.yml .goreleaser.yaml .gitignore .gitattributes conf dist; do
+        if printf '%s\n' "$list" | grep -q "^Do321-$version/$never\(/\|\$\)"; then
+            rm -f "$part"; stop "the package holds $never, which .gitattributes should leave out"
+        fi
+    done
+    if printf '%s\n' "$list" | grep -q -e '-prompt\.md$' -e 'secrets'; then
+        rm -f "$part"; stop "the package holds a private note or a secrets file"
+    fi
+    mv "$part" "$pkg"
+    say "built   $pkg ($(printf '%s\n' "$list" | grep -vc '/$') files, $(du -h "$pkg" | cut -f1))"
+}
+
+check() {
+    build
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    tar xzf "$pkg" -C "$work"
+    say "testing the package as an install would, under Raku++ (a few minutes)"
+    "$RAKUPP" install "$work/Do321-$version" --to="$work/store" >"$work/install.log" 2>&1 \
+        || { tail -20 "$work/install.log" >&2; stop "the package does not install with its tests under Raku++"; }
+    got=$(cd "$work" && RAKULIB="inst#$work/store" DO_321_HOME="$work/home" "$work/store/bin/321" version </dev/null | head -1)
+    [ "$got" = "321 $version" ] || stop "the installed 321 says '$got', not '321 $version'"
+    say "tested  installs under Raku++ with its tests passing, and runs: $got"
+    fez upload --file="$pkg" --dry-run >"$work/fez.log" 2>&1 \
+        || { tail -20 "$work/fez.log" >&2; stop "fez would not accept the package (are you logged in? fez login)"; }
+    if grep -q 'ERROR' "$work/fez.log"; then grep 'ERROR' -A3 "$work/fez.log" >&2; stop "fez reports a problem with the package"; fi
+    say "checked fez accepts it (dry run)"
+}
+
+case "${1:-}" in
+    build)  build ;;
+    check)  check; say ""; say "next:  tools/raku-land upload" ;;
+    upload)
+        [ -t 0 ] && [ -t 1 ] || stop "an upload cannot be withdrawn, so a person starts it: run this at a terminal"
+        check
+        say ""
+        printf 'Upload Do321 %s to raku.land? It cannot be withdrawn. Type the version to go ahead: ' "$version"
+        read -r answer
+        [ "$answer" = "$version" ] || stop "nothing was uploaded"
+        fez upload --file="$pkg"
+        say ""
+        say "next:  rakupp install --refresh Do321   (the index can take a few minutes)"
+        ;;
+    *)
+        sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
+        [ -z "${1:-}" ] || exit 2
+        ;;
+esac
