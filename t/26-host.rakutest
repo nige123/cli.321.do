@@ -322,4 +322,24 @@ subtest 'the last one stops cleanly' => {
     is $list.lines.grep(*.contains("\trunning\t")).elems, 0, 'nothing is left running';
 }
 
+subtest 'a process noted once stays noted while it lives' => {
+    # a task that escaped is no longer below the host; it is still this
+    # run's, and a force stop must still be able to find it
+    my $r = run-dir(new-ulid(), $home);
+    private-dir($r.dir);
+    my $other = Proc::Async.new('sleep', '30');
+    my $going = $other.start;
+    my $pid = await $other.ready;
+    my %s = proc-stat($pid);
+    $r.dir.add('tree.json').spurt(encode-json(%( processes => [
+        %( pid => $pid, start => %s<start>, sid => %s<sid>, pgid => %s<pgid>, command => 'sleep 30' ),
+        %( pid => 2_000_000_000, start => 1, sid => 1, pgid => 1, command => 'long gone' ) ] )));
+    snapshot-tree($r);
+    my @noted = @(parse-json($r.dir.add('tree.json').slurp)<processes>);
+    ok @noted.first({ .<pid> == $pid }), 'one that is still alive is kept, though the host no longer finds it below itself';
+    nok @noted.first({ .<pid> == 2_000_000_000 }), 'one that has gone is let go';
+    $other.kill(SIGKILL);
+    try await $going;
+}
+
 done-testing;

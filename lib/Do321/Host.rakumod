@@ -610,6 +610,16 @@ sub snapshot-tree(RunDir $r) is export {
         my %s = proc-stat($pid) // Nil;
         %s ?? %( pid => $pid, start => %s<start>, sid => %s<sid>, pgid => %s<pgid>, command => proc-cmdline($pid).substr(0, 120) ) !! Empty
     });
+    # A process noted before and still alive is still this run's, though it
+    # is no longer found below the host: it was handed to another parent
+    # (a task that escaped), or its entry could not be read just now.
+    # Dropping it would leave a force stop nothing to stop it by.
+    my %now = @t.map({ .<pid> => True });
+    my $before = (read-json-file($r.dir.add('tree.json')) // {})<processes>;
+    for @($before // []).grep(Associative) -> %p {
+        next if %now{%p<pid>} || !same-process((%p<pid> // 0).Int, (%p<start> // 0).Int, '');
+        @t.push(%p);
+    }
     try write-atomic($r.dir.add('tree.json'), encode-json(%( at => now-iso(), bootId => boot-id(), processes => @t )) ~ "\n");
 }
 
