@@ -36,8 +36,16 @@ model or harness. 321 is the durable layer where that compounds.
 | # | Slice | Where | Status |
 |---|---|---|---|
 | 1 | A correction with words becomes one lesson on trial for that agent on any harness; judged runs keep or revert lessons no person decided | cli.321.do | built, tested (`t/44-compounding.rakutest`) |
-| 2 | 123.do serves an agent the verdicts on its runs; the 123 worker says them to its 321 as `321 outcome` | api.123.do, tui.123.do | see the report |
-| 3 | A person's decline with words in a configured Track is taught to the registry as a trial lesson, so the next package carries it | api.123.do | see the report |
-| 4 | Lesson uses and their outcomes reported to the registry, evidence shown on each registry lesson | agents.321.do (another session) and api.123.do | see the report |
+| 2 | 123.do serves an agent the verdicts on its runs (`GET /me/get-run-outcomes`); the 123 worker says each new one to its 321 as `321 outcome RUN WORD [WORDS]` under `DO_321_OUTCOME_BY` | api.123.do (`Engine::RunOutcomes`), tui.123.do (`say-outcomes`, `launcher-outcome`) | built, tested (`t/integration/179`, `t/52-outcomes.rakutest`) |
+| 3 | A person's decline with words in a configured Track is taught to the registry as a trial lesson for that agent and context, key-shaped strings redacted, so the next package there carries it | api.123.do (`Engine::Lessons::report_to_registry`, migration 99) | built, tested against a stubbed registry (`t/integration/180`) |
+| 4 | Each judged run's lesson ids and outcome go to the registry (`lesson-uses.v1`, opaque runKey; runs told nothing are the comparison) and each registry lesson shows its evidence | api.123.do sends; agents.321.do receives (another session) | sender built and tested against a stub; the receiving end is built in agents.321.do and not yet deployed |
+
+## How a correction travels
+
+1. A person declines b1ll's result on a Step in 123.do and says why.
+2. On the person's computer, the 123 worker reads the verdict and runs `321 outcome <run> rejected <their words>`; 321 records the outcome and proposes a lesson on trial for b1ll, on any harness or model.
+3. In a Track whose context is configured, api.123.do teaches the same words to the registry for that context and reports the run's lesson uses.
+4. The next b1ll package from that Track carries the lesson as advice (`context.lines`, grants nothing); the next 321-built run anywhere carries the local one.
+5. Judged runs with and without a lesson are compared: 321 keeps or reverts what no person decided; at the registry the evidence is shown and a person decides.
 
 What is deliberately not built: a model call to distil lessons, a new service or daemon, automatic keep or revert at the registry (a person decides there, `lessons_decided_by_a_person`), promotion of a lesson into a skill, organisation-wide value.
