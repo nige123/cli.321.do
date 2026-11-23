@@ -137,6 +137,8 @@ class Codex does Adapter is export {
     has %.env;                       # replaces the environment when given (tests)
 
     method name(--> Str) { 'codex' }
+    method label(--> Str) { 'Codex' }
+    method note(--> Str) { 'OpenAI Codex; a sandbox, not a tool allowlist' }
 
     method !binary(--> Str) { $!binary ne '' ?? $!binary !! 'codex' }
     method executable(--> Str) {

@@ -444,6 +444,10 @@ class EngineExecutor does Executor is export {
         for 'deploy aborted', 'rolled back', '[fail]', 'did not recover', "can't reach" -> $bad {
             tool-error("engine go did not succeed: $tail") if $lower.contains($bad);
         }
-        "engine go {$p<service>} {$p<target>} completed: $tail";
+        # What it reports is what it printed.  Its timestamped log lines are
+        # its own deploy log's, which it keeps; they are not said again here.
+        my $said = redact($stdout ~ "\n" ~ $stderr).lines.grep({ $_ !~~ / ^ \h* '[' \d ** 4 '-' \d\d '-' \d\d \h <-[\]]>* ']' \h* '[' / }).join("\n").trim;
+        $said = '…' ~ $said.substr(*-2000) if $said.chars > 2000;
+        "engine go {$p<service>} {$p<target>} completed: $said";
     }
 }

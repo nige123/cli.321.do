@@ -11,10 +11,8 @@ use Do321::Protocol;
 use Do321::Adapter;
 use Do321::CLI;
 
-#| Display names, only where an adapter's own name reads badly.
-my constant NAMES = %( claude_code => 'Claude Code', codex => 'Codex', fake => 'a stand-in harness', procedure => 'a procedure' );
-
-sub harness-name(Str $adapter --> Str) is export { NAMES{$adapter} // $adapter }
+#| Display names: each adapter's own label, said when it is registered.
+sub harness-name(Str $adapter --> Str) is export { known-registry(); harness-display($adapter) }
 
 #| The adapters `321 run` will drive: the runtime's own set.
 sub runtime-registry(--> Registry) is export { default-registry($*ERR) }

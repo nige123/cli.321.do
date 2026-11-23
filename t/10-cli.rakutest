@@ -266,6 +266,26 @@ sub operator-env(Bool $bound, *%extra --> List) {
     ok %r<evidence><approvalCheck>.defined && %r<evidence><approvalCheck><operationMatched>, 'the approval check matched the fresh plan';
 }
 
+# the same go on a terminal: one live line, rewritten in place and wiped,
+# and the engine's log left in the engine's log
+{
+    my $tp = operator-trust();
+    my ($env, $log) = operator-env(True, FAKE_ENGINE_ALLOW_GO => '1', DP_EXECUTE => 'live', DO_321_INTERACTIVE => '1', DO_321_COLOR => '1', DO_321_WIDTH => '60');
+    my ($rc, $out, $err) = cli($tp, 'op', 'go', 'alpha.web', 'live', :env(%$env));
+    is $rc, 0, 'the go completes on a terminal' or diag "$out\n$err";
+    my @live = $out.split("\r\e[2K");
+    ok @live.elems > 3, 'each progress line returns to the margin and clears the row before it is written' or diag $out.raku;
+    ok !$out.subst("\r\e[2K", '', :g).contains("\e[2K"), 'and never clears a row from where the last one ended' or diag $out.raku;
+    my @rows = @live[1 .. *-2].map(*.subst(/ \e '[' <[\d;]>* 'm' /, '', :g));
+    ok @rows.all.chars < 60 && !@rows.first(*.contains("\n")), 'a progress line is one row, cut to the width' or diag @rows.raku;
+    ok @live.tail.subst(/ \e '[' <[\d;]>* 'm' /, '', :g).starts-with('✓ completed:'), 'the last one is wiped before the verdict' or diag @live.tail;
+    ok @rows.first(*.contains('then deploying alpha.web to live')), 'the deploy step says it has begun, so the wait has a name' or diag @rows.raku;
+    ok @rows.grep(/ ^ '  ' <[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏|/\\-]> ' ' /).elems == @rows.elems, 'every live row carries the turning mark' or diag @rows.raku;
+    ok !$err.contains('uninitialized') && !$out.contains('exit= '), 'a result event is said with only what it carries' or diag $err;
+    ok $out.contains('[OK] health_check') && $out.contains('Deployed alpha.web successfully'), 'the engine\'s report is shown' or diag $out;
+    ok !$out.contains('[info]') && !$out.contains('Deploy log written'), 'and its log lines are not' or diag $out;
+}
+
 # a non-interactive go does not self-approve
 {
     my $tp = operator-trust();

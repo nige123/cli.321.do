@@ -312,7 +312,7 @@ sub interaction-of(Env $env, Int $code, Duration $took --> Hash) {
     my %rec = command => $word, options => @opts, args => @args.map(*.Str).List, free => $free,
               form => $form, tty => $tty, exit => $code, ms => ($took * 1000).Int, note => take-interaction-note();
     %rec<agent> = $agent if $agent ne '';
-    %rec<cols> = screen-width() if $tty;
+    %rec<cols> = screen-cols() if $tty;
     %rec;
 }
 
@@ -2121,16 +2121,6 @@ sub policy-text(%policy --> Str) {
     @parts.join('; ');
 }
 
-#| What an adapter is, in a few words, beside what it can do.
-sub adapter-note(Str $name --> Str) {
-    given $name {
-        when 'procedure' { 'runs a package procedure; no model' }
-        when 'fake'      { 'a stand-in for tests' }
-        when 'codex'     { 'OpenAI Codex; a sandbox, not a tool allowlist' }
-        default          { '' }
-    }
-}
-
 sub cmd-doctor(Env $env, Global $g, @args --> Int) {
     my $json = is-in('--json', @args);
     my $verbose = is-in('--verbose', @args);
@@ -2172,7 +2162,7 @@ sub cmd-doctor(Env $env, Global $g, @args --> Int) {
         my @cn = controls().grep({ control-strength(%c, $_) eq STRENGTH-NONE });
         my $what = "enforces {@yes.elems} of {features().elems} features"
                  ~ ($a.controls.elems > 0 ?? ", {@ce.elems} of {controls().elems} controls" !! '')
-                 ~ (adapter-note($a.name) ne '' ?? "; {adapter-note($a.name)}" !! '');
+                 ~ ($a.note ne '' ?? "; {$a.note}" !! '');
         @adapters.push(%( name => $a.name, available => $det.available,
             where => ($det.available ?? ($det.version eq 'built-in' ?? 'built in' !! $det.version) !! "not here: {$det.reason}"),
             what => $what, yes => @yes, no => @no, ce => @ce, ca => @ca, cn => @cn, harness => ($a.controls.elems > 0) ));
@@ -3128,7 +3118,8 @@ sub render-event($w, %e --> Bool) {
             if %p<op>:exists { $w.say("  $d tool {%p<tool>} {%p<op>} {encode-json(%p<params> // {})}") }
             else { $w.say("  $d {%p<tool>} {%p<target>}") }
         }
-        when EVENT-TOOL-RESULT { if %p<op>:exists { $w.say("  $d tool {%p<tool>} {%p<op>}: ok={%p<ok>.Str.lc} exit={%p<exitCode>}") } else { $wrote = False } }
+        # a result is said with only what its event carries
+        when EVENT-TOOL-RESULT { if %p<op>:exists { $w.say("  $d tool {%p<tool>} {%p<op>}: ok={(so %p<ok>).Str.lc}" ~ (%p<exitCode>.defined ?? " exit={%p<exitCode>}" !! '')) } else { $wrote = False } }
         when EVENT-ADAPTER-SELECTED { $w.say("  $d running in {%p<adapter>}") }
         when EVENT-PROCEDURE-SELECTED { $w.say("  $d procedure {%p<procedure>} (no model)") }
         when EVENT-ATTEMPT-STARTED { if (%p<attempt> // 0) > 1 { $w.say("  $d attempt {%p<attempt>}") } else { $wrote = False } }
@@ -3160,7 +3151,7 @@ sub brief-event-text(%e --> Str) {
 #| for (changed, proposal, cost when a model was used, receipt); then the
 #| next step.  The tool calls and a cost of none are --verbose.  The words
 #| are the receipt's own; nothing here says the work is right.
-my sub harness-label(Str $n --> Str) { $n eq 'claude_code' ?? 'Claude Code' !! $n eq 'codex' ?? 'Codex' !! $n }
+my sub harness-label(Str $n --> Str) { harness-display($n) }
 #| A harness's version as a bare number: its own name is said beside it.
 my sub bare-version(Str $v --> Str) { ($v ~~ / (\d+ [ '.' \d+ ]+ <[\w.-]>*) / ?? ~$0 !! $v).Str }
 #| The profile a plan ran on, in brackets; a model named by hand is said so instead.
@@ -3348,9 +3339,9 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
     }
     my $out = $env.stdout;
     my $shown = 0;
-    my $live = False;
+    my $live = Live.new(:w($out), :width(screen-cols()));
     # What a person sees while it runs: on a terminal, one live line under
-    # the header, rewritten per event and wiped before the verdict; with
+    # the header, turning while a step runs, rewritten per event and wiped before the verdict; with
     # --verbose (or DO_321_PROGRESS=1 in a pipe) one line per event, kept;
     # into a pipe otherwise, nothing until the verdict.
     my $sink = $g.json-out
@@ -3360,13 +3351,13 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
             !! $g.verbose || progress-on()
                 ?? SinkFunc.new(:f(-> %e { $shown += render-event($out, %e) ?? 1 !! 0 }))
                 !! pretty-on()
-                    ?? SinkFunc.new(:f(-> %e { my $t = brief-event-text(%e); if $t ne '' { live-line($out, "  {glyph('dot')} $t"); $live = True } }))
+                    ?? SinkFunc.new(:f(-> %e { my $t = brief-event-text(%e); $live.say($t) if $t ne '' }))
                     !! SinkFunc.new(:f(-> % {}));
     my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$signals, :$sink, :history-dir($run-dir.Str),
         :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8')),
         :$want, :models(models-here(home-of($env)))));
     $ctx.cancel;
-    wipe-live($out) if $live;
+    $live.stop;
     %receipt = sign-receipt-if-keyed(%receipt, home-of($env));
     try $run-dir.add('receipt.json').spurt(to-pretty('RunReceipt', %receipt) ~ "\n");
     with %receipt<evidence><proposal> { try $run-dir.add('proposal.json').spurt(to-pretty('DeploymentProposal', $_) ~ "\n") }

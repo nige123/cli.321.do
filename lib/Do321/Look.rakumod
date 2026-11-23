@@ -126,8 +126,10 @@ sub pretty(Str $text, Bool :$on = pretty-on() --> Str) is export {
     return $text unless $on && $DRESS;
     my $b = blue();
     $text.lines(:!chomp).map(-> $line {
-        my $nl = $line.ends-with("\n") ?? "\n" !! '';
+        # the line's own ending goes back as it came: a carriage return is
+        # how a live line returns to the margin, and must not be lost
         my $l = $line.chomp;
+        my $nl = $line.substr($l.chars);
         # a document for a machine, on a terminal by chance: left alone
         if $l ~~ / ^ \h* <[{}\[\]"]> / { }
         # every header: the icon, then '321', the command and the colon in bold
@@ -213,8 +215,65 @@ sub progress-on(--> Bool) is export { (%*ENV<DO_321_PROGRESS> // '') eq '1' }
 #| One live line under a title while something runs: rewritten in place,
 #| never left on the screen.  wipe-live() clears it before the next thing
 #| is said.
-sub live-line($w, Str $text) is export { $w.print("\r\e[2K" ~ $text); $w.flush }
+#| It is one row and stays one: a line that wrapped could not be wiped, so
+#| only its first line is shown, cut to the width given.
+sub live-line($w, Str $text, Int :$width = 80) is export {
+    my $one = $text.lines.first(*.trim.chars) // '';
+    $one = $one.substr(0, $width - 2) ~ '…' if $width > 2 && $one.chars > $width - 1;
+    $w.print("\r\e[2K" ~ $one); $w.flush
+}
 sub wipe-live($w) is export { $w.print("\r\e[2K"); $w.flush }
+
+#| The live line with a pulse: a mark that turns while the step it names
+#| is still going, and, once that has been a few seconds, how long.  A
+#| still line reads as a hang; a turning one says the work is alive.
+class Live is export {
+    has $.w is required;
+    has Int $.width = 80;
+    has Str $!text = '';
+    has $!since;
+    has Int $!tick = 0;
+    has Bool $!on = False;
+    has Bool $!done = False;
+    has $!lock = Lock.new;
+    has $!tap;
+    my constant @TURN       = '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏';
+    my constant @TURN-PLAIN = '|', '/', '-', '\\';
+
+    method shown(--> Bool) { $!on }
+    method !draw() {
+        my @f = utf8-terminal() ?? @TURN !! @TURN-PLAIN;
+        my $secs = (now - $!since).Int;
+        my $for = $secs >= 3 ?? '  ' ~ ($secs < 60 ?? "{$secs}s" !! sprintf('%d:%02d', $secs div 60, $secs % 60)) !! '';
+        my $room = $!width - 5 - $for.chars;
+        my $t = $room > 1 && $!text.chars > $room ?? $!text.substr(0, $room - 1) ~ '…' !! $!text;
+        $!w.print("\r\e[2K  {@f[$!tick % @f.elems]} $t$for"); $!w.flush;
+    }
+    #| What is happening now.  The clock starts again with each new thing.
+    method say(Str $text) {
+        $!lock.protect({
+            return if $!done;
+            $!text = ($text.lines.first(*.trim.chars) // '').trim;
+            $!since = now;
+            self!draw;
+            unless $!on {
+                $!on = True;
+                my $me = self;
+                $!tap = Supply.interval(0.12).tap({ $me.turn });
+            }
+        });
+    }
+    method turn() { $!lock.protect({ unless $!done { $!tick++; self!draw } }) }
+    #| The step is over: the line is wiped, and never drawn again.
+    method stop() {
+        $!lock.protect({
+            return if $!done;
+            $!done = True;
+            try $!tap.close with $!tap;
+            if $!on { $!w.print("\r\e[2K"); $!w.flush }
+        });
+    }
+}
 
 my $air;
 #| Installed once at startup, before anything is written.

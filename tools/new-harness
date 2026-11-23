@@ -1,0 +1,146 @@
+#!/bin/sh
+# tools/new-harness: the files a new harness adapter starts from.
+#
+#   tools/new-harness NAME "Display Name" [COMMAND]
+#
+# NAME is how 321 spells the harness (lower case, digits, underscores);
+# COMMAND is what is on PATH, when that differs.  It writes the adapter,
+# its test and a stand-in for the real command, and says the three lines
+# to add by hand.  docs/harness-authors.md takes it from there.
+set -eu
+
+stop() { printf 'new-harness: %s\n' "$*" >&2; exit 1; }
+
+name="${1:-}"; label="${2:-}"; command="${3:-$name}"
+[ -n "$name" ] && [ -n "$label" ] || { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+printf '%s' "$name" | grep -Eq '^[a-z][a-z0-9_]{0,31}$' || stop "the name is lower case letters, digits and underscores: got '$name'"
+
+root="${NEW_HARNESS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+class=$(printf '%s' "$name" | awk -F_ '{ for (i = 1; i <= NF; i++) printf "%s%s", toupper(substr($i,1,1)), substr($i,2) }')
+upper=$(printf '%s' "$name" | tr 'a-z' 'A-Z')
+module="$root/lib/Do321/Harness/$class.rakumod"
+test="$root/t/harness-$name.rakutest"
+fake="$root/testdata/fakeharness/$command"
+for f in "$module" "$test" "$fake"; do [ ! -e "$f" ] || stop "$f is already there"; done
+mkdir -p "$(dirname "$module")" "$(dirname "$test")" "$(dirname "$fake")"
+
+cat > "$module" <<MODULE
+unit module Do321::Harness::$class;
+
+#| Drives \`$command\` non-interactively.
+#|
+#| What it enforces, and how; checked against $command VERSION on SYSTEM:
+#|   timeout        the runner's cancellation plus SIGTERM
+#|   graceful_stop  SIGTERM, then SIGKILL after a wait
+#| What it does not enforce, and says so: everything else, until each is
+#| shown against the real executable (docs/harness-authors.md, step 3).
+
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Adapter;
+use Do321::CommandHarness;
+
+class $class is CommandHarness is export {
+    method name(--> Str)    { '$name' }
+    method label(--> Str)   { '$label' }
+    method command(--> Str) { '$command' }
+
+    #| The arguments for one attempt.  The prompt arrives on standard input.
+    method args(Spec \$spec --> List) {
+        ('run', |self.model-args(\$spec, '--model'))
+    }
+
+    #| Claim only what $command really does.
+    method enforcement(--> Hash) { self.claims(FEAT-TIMEOUT, FEAT-GRACEFUL-STOP) }
+
+    method manifest(--> Hash) {
+        %( providers => [], access => 'harness', sets-model => False, efforts => [],
+           reports => %( usd => False, tokens => False ), spend-cap => False )
+    }
+
+    method help-argv(--> List)  { ('run', '--help') }
+    method flags-used(--> List) { ('--model',) }
+}
+MODULE
+
+cat > "$test" <<TEST
+# $label under 321.  No model is called: testdata/fakeharness/$command
+# stands in for the real command.
+use lib \$?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321HarnessContract;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Adapter;
+use Do321::Harness::$class;
+
+my \$bin = repo-root().add('testdata/fakeharness/$command').Str;
+my \$tmp = temp-dir();
+my \$log = \$tmp.add('argv.log');
+my \$seen = \$tmp.add('prompt.txt');
+my %env = PATH => %*ENV<PATH>, FAKE_HARNESS_LOG => \$log.Str, FAKE_HARNESS_PROMPT => \$seen.Str;
+sub attempt(\$adapter, Str :\$model = '', Cancel :\$cancel = Cancel.new) {
+    \$adapter.run(\$cancel, Spec.new(:prompt('explain the build'), :\$model), Control.new);
+}
+
+harness-contract-ok($class.new(:binary(\$bin), :%env));
+
+subtest 'it is found here' => {
+    my \$d = $class.new(:binary(\$bin)).detect;
+    ok \$d.available, 'the stand-in answers' or diag \$d.raku;
+    nok $class.new(:binary('/nonexistent/$command')).detect.available, 'and a missing command is not available';
+}
+
+subtest 'a prompt in, an answer out' => {
+    \$log.spurt('');
+    my \$out = attempt($class.new(:binary(\$bin), :%env));
+    is \$out.status, STATUS-COMPLETED, 'a clean exit is a completed attempt' or diag \$out.errors.raku;
+    ok \$out.summary ne '', 'with a summary';
+    is \$seen.slurp, 'explain the build', 'the prompt went in on standard input';
+    is \$log.slurp.trim, 'run', 'and these were its arguments';
+}
+
+subtest 'failing, and being stopped' => {
+    my \$out = attempt($class.new(:binary(\$bin), :env(%( |%env, FAKE_HARNESS_MODE => 'fail' ))));
+    is \$out.status, STATUS-FAILED, 'a bad exit is a failed attempt';
+    my \$cancel = Cancel.new;
+    start { sleep 0.5; \$cancel.cancel('time is up') }
+    \$out = attempt($class.new(:binary(\$bin), :kill-wait(3), :env(%( |%env, FAKE_HARNESS_MODE => 'hang' ))), :\$cancel);
+    is \$out.status, STATUS-STOPPED, 'a cancelled run is stopped, not left running';
+}
+
+done-testing;
+TEST
+
+cat > "$fake" <<'FAKE'
+#!/usr/bin/env bash
+# A stand-in for the real command: it reads a prompt on standard input
+# and prints an answer.  No model.  Make it speak as the real one does.
+#   FAKE_HARNESS_MODE    answer (default) | fail | hang
+#   FAKE_HARNESS_LOG     where to write the argv, one line per call
+#   FAKE_HARNESS_PROMPT  where to write what arrived on stdin
+set -u
+if [ "${1:-}" = "--version" ]; then echo "0.0.1-fake"; exit 0; fi
+if [ "${2:-}" = "--help" ]; then echo "usage: run [--model NAME]"; exit 0; fi
+[ -n "${FAKE_HARNESS_LOG:-}" ] && { printf '%q ' "$@" >> "$FAKE_HARNESS_LOG"; printf '\n' >> "$FAKE_HARNESS_LOG"; }
+prompt=$(cat)
+[ -n "${FAKE_HARNESS_PROMPT:-}" ] && printf '%s' "$prompt" > "$FAKE_HARNESS_PROMPT"
+case "${FAKE_HARNESS_MODE:-answer}" in
+  hang) trap 'exit 143' TERM; while :; do sleep 0.05; done ;;
+  fail) echo "the provider refused the request" >&2; exit 3 ;;
+  *) echo "The build runs prove over t/." ;;
+esac
+FAKE
+chmod +x "$fake"
+
+rel() { printf '%s' "${1#"$root"/}"; }
+printf 'wrote  %s\n       %s\n       %s\n\n' "$(rel "$module")" "$(rel "$test")" "$(rel "$fake")"
+printf 'add three lines by hand:\n\n'
+printf '  lib/Do321/CLI.rakumod, at the top:      use Do321::Harness::%s;\n' "$class"
+printf '                         in default-registry:\n'
+printf '      .register(%s.new(:binary(%%*ENV<DO_321_%s_BINARY> // %s), :stderr($stderr)))\n\n' "$class" "$upper" "''"
+printf '  META6.json, under provides:\n'
+printf '      "Do321::Harness::%s": "lib/Do321/Harness/%s.rakumod",\n\n' "$class" "$class"
+printf 'next:  prove --ext .rakutest -e "rakupp -Ilib" t/harness-%s.rakutest\n' "$name"
+printf 'then:  docs/harness-authors.md, step 2\n'

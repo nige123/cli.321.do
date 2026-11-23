@@ -526,6 +526,10 @@ names any file it left out and why. The shared checks are in
 
 ### Adding a harness for runs
 
+The short way, for a command-line agent, is one class on `CommandHarness`:
+[harness-authors.md](harness-authors.md) walks through it, from a template to a
+pull request. What follows is the whole contract.
+
 Beyond `detect`, `enforcement` and `run`, an adapter says what it can be
 asked for, in `manifest`:
 

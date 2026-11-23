@@ -82,6 +82,8 @@ JSON
     if [ "${FAKE_ENGINE_GO_FAILS:-}" = "1" ]; then
       printf '3... 2... 1... deploying %s (%s)\n  [OK] apt_deps\n  [FAIL] health_check\n  Deploy of %s failed (health_check failed) - rolled back to 1111111\n' "$svc" "$target" "$svc"; exit 0
     fi
+    # as the engine does: its log, line by line, on standard error
+    printf '[2026-01-01 00:00:00.00000] [4242] [info] Running: cd /srv/%s && git rev-parse HEAD\n[2026-01-01 00:00:01.00000] [4242] [info] Deploy log written to /tmp/fake-deploy.log\n' "$svc" >&2
     printf '3... 2... 1... deploying %s (%s)\n  [OK] apt_deps\n  [OK] cpanm\n  [OK] generate_ubic\n  [OK] hot_deploy\n  [OK] health_check\n  Deployed %s successfully\n' "$svc" "$target" "$svc"; exit 0;;
   *)
     echo "fake dp: refused subcommand '$cmd' (only status and plan answer here)" >&2

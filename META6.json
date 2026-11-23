@@ -33,6 +33,7 @@
     "Do321::Choose": "lib/Do321/Choose.rakumod",
     "Do321::ClaudeHooks": "lib/Do321/ClaudeHooks.rakumod",
     "Do321::Codex": "lib/Do321/Codex.rakumod",
+    "Do321::CommandHarness": "lib/Do321/CommandHarness.rakumod",
     "Do321::Commands": "lib/Do321/Commands.rakumod",
     "Do321::Complete": "lib/Do321/Complete.rakumod",
     "Do321::Controller": "lib/Do321/Controller.rakumod",

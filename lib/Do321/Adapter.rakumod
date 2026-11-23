@@ -85,6 +85,11 @@ role Adapter is export {
     method detect(--> Detection) { ... }
     method enforcement(--> Hash) { ... }
     method run(Cancel $cancel, Spec $spec, Control $ctl --> Outcome) { ... }
+    #| The name a person reads, where the adapter's own name reads badly,
+    #| and a few words on what kind of thing it is.  Said here, by the
+    #| adapter, so no screen keeps a list of harnesses.
+    method label(--> Str) { self.name }
+    method note(--> Str) { '' }
     #| What this harness can be asked for, beyond what it enforces: whose
     #| models it reaches and how, whether a model and an effort can be
     #| named for one run, and what it reports of a run's cost.  Claim only
@@ -203,6 +208,11 @@ class Rejection is export {
     }
 }
 
+#| A harness's name as a person reads it: what its adapter said when it
+#| was registered, else the name itself.
+my %LABELS = claude_code => 'Claude Code', codex => 'Codex';
+sub harness-display(Str $name --> Str) is export { %LABELS{$name} // $name }
+
 #| The installed adapters in registration order.  Hidden adapters (the
 #| procedure executor and the fake) are never chosen by selection on
 #| their own merits: only by name, through the caller's explicit adapter
@@ -211,8 +221,8 @@ class Registry is export {
     has @.adapters;
     has %.hidden;
 
-    method register(Adapter $a) { @!adapters.push($a); self }
-    method register-hidden(Adapter $a) { %!hidden{$a.name} = True; @!adapters.push($a); self }
+    method register(Adapter $a) { %LABELS{$a.name} = $a.label; @!adapters.push($a); self }
+    method register-hidden(Adapter $a) { %LABELS{$a.name} = $a.label; %!hidden{$a.name} = True; @!adapters.push($a); self }
     method get(Str $name) { @!adapters.first(*.name eq $name) }
     method all(--> List) { @!adapters.List }
 
@@ -360,6 +370,8 @@ class ProcedureAdapter does Adapter is export {
     has %.fake-manifest;        # fake mode: what a stand-in harness says it can be asked for
 
     method name(--> Str) { $!adapter-name }
+    method label(--> Str) { $!adapter-name eq 'fake' ?? 'a stand-in harness' !! $!adapter-name eq 'procedure' ?? 'a procedure' !! $!adapter-name }
+    method note(--> Str) { $!adapter-name eq 'fake' ?? 'a stand-in for tests' !! $!adapter-name eq 'procedure' ?? 'runs a package procedure; no model' !! '' }
     method manifest(--> Hash) {
         %!fake-manifest ?? %!fake-manifest
             !! %( providers => [], access => 'none', sets-model => False, efforts => [], reports => %( usd => False, tokens => False ), spend-cap => False )
@@ -750,6 +762,8 @@ class ProcedureAdapter does Adapter is export {
         }
         my $result = '';
         without $err {
+            # the long step, and a silent one: say it has begun
+            $ctl.emit.(EVENT-PROGRESS, %( notice => "checking the approval, then deploying {$approved<service>} to {$approved<target>}" ));
             $result = try gate($approved, $approval, state-from($fresh, $approved), $ex);
             $err = $!.message if $!;
         }
@@ -1026,6 +1040,7 @@ class ClaudeCode does Adapter is export {
     has %.env;                       # replaces the environment when given (tests)
 
     method name(--> Str) { 'claude_code' }
+    method label(--> Str) { 'Claude Code' }
     method manifest(--> Hash) {
         %( providers => ['anthropic'], access => 'harness', sets-model => True, efforts => [<low medium high xhigh max>],
            reports => %( usd => True, tokens => True ), spend-cap => True )

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# A stand-in for a command-line agent of the plainest kind: it reads a
+# prompt on standard input and prints what it has to say.  No model.
+#   FAKE_ACME_MODE    answer (default) | structured | events | fail | hang
+#   FAKE_ACME_LOG     where to write the argv, one line per call
+#   FAKE_ACME_PROMPT  where to write what arrived on stdin
+set -u
+if [ "${1:-}" = "--version" ]; then echo "acme 0.0.1-fake"; exit 0; fi
+if [ "${1:-}" = "whoami" ]; then [ -n "${FAKE_ACME_LOGGED_OUT:-}" ] && exit 1; echo "someone"; exit 0; fi
+if [ "${1:-}" = "run" ] && [ "${2:-}" = "--help" ]; then echo "usage: acme run [--quiet] [--model NAME]"; exit 0; fi
+[ -n "${FAKE_ACME_LOG:-}" ] && { printf '%q ' "$@" >> "$FAKE_ACME_LOG"; printf '\n' >> "$FAKE_ACME_LOG"; }
+prompt=$(cat)
+[ -n "${FAKE_ACME_PROMPT:-}" ] && printf '%s' "$prompt" > "$FAKE_ACME_PROMPT"
+case "${FAKE_ACME_MODE:-answer}" in
+  hang) trap 'exit 143' TERM; while :; do sleep 0.05; done ;;
+  fail) echo "acme: the provider refused the request" >&2; exit 3 ;;
+  structured) echo '{"status":"changed","summary":"renamed the helper","conditions":[{"met":true,"proof":"the tests pass"}]}' ;;
+  events)
+    echo '{"type":"session","id":"acme-session-1"}'
+    echo '{"type":"tool","name":"shell","target":"prove t/"}'
+    echo '{"type":"message","text":"The tests pass."}'
+    echo '{"type":"usage","tokens":1500,"usd":0.0125}'
+    echo '{"type":"done"}' ;;
+  cut) echo '{"type":"message","text":"Starting."}' ;;
+  *) echo "The build runs prove over t/."; echo "Nothing else is needed." ;;
+esac

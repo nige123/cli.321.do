@@ -81,7 +81,7 @@ sub fit-harness(Adapter $a, Str $tier, Str $effort, Str $named, @models --> List
     ($model, $given, @notes, '');
 }
 
-sub harness-word(Str $name --> Str) { $name eq 'claude_code' ?? 'Claude Code' !! $name eq 'codex' ?? 'Codex' !! $name }
+sub harness-word(Str $name --> Str) { harness-display($name) }
 
 #| The plan's digest: over the plan as pinned, before any step was climbed.
 sub plan-digest(%plan --> Str) is export {

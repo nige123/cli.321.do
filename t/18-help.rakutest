@@ -232,7 +232,7 @@ subtest 'the icon marks a header, never a result' => {
     # on a terminal the events are one live line, rewritten and wiped
     ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_COLOR => '1'));
     my $after-wipe = $out.split("\e[2K").tail;
-    ok $out.contains("\e[2K  · procedure ") && !$after-wipe.contains('  · ') && $after-wipe.contains('✓') && !$out.lines.grep(* ~~ / ^ '  · ' /), 'a live line under the header, wiped before the verdict' or diag $out.raku;
+    ok $out.contains("\r\e[2K  ⠋ procedure ") && !$after-wipe.contains('procedure note (no model)') && $after-wipe.contains('✓') && !$out.lines.grep(* ~~ / ^ '  · ' /), 'a live line under the header, with a mark that turns, wiped before the verdict' or diag $out.raku;
     # a pipe that wants the record asks for it
     ($rc, $out, $err) = cli(IO::Path, '--package-dir', fixture('local/helper').Str, 'helper', 'note:', 'milk', :cwd(temp-dir()), :env(DO_321_PROGRESS => '1'));
     ok $out ~~ / ^^ '  · procedure ' / && !$out.contains("\e["), 'DO_321_PROGRESS=1: one line per event, plain' or diag $out;

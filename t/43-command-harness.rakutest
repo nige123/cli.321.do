@@ -1,0 +1,146 @@
+# A command-line agent taught to 321 in a few lines.  The two classes
+# here are the worked examples of docs/harness-authors.md: keep them the
+# same as the guide.
+use lib $?FILE.IO.parent.add('lib').Str;
+use Test;
+use Do321Test;
+use Do321HarnessContract;
+use Do321::JSON;
+use Do321::Protocol;
+use Do321::Async;
+use Do321::Adapter;
+use Do321::CommandHarness;
+
+#| The plainest harness: a prompt in, an answer out.
+class Acme is CommandHarness {
+    method name(--> Str)    { 'acme' }
+    method label(--> Str)   { 'Acme Agent' }
+    method command(--> Str) { 'acme' }
+    method args(Spec $spec --> List) { ('run', '--quiet', |self.model-args($spec, '--model')) }
+    method enforcement(--> Hash) { self.claims(FEAT-TIMEOUT, FEAT-GRACEFUL-STOP) }
+    method ready(Str $path --> Str) { (run $path, 'whoami', :out, :err).exitcode == 0 ?? '' !! 'not logged in' }
+    method help-argv(--> List)  { ('run', '--help') }
+    method flags-used(--> List) { <--quiet --model> }
+    method manifest(--> Hash) {
+        %( providers => ['acme'], access => 'harness', sets-model => True, efforts => [],
+           reports => %( usd => False, tokens => False ), spend-cap => False )
+    }
+}
+
+#| One that prints events, a JSON object a line.
+class AcmeEvents is Acme {
+    method name(--> Str) { 'acme_events' }
+    method needs-finish(--> Bool) { True }
+    method enforcement(--> Hash) { self.claims(FEAT-TIMEOUT, FEAT-GRACEFUL-STOP, FEAT-EVENT-STREAM, FEAT-SESSION-CONTINUE) }
+    method manifest(--> Hash) { %( |callsame, reports => %( usd => True, tokens => True ) ) }
+    method read(Str $line, Reading $r) {
+        my %e = (try parse-json($line)) // %();
+        given %e<type> // '' {
+            when 'session' { $r.session-is(%e<id>) }
+            when 'tool'    { $r.tool(%e<name>, %e<target> // '') }
+            when 'message' { $r.said-text(%e<text>) }
+            when 'usage'   { $r.add-turn; $r.add-tokens(%e<tokens>.Int); $r.cost-usd(%e<usd>) }
+            when 'error'   { $r.failed(%e<message> // '') }
+            when 'done'    { $r.finish }
+        }
+    }
+}
+
+my $bin = repo-root().add('testdata/fakeharness/acme').Str;
+my $tmp = temp-dir();
+my $log = $tmp.add('argv.log');
+my $seen = $tmp.add('prompt.txt');
+sub env(*%more) { %( PATH => %*ENV<PATH>, FAKE_ACME_LOG => $log.Str, FAKE_ACME_PROMPT => $seen.Str, |%more ) }
+sub go($adapter, Str :$model = '', Cancel :$cancel = Cancel.new) {
+    my @events;
+    my $out = $adapter.run($cancel, Spec.new(:prompt('explain the build'), :$model),
+        Control.new(emit => -> $kind, %p { @events.push($kind => %p) }));
+    ($out, |@events);
+}
+
+subtest 'an adapter in a few lines keeps the contract' => {
+    harness-contract-ok(Acme.new(:binary($bin), :env(env())));
+    harness-contract-ok(AcmeEvents.new(:binary($bin), :env(env())));
+}
+
+subtest 'it is found, and says when it cannot run' => {
+    my $d = Acme.new(:binary($bin)).detect;
+    ok $d.available && $d.version eq 'acme 0.0.1-fake', 'here, with its version' or diag $d.raku;
+    is Acme.new(:binary('/nonexistent/acme')).detect.reason, '/nonexistent/acme is not on PATH', 'not installed is said so';
+    is Acme.new(:binary($bin)).executable, $bin, 'and it names the executable it would run';
+}
+
+subtest 'a prompt in, an answer out' => {
+    $log.spurt('');
+    my ($out, @ev) = go(Acme.new(:binary($bin), :env(env())), :model('acme-large'));
+    is $out.status, STATUS-COMPLETED, 'a clean exit is a completed attempt' or diag $out.errors.raku;
+    is $out.summary, 'Nothing else is needed.', 'its last line is the summary';
+    ok $out.final-words.contains('The build runs prove over t/.'), 'and everything it said is kept';
+    is $seen.slurp, 'explain the build', 'the prompt went in on standard input';
+    is $log.slurp.trim, 'run --quiet --model acme-large', 'never on the command line; the model pinned for the attempt is';
+    is $out.cost<basis>, COST-UNREPORTED, 'money it did not report is unreported, not nothing';
+    is @ev.grep(*.key eq EVENT-PROGRESS).elems, 2, 'each thing said is an event';
+    $log.spurt('');
+    go(Acme.new(:binary($bin), :env(env())));
+    is $log.slurp.trim, 'run --quiet', 'with no model pinned, the harness keeps its own';
+}
+
+subtest 'a result document is read as one' => {
+    my ($out) = go(Acme.new(:binary($bin), :env(env(FAKE_ACME_MODE => 'structured'))));
+    is $out.summary, 'renamed the helper', 'the summary is the document\'s';
+    is-deeply $out.conditions.map({ .<met>, .<proof> }).flat.List, (True, 'the tests pass'), 'with its conditions and their proof';
+}
+
+subtest 'failing, and being stopped' => {
+    my ($out) = go(Acme.new(:binary($bin), :env(env(FAKE_ACME_MODE => 'fail'))));
+    ok $out.status eq STATUS-FAILED && $out.end-reason eq 'process_failed', 'a bad exit is a failed attempt';
+    ok $out.errors[0].contains('exit 3') && $out.errors[0].contains('the provider refused'), 'with its exit code and what it wrote' or diag $out.errors.raku;
+    my $cancel = Cancel.new;
+    start { sleep 0.5; $cancel.cancel('time is up') }
+    $out = go(Acme.new(:binary($bin), :kill-wait(3), :env(env(FAKE_ACME_MODE => 'hang'))), :$cancel)[0];
+    ok $out.status eq STATUS-STOPPED && $out.end-reason eq 'cancelled', 'a run that is cancelled is stopped, not left running';
+}
+
+subtest 'a harness that prints events' => {
+    my $a = AcmeEvents.new(:binary($bin), :env(env(FAKE_ACME_MODE => 'events')));
+    my ($out, @ev) = go($a);
+    is $out.status, STATUS-COMPLETED, 'it finished, and said so' or diag $out.errors.raku;
+    is $out.session-ref, 'acme-session-1', 'its session is kept for a later attempt';
+    is ($out.cost<usd>, $out.cost<basis>, $out.cost<tokens>).join(' '), "0.0125 {COST-HARNESS} 1500", 'the money and tokens are its own figures';
+    is @ev.first(*.key eq EVENT-TOOL-CALL).value<tool>, 'shell', 'a tool it used is an event';
+    $out = go(AcmeEvents.new(:binary($bin), :env(env(FAKE_ACME_MODE => 'cut'))))[0];
+    ok $out.status eq STATUS-FAILED && $out.end-reason eq 'no_result', 'a stream that stops before its end is not a completed attempt';
+}
+
+subtest 'it is placed only where its claims cover the package' => {
+    my $reg = Registry.new.register(Acme.new(:binary($bin)));
+    is harness-display('acme'), 'Acme Agent', 'every screen has its name from the adapter';
+    my ($got, @no) = $reg.select([Requirement.new(:feature(FEAT-TIMEOUT), :reason('a time limit is set'))], %());
+    is $got.name, 'acme', 'work that needs only what it enforces can run on it';
+    ($got, @no) = $reg.select([Requirement.new(:feature(FEAT-TOOL-ALLOWLIST), :reason('tools are granted'))], %());
+    ok !$got.defined && @no[0].Str.contains('cannot enforce tool_allowlist'), 'work that needs more is refused, and told why' or diag @no.raku;
+}
+
+subtest 'the template an author starts from passes its own tests' => {
+    my $tool = repo-root().add('tools/new-harness');
+    unless $tool.f { skip 'the template generator is kept in the repository, not the package', 3; return }
+    my $root = temp-dir();
+    my $p = run $tool.Str, 'swift_agent', 'Swift Agent', 'swift-agent', :out, :err, :env(%( |%*ENV, NEW_HARNESS_ROOT => $root.Str ));
+    my $said = $p.out.slurp(:close); $p.err.slurp(:close);
+    ok $p.exitcode == 0 && $said.contains('Do321::Harness::SwiftAgent') && $said.contains('DO_321_SWIFT_AGENT_BINARY'), 'it writes the files and says the lines to add' or diag $said;
+    $root.add('t/lib').mkdir;
+    for repo-root().add('t/lib').dir.grep(*.basename.ends-with('.rakumod')) -> $f {
+        my $text = $f.slurp;
+        $text .= subst(/ 'sub repo-root(--> IO::Path) is export {' \N* /, "sub repo-root(--> IO::Path) is export \{ '{$root}'.IO \}") if $f.basename eq 'Do321Test.rakumod';
+        $root.add('t/lib').add($f.basename).spurt($text);
+    }
+    my $rakupp = %*ENV<RAKUPP> // 'rakupp';
+    my $t = run $rakupp, "-I{repo-root().add('lib')}", "-I{$root.add('lib')}", $root.add('t/harness-swift_agent.rakutest').Str, :out, :err;
+    my $tap = $t.out.slurp(:close); my $terr = $t.err.slurp(:close);
+    ok $t.exitcode == 0 && !$tap.contains('not ok'), 'the adapter it wrote keeps the contract and runs' or diag "$tap\n$terr";
+    my $again = run $tool.Str, 'swift_agent', 'Swift Agent', 'swift-agent', :out, :err, :env(%( |%*ENV, NEW_HARNESS_ROOT => $root.Str ));
+    $again.out.slurp(:close); $again.err.slurp(:close);
+    isnt $again.exitcode, 0, 'and it never writes over an adapter that is already there';
+}
+
+done-testing;

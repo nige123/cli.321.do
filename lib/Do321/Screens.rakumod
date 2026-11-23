@@ -1,6 +1,9 @@
 unit module Do321::Screens;
 
 use Do321::Screen;
+
+#| The screen's width, for a command that writes a row of its own.
+sub screen-cols(--> Int) is export { screen-width() }
 use Do321::History;
 use Do321::Commands;
 use Do321::Result;
