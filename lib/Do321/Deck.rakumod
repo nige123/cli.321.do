@@ -358,7 +358,7 @@ sub render(Model $m, Int $rows, Int $cols --> Canvas) is export {
         $cv.put(0, $cols - 9, $time, 'dim');
         $cv.put(1, 0, '─' x $cols, 'rule');
         $row = 2;
-        if $lines { $row = draw-tracks($cv, $m, @crew, $row, $rows, $w, $empty, :panel(?$pw)) }
+        if $lines { $row = draw-tracks($cv, $m, @crew, $row, $rows, $w, $empty, :panel(?$pw), :screen($cols)) }
         elsif !$rail { $row = draw-deck($cv, $m, @crew, $row, $rows, $cols, $empty) }
     }
 
@@ -479,7 +479,7 @@ constant TRACK-LEGEND is export = '■ done  ▪ no change  ⊟ stopped  ⊠ did
 #| one under the cursor, in the detail beneath.  The cursor is 321's
 #| own mark closed on a job.  Never more than two fifths of the screen;
 #| rows past that are counted, above and below.  Returns the next free row.
-sub draw-tracks(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $empty, Bool :$panel = False --> Int) {
+sub draw-tracks(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str $empty, Bool :$panel = False, Int :$screen = $cols --> Int) {
     my $row = $top;
     my $sc = $m.selected;
     my %zone = $m.zones;
@@ -495,9 +495,12 @@ sub draw-tracks(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str
     my $cap = ((($cols - $left) div (2 * $step)) max 2) min 12;
     my $slots = $most min $cap;
     my $band-w = $step * $slots + ($step - 2) + ($most > $cap ?? 3 !! 0);
-    # a short memory: the last few things done, the rest counted.  The
-    # lines sit at the left and leave the rest of the row empty.
-    my $done-w = ((($cols - $left - $band-w - 2) div 3) max (3 * $step + 5)) min (8 * $step + 5);
+    # NOW is the middle of the screen: the band sits centred, what was
+    # done runs up to it from the left and what waits runs on to the
+    # right.  A narrow screen keeps room for a short memory of the done.
+    # The middle is the whole screen's, a panel at the side or not, as
+    # long as the band and a little of what is next still fit beside it.
+    my $done-w = (((($screen - $band-w - 2) div 2) - $left) min ($cols - $left - $band-w - 2 - 2 * $step - 4)) max (3 * $step + 5);
     my $bar = $left + $done-w;                 # the left bar
     my $bar2 = $bar + $band-w + 1;             # the right bar
     $cv.put($row, 2, 'CREW', 'dim');
@@ -505,8 +508,8 @@ sub draw-tracks(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str
     # NOW sits over the middle of the band
     $cv.put($row, $bar + 1 + (($band-w - 3) div 2 max 0), fit('NOW', $band-w), 'now');
     $cv.put($row, $bar2 + $step - 1, 'NEXT', 'wait');
-    # the key to the shapes: beside the headings where the screen is wide,
-    # else on a row of its own where it is tall
+    # the key to the shapes: beside the headings where there is room past
+    # NEXT, else on a row of its own where the screen is tall or wide
     my $key-at = $cols - 1 - text-width(TRACK-LEGEND);
     my $key-beside = !$panel && $key-at > $bar2 + 6 * $step + 8;
     $cv.put($row, $key-at, TRACK-LEGEND, 'dim') if $key-beside;
@@ -565,7 +568,7 @@ sub draw-tracks(Canvas $cv, Model $m, @crew, Int $top, Int $rows, Int $cols, Str
         $cv.put($row++, 2, ($above ?? "↑ $above above" !! '') ~ ($above && $below ?? '   ' !! '') ~ ($below ?? "↓ $below below" !! ''), 'dim');
     }
     unless @crew { $cv.put($row, 2, $_, 'dim', :max($cols - 3)) for wrap($empty, $cols - 3)[0]; $row++ }
-    if !$panel && !$key-beside && !$zoom && $rows >= 30 && $key-at >= 2 { $cv.put($row++, 2, TRACK-LEGEND, 'dim') }
+    if !$panel && !$key-beside && !$zoom && ($rows >= 30 || $key-at > $cols div 2) && $key-at >= 2 { $cv.put($row++, 2, TRACK-LEGEND, 'dim') }
     $cv.put($row, 0, '─' x $cols, 'rule');
     $row++;
     if $sc.defined {

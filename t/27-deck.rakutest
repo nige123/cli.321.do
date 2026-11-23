@@ -493,6 +493,9 @@ subtest 'a trackline for each agent' => {
     ok $bea.substr(@bars[0], @bars[1] - @bars[0]).comb.grep({ $_ eq '▣' | '▢' }).elems >= 2, 'everything in hand stands side by side between them';
     is ($ada.indices('│'), $iris.indices('│')), (@bars, @bars), 'the bars line up down the screen';
     is $head.index('NOW') + 1, (@bars[0] + @bars[1]) div 2, 'the word NOW is centred over them';
+    ok abs((@bars[0] + @bars[1]) div 2 - 60) <= 1, 'and now is the middle of the screen' or diag @bars.raku;
+    my @wb = render($mm, 28, 200).text.lines.first({ .starts-with('  BEA') && .contains('│') }).indices('│');
+    ok abs((@wb[0] + @wb[1]) div 2 - 100) <= 1, 'at any width' or diag @wb.raku;
     my @hd = $cv.grid[@t.first({ $_ eq $head }, :k)];
     is (@hd[$head.index('DONE')][1], @hd[$head.index('NOW')][1], @hd[$head.index('NEXT')][1]), <ok now wait>, 'each heading wears its zone\'s colour';
     ok $bea ~~ / <[▣▢■▪⊠◧]> \s\s+ '❮'? <[▣▢■▪⊠◧]> /, 'with room between the marks';
@@ -509,12 +512,14 @@ subtest 'a trackline for each agent' => {
     ok @t[$dl + 1].trim ne '' && !@t[$dl + 1].contains('fix flaky'), 'and under it how it stands' or diag @t[$dl + 1];
     ok @t.first({ $_ ne $head && .contains(TRACK-LEGEND) }), 'a tall screen has the key to the shapes on a row of its own';
     my @wide = render($mm, 28, 200).text.lines;
-    ok @wide.first(*.starts-with('  CREW')).ends-with(TRACK-LEGEND), 'a wide, short one has it beside the headings, in room that was empty';
+    ok @wide.first({ !.starts-with('  CREW') && .contains(TRACK-LEGEND) }), 'a wide, short one has it too, under the lines';
     is @wide.grep(*.contains(TRACK-LEGEND)).elems, 1, 'once';
     # a large screen: a panel at the right, for the shapes and the keys
     my $big = render($mm, 36, 180);
     my @big = $big.text.lines;
     my $pc = @big.first(*.contains('SHAPES')).index('SHAPES');
+    my @bb = @big.first({ .starts-with('  BEA') && .contains('│') }).substr(0, $pc).indices('│');
+    ok abs((@bb[0] + @bb[1]) div 2 - 90) <= 1, 'now is still the middle of the whole screen, the panel beside it' or diag @bb.raku;
     ok $pc > 180 - PANEL-WIDTH - 2, 'a large screen has a panel at the right' or diag @big[2];
     nok $big.text.contains(TRACK-LEGEND), 'the key to the shapes is in it, a shape a row, and nowhere else';
     is @big.grep({ .chars > $pc && .substr($pc) ~~ / ^ <[■▪⊟⊠◧▣◫□]> \s+ \w / }).elems, 8, 'every shape and its word';
