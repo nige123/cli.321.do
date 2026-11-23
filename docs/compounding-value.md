@@ -1,0 +1,43 @@
+# Compounding agent value: what exists, what was added, who owns what
+
+Written 2026-11-23 for the brief "Build compounding agent value across
+321 and 123.do". The principle: a model contributes to a job; the agent
+keeps useful skills and experience, and the organisation keeps its
+project knowledge and evidence, so a later job benefits even on another
+model or harness. 321 is the durable layer where that compounds.
+
+## Who owns what
+
+| Party | Owns | Never |
+|---|---|---|
+| 123.do (api.123.do, d1on) | Tracks, Steps, Entries, the person's verdict on a result, which actor gets a Step | runs code, marks a Step done on a receipt alone |
+| 321 runtime (cli.321.do) | running an agent from a sealed package, enforcing grants, receipts, cost with its basis, local lessons, outcomes, evidence, value | grants anything from a lesson, rewrites a receipt |
+| Registry (agents.321.do) | agent identity, skills with versions, organisation contexts and their lessons, outcome reports | decides keep or revert for a person |
+| The project's repository | project lessons (`.321/lessons/`), shared on purpose and merged by people | |
+| IZ4 | promises and checks | is changed by learning |
+
+## What already existed (verified in code)
+
+- Receipts with cost basis, attempts, tokens, plan (model, harness, effort, reasons), signatures: `schemas/run-receipt.v1.json`, `lib/Do321/Run.rakumod`.
+- Lessons with scope (agent, context, skill, harness, project) and states trial/kept/reverted; outcomes beside receipts; with/without comparison; value report with honest savings (baseline required, three accepted runs minimum): `lib/Do321/Learn.rakumod`, `321 lessons`, `321 outcome`, `321 value`.
+- Curation of model size and effort from comparable judged runs, with reasons on the receipt: `lib/Do321/Curate.rakumod`.
+- Registry lessons per organisation context, pulled by 321 and by api.123.do (cached in `registry_lesson_cache`, served into 123.do packages as `context.lines`, ids kept as `actions.context.lessonsGiven`).
+- Opt-in outcome reports to the registry (`321 record share`).
+
+## What was missing
+
+1. Nothing turned an outcome into a lesson: every lesson was typed by hand.
+2. Nothing acted on evidence: keep and revert were only a person's acts, so a lesson nobody looked at stayed on trial for ever, helping or not.
+3. 123.do verdicts (approve or decline of a packaged result) never reached the 321 that ran the work, so 321's outcomes, evidence and value had no data from 123.do work.
+4. A correction a person made in 123.do never became a lesson anywhere, so the next package for that agent in that Track carried nothing learnt.
+
+## The slices
+
+| # | Slice | Where | Status |
+|---|---|---|---|
+| 1 | A correction with words becomes one lesson on trial for that agent on any harness; judged runs keep or revert lessons no person decided | cli.321.do | built, tested (`t/44-compounding.rakutest`) |
+| 2 | 123.do serves an agent the verdicts on its runs; the 123 worker says them to its 321 as `321 outcome` | api.123.do, tui.123.do | see the report |
+| 3 | A person's decline with words in a configured Track is taught to the registry as a trial lesson, so the next package carries it | api.123.do | see the report |
+| 4 | Lesson uses and their outcomes reported to the registry, evidence shown on each registry lesson | agents.321.do (another session) and api.123.do | see the report |
+
+What is deliberately not built: a model call to distil lessons, a new service or daemon, automatic keep or revert at the registry (a person decides there, `lessons_decided_by_a_person`), promotion of a lesson into a skill, organisation-wide value.

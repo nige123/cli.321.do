@@ -1112,7 +1112,37 @@ run and nothing in the background: only this command sends a lesson.
 **Outcomes.** `321 outcome <run> accepted|rejected|corrected [why]`
 records what a person, or the work system that issued the package, says
 came of a run. Until it is said the outcome is unknown: a completed
-receipt is not acceptance. The last word said stands.
+receipt is not acceptance. The last word said stands. A work system
+that says it for a person names itself and them in `DO_321_OUTCOME_BY`
+(123.do's worker uses `123.do:<handle>`); without it the outcome is the
+local user's.
+
+**A correction teaches.** An outcome of `corrected` or `rejected` that
+carries words becomes one lesson on trial, in those words as written:
+no model is asked. It is scoped to the run's agent and its work context,
+and to no harness and no model, so the agent's next runs are given it
+whatever they run on. Its provenance names the run, the outcome, who
+said it, the agent's version, the harness and the model. One run
+teaches one lesson: saying its outcome again proposes nothing new. An
+outcome with no words, and an acceptance, teach nothing.
+
+**The evidence moves only what no person decided.** After every
+outcome, and on `321 lessons review`, the judged runs (those given an
+outcome) are set against each of this person's own lessons that no
+person has kept or reverted:
+
+| The runs say | When | What moves |
+|---|---|---|
+| contradicted | 3 judged runs with it and none accepted, or accepted less often than 3 judged comparable runs without it | trial, or kept by the evidence, to reverted |
+| supported | 3 accepted runs with it, and accepted at least as often as 3 judged comparable runs without it | trial to kept |
+| too few, no baseline | anything less | nothing |
+
+A change the evidence made says `by evidence` with the figures it rests
+on (`321 lessons show ID`). A reverted lesson stays on record and is
+given to no run; only a person restores one. A person's keep or revert
+is never moved by the runs. Project lessons are the team's, in its
+repository, and are never rewritten here. A finished run nobody judged
+is evidence of nothing.
 
 **Value.** `321 value` sums receipts: money where the harness reported
 it (`cost.basis` of `harness` or `mixed`), with the number of runs it
@@ -1189,9 +1219,9 @@ key its reporter registered. The registry never sees the receipt, so
 it does not mean the figures are what the receipt says. A receipt
 signed by a key that is no longer the one here is reported unsigned.
 
-Not built: lessons proposed by 321 itself from a run (a person adds
-them, optionally naming the run with `--from`); promotion of a lesson
-into a registry skill; publishing agents, skills or contexts to the
+Not built: lessons proposed by 321 from a run nobody said anything
+of (only a person's words become one); promotion of a lesson into a
+registry skill; publishing agents, skills or contexts to the
 registry from the CLI (a taught lesson is the one thing sent besides
 outcome reports); keeping, reverting or removing a registry lesson from
 here, and sending evidence with one; refreshing a pulled context's

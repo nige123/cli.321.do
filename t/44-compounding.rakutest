@@ -1,0 +1,142 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Learn;
+
+# The improvement loop: what a person says of a run becomes a lesson on
+# trial for that agent, whatever it runs on next; the judged runs may
+# keep or revert it; a person's decision always stands.  Receipts are
+# written by hand: no model is asked anywhere here.
+
+my $home = temp-dir();
+$home.chmod(0o700);
+
+sub receipt(Str $id, Str $agent, Str :$status = 'completed', Str :$harness = 'claude_code', Str :$model = 'sonnet', :$usd = 0.10) {
+    my $d = $home.add('runs').add($id);
+    $d.mkdir;
+    my $start = DateTime.now.utc.earlier(minutes => 30);
+    $d.add('receipt.json').spurt(encode-json({ runId => $id, agent => { id => $agent, version => '1.2.0' }, harness => { adapter => $harness },
+        status => $status, startedAt => $start.Str, endedAt => $start.later(seconds => 90).Str, attempts => [{}],
+        plan => { modelName => $model }, cost => { usd => $usd, turns => 1, tokens => 1000, basis => 'harness' } }));
+}
+
+subtest 'a correction becomes one lesson on trial, for the agent on any harness' => {
+    receipt('C1', '321.do/b1ll', :harness<claude_code>, :model<opus>);
+    my %o = record-outcome($home, 'C1', 'corrected', note => '  keep the  migration and the code in one commit ', by => 'nige');
+    my %l = propose-from-outcome($home, %o);
+    ok %l<id>, 'a lesson is proposed from what was said';
+    is %l<state>, 'trial', 'on trial, not kept';
+    is %l<text>, 'keep the migration and the code in one commit', 'in the person\'s own words, tidied of spacing only';
+    is-deeply %l<scope>.Hash, %( agent => 'b1ll' ), 'scoped to the agent by its short name, and to no harness or model';
+    is (%l<provenance><fromOutcome>, %l<provenance><outcome>, %l<provenance><by>, %l<provenance><harness>, %l<provenance><model>, %l<provenance><agentVersion>),
+       ('C1', 'corrected', 'nige', 'claude_code', 'opus', '1.2.0'), 'its provenance names the run, the word, who said it and what the run ran on';
+
+    my %again = propose-from-outcome($home, record-outcome($home, 'C1', 'corrected', note => 'something else', by => 'nige'));
+    ok %again<existing> && %again<id> eq %l<id>, 'saying it again proposes nothing new';
+    is lessons($home).grep({ (.<provenance><fromOutcome> // '') eq 'C1' }).elems, 1, 'one run, one lesson';
+
+    receipt('C2', '321.do/b1ll');
+    nok propose-from-outcome($home, record-outcome($home, 'C2', 'rejected', by => 'nige')), 'a rejection with no words teaches nothing';
+    receipt('C3', '321.do/b1ll');
+    nok propose-from-outcome($home, record-outcome($home, 'C3', 'accepted', note => 'lovely', by => 'nige')), 'nor does an acceptance';
+
+    my ($lines, $ids) = known-lines($home, agent => '321.do/b1ll', harness => 'codex');
+    ok %l<id> (elem) $ids, 'a later b1ll run on another harness is given it';
+    ok $lines.first(*.contains('keep the migration')).defined, 'as advice in its context lines';
+    ok $lines.first(*.contains('keep the migration')).contains('grants nothing'), 'labelled as granting nothing';
+    my ($l2, $i2) = known-lines($home, agent => '321.do/qu1n', harness => 'claude_code');
+    nok %l<id> (elem) $i2, 'another agent is not';
+}
+
+subtest 'the runs keep a lesson only on real support' => {
+    my %l = lessons($home).first({ (.<provenance><fromOutcome> // '') eq 'C1' });
+    for 1..2 { receipt("S$_", '321.do/b1ll', :harness<codex>, :model<gpt>); record-applied($home, "S$_", :agent<321.do/b1ll>, :harness<codex>, :lessons([%l<id>])); record-outcome($home, "S$_", 'accepted') }
+    is judge-lesson(%l, read-work($home))<verdict>, 'too-few', 'two accepted runs are not enough';
+    nok review-lessons($home, read-work($home)), 'and nothing moves';
+    receipt('S3', '321.do/b1ll', :harness<codex>); record-applied($home, 'S3', :agent<321.do/b1ll>, :lessons([%l<id>])); record-outcome($home, 'S3', 'accepted');
+    # without it: C1 corrected, C2 rejected, C3 accepted, judged 3, accepted 1/3
+    my %j = judge-lesson(%l, read-work($home));
+    is %j<verdict>, 'supported', 'three accepted with it, against one in three without, is support';
+    my @moved = review-lessons($home, read-work($home));
+    is @moved.map({ "{.<id>}:{.<was>}>{.<state>}" }), ("{%l<id>}:trial>kept",), 'so the runs keep it';
+    my %n = lesson($home, %l<id>);
+    is (%n<history>[*-1]<by>, %n<history>[*-1]<figures><with-accepted>), (EVIDENCE, 3), 'saying the evidence kept it, with the figures';
+    nok person-decided(%n), 'which is not a person\'s decision';
+}
+
+subtest 'contradicted lessons are reverted and stay on record' => {
+    my %l = add-lesson($home, 'always rewrite the tests first', %( agent => 'b1ll' ), %( from => 'person', by => 'tester' ));
+    for 1..3 { receipt("X$_", '321.do/b1ll'); record-applied($home, "X$_", :agent<321.do/b1ll>, :lessons([%l<id>])); record-outcome($home, "X$_", 'rejected') }
+    is judge-lesson(%l, read-work($home))<verdict>, 'contradicted', 'three judged runs with it and none accepted';
+    my @moved = review-lessons($home, read-work($home));
+    ok @moved.first({ .<id> eq %l<id> && .<state> eq 'reverted' }), 'is reverted by the evidence';
+    my %n = lesson($home, %l<id>);
+    ok %n.defined && %n<state> eq 'reverted', 'and is still on record';
+    nok lesson-applies(%n, :agent<b1ll>), 'given to no run';
+    my ($lines, $ids) = known-lines($home, agent => '321.do/b1ll');
+    nok %l<id> (elem) $ids, 'nor told to one';
+    nok review-lessons($home, read-work($home)).first({ .<id> eq %l<id> }), 'and the evidence does not bring it back';
+}
+
+subtest 'a lesson the evidence kept is reverted when the evidence turns' => {
+    my %k = lessons($home).first({ (.<provenance><fromOutcome> // '') eq 'C1' });
+    is %k<state>, 'kept', 'kept by the evidence';
+    for 1..6 { receipt("T$_", '321.do/b1ll'); record-applied($home, "T$_", :agent<321.do/b1ll>, :lessons([%k<id>])); record-outcome($home, "T$_", 'rejected') }
+    for 1..4 { receipt("B$_", '321.do/b1ll'); record-outcome($home, "B$_", 'accepted') }
+    my %j = judge-lesson(%k, read-work($home));
+    is (%j<verdict>, %j<figures><with-accepted>, %j<figures><with-judged>), ('contradicted', 3, 9), 'three accepted of nine with it, below the rate without' or diag %j<why>;
+    ok review-lessons($home, read-work($home)).first({ .<id> eq %k<id> && .<state> eq 'reverted' }), 'is reverted';
+}
+
+subtest 'a person\'s word always stands' => {
+    my %p = add-lesson($home, 'name the branch after the step', %( agent => 'b1ll' ), %( from => 'person', by => 'tester' ));
+    set-lesson-state(lesson($home, %p<id>), 'kept', 'I like it', by => 'nige');
+    for 1..3 { receipt("P$_", '321.do/b1ll'); record-applied($home, "P$_", :agent<321.do/b1ll>, :lessons([%p<id>])); record-outcome($home, "P$_", 'rejected') }
+    is judge-lesson(lesson($home, %p<id>), read-work($home))<verdict>, 'contradicted', 'the runs are against it';
+    ok person-decided(lesson($home, %p<id>)), 'but a person kept it';
+    nok review-lessons($home, read-work($home)).first({ .<id> eq %p<id> }), 'so the evidence leaves it';
+    is lesson($home, %p<id>)<state>, 'kept', 'kept, as the person said';
+
+    my %r = add-lesson($home, 'squash every commit', %( agent => 'qu1n' ), %( from => 'person', by => 'tester' ));
+    set-lesson-state(lesson($home, %r<id>), 'reverted', 'no', by => 'nige');
+    for 1..3 { receipt("Q$_", '321.do/qu1n'); record-applied($home, "Q$_", :agent<321.do/qu1n>, :lessons([%r<id>])); record-outcome($home, "Q$_", 'accepted') }
+    nok review-lessons($home, read-work($home)).first({ .<id> eq %r<id> }), 'a person\'s revert is not undone by good runs';
+}
+
+subtest 'project lessons are the team\'s and are never rewritten here' => {
+    my $repo = temp-dir();
+    my %l = add-lesson($home, 'use the shared fixtures', %( agent => 'b1ll' ), %( from => 'person', by => 'tester' ));
+    share-lesson(lesson($home, %l<id>), $repo.Str, 'tester');
+    remove-lesson(lesson($home, %l<id>));
+    my %pl = lesson($home, %l<id>, project => $repo.Str);
+    is %pl<kept-in>, 'project', 'it lives in the project';
+    for 1..3 { receipt("J$_", '321.do/b1ll'); record-applied($home, "J$_", :agent<321.do/b1ll>, :lessons([%l<id>])); record-outcome($home, "J$_", 'rejected') }
+    my $before = $repo.add('.321/lessons').add("{%l<id>}.json").slurp;
+    review-lessons($home, read-work($home));
+    is $repo.add('.321/lessons').add("{%l<id>}.json").slurp, $before, 'the file in the repository is untouched';
+}
+
+subtest 'the command: a correction teaches, once, and says so' => {
+    my $trust = temp-dir().add('trust.json');
+    $trust.spurt(encode-json({ schema => 'trust-config.v1', agents => {} }));
+    receipt('01KCMDRUNAAAAAAAAAAAAAAAAA', '321.do/b1ll', :harness<claude_code>);
+    my sub cli(*@a) { x321(|@a, env => %( DO_321_HOME => $home.Str, DO_321_CONTEXT => '', DO_321_OUTCOME_BY => '123.do:nige' ), cwd => $home) }
+    my ($code, $out, $err) = cli('outcome', 'AAAAAAAA', 'corrected', 'run', 'the', 'linter', 'before', 'reporting', '--json');
+    is $code, 0, 'the outcome is recorded' or diag $err;
+    my $doc = parse-json($out);
+    is $doc<by>, '123.do:nige', 'by who the work system says said it';
+    ok $doc<lesson><new>, 'and a lesson is proposed';
+    my %l = lesson($home, $doc<lesson><id>);
+    is %l<text>, 'run the linter before reporting', 'in the words given';
+    ($code, $out, $err) = cli('outcome', 'AAAAAAAA', 'corrected', 'run', 'the', 'linter', 'before', 'reporting', '--json');
+    $doc = parse-json($out);
+    ok $doc<lesson> && !$doc<lesson><new> && $doc<lesson><id> eq %l<id>, 'the same word again proposes nothing new';
+    ($code, $out, $err) = cli('outcome', 'AAAAAAAA', 'corrected', 'run', 'the', 'linter');
+    ok $out.contains("already learnt from this run as {%l<id>}"), 'and a person is told so in words' or diag $out ~ $err;
+    ($code, $out, $err) = cli('lessons', 'review', '--json');
+    is $code, 0, 'review runs' or diag $err;
+    ok parse-json($out)<reviewed> ~~ Positional, 'and says what it moved';
+}
+
+done-testing;

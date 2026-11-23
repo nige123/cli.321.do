@@ -37,3 +37,16 @@ With 321 0.4.0 or later installed, run:
 do.  iz4 installs no hooks itself; 'iz4 agent status' reports what
 is in place, including hooks an earlier iz4 wrote.
 <!-- IZ4-AGENT END -->
+
+## Compounding value (the principle this runtime serves)
+
+321 is the durable layer where the value of agent work compounds. A model
+contributes to a job; the agent keeps useful skills and experience, and the
+organisation keeps its project knowledge and evidence, so a later job
+benefits even on another model or harness. Concretely: lessons are scoped to
+an agent and a context, never to a model, unless a harness was named; a
+person's correction becomes a lesson on trial in their own words; the judged
+runs keep or revert only what no person decided; a lesson grants nothing;
+cost carries its basis and savings need a stated baseline. Never invent
+progress, savings or confidence. The map of what exists and who owns what is
+`docs/compounding-value.md`.

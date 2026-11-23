@@ -1169,15 +1169,25 @@ sub cmd-outcome(Env $env, Global $g, @args --> Int) {
         $env.stderr.say(next-text('see your runs and their ids', '321 status'));
         return EXIT-USAGE;
     }
-    my %o = (try record-outcome($home, @m[0], $word, note => @a[2 .. *].join(' '), by => who-am-i())) // %();
+    my $by = (%*ENV<DO_321_OUTCOME_BY> // '').Str;
+    $by = who-am-i() if $by eq '';
+    my %o = (try record-outcome($home, @m[0], $word, note => @a[2 .. *].join(' '), :$by)) // %();
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
-    if $json { $env.stdout.say(encode-json(%o)); return 0 }
-    if $g.brief { $env.stdout.say(brief-line(@m[0], $word)); return 0 }
+    # what was said may teach something, and is evidence for what was taught
+    my %lesson = (try propose-from-outcome($home, %o)) // %();
+    my @moved = (try review-lessons($home, read-work($home, :days(365)))) // ();
+    if $json { $env.stdout.say(encode-json(%( |%o, |(%lesson ?? (lesson => %( id => %lesson<id>, state => %lesson<state>, new => !%lesson<existing> )) !! ()),
+        |(@moved ?? (reviewed => [ @moved.map({ %( id => .<id>, from => .<was>, to => .<state>, why => (.<history>[*-1]<why> // '') ) }) ]) !! ()) ))); return 0 }
+    if $g.brief { $env.stdout.say(brief-line(@m[0], $word, (%lesson ?? %lesson<id> !! ''))); return 0 }
     my $had = $home.add('runs').add(@m[0]).add('receipt.json').e;
     learn-say($env, [header('outcome', "{@m[0].substr(*-3)} $word"), '',
-        |row-lines('run:', @m[0]), |row-lines('said:', "$word, by {who-am-i()}" ~ (%o<note> ne '' ?? ": {%o<note>}" !! '')),
-        |row-lines('receipt:', $had ?? 'unchanged; the outcome is kept beside it' !! 'none yet; the outcome is kept for when there is'), '',
-        next-text('see what the work has come to', '321 value')]);
+        |row-lines('run:', @m[0]), |row-lines('said:', "$word, by $by" ~ (%o<note> ne '' ?? ": {%o<note>}" !! '')),
+        |row-lines('receipt:', $had ?? 'unchanged; the outcome is kept beside it' !! 'none yet; the outcome is kept for when there is'),
+        |(%lesson ?? row-lines('lesson:', %lesson<existing>
+            ?? "already learnt from this run as {%lesson<id>} ({%lesson<state>})"
+            !! "{%lesson<id>}, on trial: {scope-text(%lesson)} is given what you said as advice from its next run, on any model or harness") !! ()),
+        |@moved.map({ |row-lines('evidence:', "{.<id>} {.<was>} -> {.<state>}: {.<history>[*-1]<why>}") }), '',
+        (%lesson && !%lesson<existing> ?? next-text('see it, and stop it if it is wrong', "321 lessons show {%lesson<id>}") !! next-text('see what the work has come to', '321 value'))]);
     0;
 }
 
@@ -1358,6 +1368,17 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
             learn-say($env, @l);
             return 0;
         }
+        when 'review' {
+            # let the runs move the lessons only the runs have decided
+            my @moved = review-lessons($home, read-work($home, :days(365)));
+            if $json { $w.say(encode-json(%( reviewed => [ @moved.map({ %( id => .<id>, from => .<was>, to => .<state>, why => (.<history>[*-1]<why> // ''), figures => (.<history>[*-1]<figures> // {}) ) }) ] ))); return 0 }
+            if $g.brief { $w.say(brief-line(.<id>, .<was>, .<state>)) for @moved; return 0 }
+            learn-say($env, [header('lessons review', @moved ?? many-of(@moved.elems, 'lesson') ~ ' moved' !! 'nothing moved'), '',
+                |(@moved ?? @moved.map({ |row-lines("{.<id>}:", "{.<was>} -> {.<state>}: {.<history>[*-1]<why>}") })
+                         !! row-lines('the runs:', "no lesson on trial has {MIN-SAMPLE} judged runs either way yet; a person's keep or revert is never moved")), '',
+                next-text('see them all', '321 lessons')]);
+            return 0;
+        }
         when 'add' {
             my (%scope, $from);
             my ($when, $because) = '', '';
@@ -1454,15 +1475,17 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                     my %p = %l<provenance> // {};
                     learn-say($env, [header('lessons show', %l<id>), '', |row-lines('lesson:', %l<text>), |row-lines('applies to:', scope-text(%l)),
                         |row-lines('state:', %l<state>), |row-lines('kept in:', %l<kept-in> eq 'project' ?? "this project ({%l<file>})" !! '~/.321/lessons, yours alone'),
-                        |row-lines('came from:', (%p<from> eq 'run' ?? "run {%p<runId>}" !! 'a person') ~ ", {%p<by> // '?'}, {%p<at> // '?'}" ~ ((%p<sharedBy> // '') ne '' ?? "; shared by {%p<sharedBy>}" !! '')),
+                        |row-lines('came from:', (%p<from> eq 'outcome' ?? "what was said of run {%p<runId>} ({%p<outcome>}" ~ ((%p<harness> // '') ne '' ?? ", run on {%p<harness>}" ~ ((%p<model> // '') ne '' ?? " {%p<model>}" !! '') !! '') ~ ')' !! %p<from> eq 'run' ?? "run {%p<runId>}" !! 'a person') ~ ", {%p<by> // '?'}, {%p<at> // '?'}" ~ ((%p<sharedBy> // '') ne '' ?? "; shared by {%p<sharedBy>}" !! '')),
                         |((%l<taught> // {})<id> ?? row-lines('taught:', "to {%l<taught><at>}, as {%l<taught><id>}") !! ()),
                         |row-lines('evidence:', verdict(%c)),
+                        |row-lines('the runs say:', judge-lesson(%l, read-work($home, :days(365)))<why>),
+                        |(@(%l<history> // []) ?? row-lines('decided:', @(%l<history>).map({ "{.<state>} by {.<by> // 'a person'}, {.<at>}" ~ ((.<why> // '') ne '' ?? ": {.<why>}" !! '') }).join('; ')) !! ()),
                         |row-lines('mind:', 'the runs are not a controlled trial: other things may differ between them'), '',
                         next-text('yours to say', "321 lessons keep {%l<id>}    or    321 lessons revert {%l<id>}")]);
                     return 0;
                 }
                 when 'keep' | 'revert' {
-                    my %n = set-lesson-state(%l, ($sub eq 'keep' ?? 'kept' !! 'reverted'), @a[1 .. *].join(' '));
+                    my %n = set-lesson-state(%l, ($sub eq 'keep' ?? 'kept' !! 'reverted'), @a[1 .. *].join(' '), by => who-am-i());
                     if $json { $w.say(encode-json(%n)); return 0 }
                     if $g.brief { $w.say(brief-line(%n<id>, %n<state>)); return 0 }
                     learn-say($env, [header("lessons $sub", %n<id>), '', |row-lines('lesson:', %n<text>),
@@ -1495,7 +1518,7 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                 }
             }
         }
-        default { return usage-error($env, 'lessons', "it is add, show, keep, revert, remove, share or teach, not '$sub'") }
+        default { return usage-error($env, 'lessons', "it is add, show, keep, revert, remove, share, teach or review, not '$sub'") }
     }
 }
 

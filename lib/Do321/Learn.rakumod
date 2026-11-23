@@ -230,11 +230,13 @@ sub add-lesson(IO::Path $home, Str $text, %scope, %provenance, Str :$when = '', 
 
 my sub stored(%l --> Hash) { %( %l.grep({ .key ne 'kept-in' && .key ne 'file' }) ) }
 
-sub set-lesson-state(%l, Str $state, Str $why = '') is export {
+#| A change of state, with who made it: a person by name, or
+#| EVIDENCE when the runs made it (lessons-review, below).
+sub set-lesson-state(%l, Str $state, Str $why = '', Str :$by = '', :%figures) is export {
     my %n = stored(%l);
     %n<state> = $state;
     my @h = @(%n<history> // []);
-    @h.push(%( state => $state, at => stamp-now(), why => $why ));
+    @h.push(%( state => $state, at => stamp-now(), why => $why, |($by ne '' ?? (by => $by) !! ()), |(%figures ?? (figures => %figures) !! ()) ));
     %n<history> = @h;
     write-doc(%l<file>.IO, %n);
     %n;
@@ -482,6 +484,98 @@ sub compare-lesson(%l, @work --> Hash) is export {
     # with no agent in its scope, compare within the agents it ran with
     if (%s<agent> // '') eq '' && @with { my %who = @with.map({ .agent => True }); @pool = @pool.grep({ %who{.agent} }) }
     %( with => sums(@with), without => sums(@pool), enough => (@with.elems >= MIN-SAMPLE && @pool.elems >= MIN-SAMPLE) );
+}
+
+# ------------------------------------------------- lessons from what people said
+
+#| Who decided a lesson's state when the runs did, not a person.
+constant EVIDENCE is export = 'evidence';
+#| The longest correction kept as a lesson's words.
+constant LESSON-TEXT-MAX is export = 1000;
+
+#| A person's correction is the cheapest lesson there is: their own words,
+#| said of a run they judged.  An outcome of corrected or rejected that
+#| carries words becomes ONE lesson on trial, scoped to the run's agent
+#| and its work context and to no harness and no model, so it reaches the
+#| agent's next runs whatever they run on.  Its provenance names the run,
+#| the outcome, who said it and what the run ran on.  No model is asked:
+#| the words are the person's, as written.  The same run never proposes a
+#| second lesson, however often its outcome is said again; an outcome with
+#| no words proposes nothing, since there is nothing to learn from it.
+sub propose-from-outcome(IO::Path $home, %o --> Hash) is export {
+    return %() unless (%o<outcome> // '') eq 'corrected' | 'rejected';
+    my $text = (%o<note> // '').Str.trim.subst(/\s+/, ' ', :g);
+    return %() if $text eq '';
+    my $run = (%o<runId> // '').Str;
+    return %() if $run eq '';
+    with lessons($home).first({ ((.<provenance> // {})<fromOutcome> // '') eq $run }) { return %( |$_, existing => True ) }
+    my $doc = read-doc($home.add('runs').add($run).add('receipt.json'));
+    my %ap = (runs-applied($home){$run} // {}).Hash;
+    my $agent = ($doc ?? (($doc<agent> // {})<id> // '') !! (%ap<agent> // '')).Str;
+    return %() if $agent eq '';
+    my %scope = agent => ($agent.contains('/') ?? $agent.split('/').tail !! $agent);
+    %scope<context> = %ap<context>.Str if (%ap<context> // '') ne '';
+    my %plan = $doc && $doc<plan> ~~ Associative ?? $doc<plan>.Hash !! {};
+    my %prov = from => 'outcome', fromOutcome => $run, runId => $run, outcome => %o<outcome>.Str, by => (%o<by> // '').Str,
+        agent => $agent, agentVersion => ($doc ?? (($doc<agent> // {})<version> // '') !! '').Str,
+        harness => ($doc ?? (($doc<harness> // {})<adapter> // '') !! (%ap<harness> // '')).Str,
+        model => (%plan<modelName> // %plan<model> // '').Str;
+    add-lesson($home, $text.substr(0, LESSON-TEXT-MAX), %scope, %prov);
+}
+
+#| Did a person decide this lesson?  Any change of state not made by
+#| the evidence is a person's, and the evidence never overrules it.
+sub person-decided(%l --> Bool) is export {
+    so @(%l<history> // []).first({ $_ ~~ Associative && ($_<by> // '') ne EVIDENCE });
+}
+
+#| What the runs say of a lesson: supported, contradicted, or not enough
+#| to say.  Judged runs are those a person or a work system gave an
+#| outcome; a finished run nobody judged is not evidence either way.
+#|   contradicted: MIN-SAMPLE judged runs with it, and none accepted, or
+#|                 accepted less often than MIN-SAMPLE judged comparable
+#|                 runs without it.
+#|   supported:    MIN-SAMPLE accepted runs with it, and accepted at
+#|                 least as often as MIN-SAMPLE judged comparable runs
+#|                 without it.  One success, or a few with nothing to
+#|                 compare them to, is not support.
+sub judge-lesson(%l, @work --> Hash) is export {
+    my %c = compare-lesson(%l, @work);
+    my sub judged(%x) { %x<accepted> + %x<rejected> + %x<corrected> }
+    my ($wj, $oj) = judged(%c<with>), judged(%c<without>);
+    my %f = with-judged => $wj, with-accepted => %c<with><accepted>, without-judged => $oj, without-accepted => %c<without><accepted>;
+    my sub rate($a, $n) { $n ?? $a / $n !! 0 }
+    my $wr = rate(%c<with><accepted>, $wj);
+    my $or = rate(%c<without><accepted>, $oj);
+    my sub pct($r) { ($r * 100).round ~ '%' }
+    return %( verdict => 'too-few', figures => %f, why => "{$wj} judged runs with it; {MIN-SAMPLE} are needed" ) if $wj < MIN-SAMPLE;
+    return %( verdict => 'contradicted', figures => %f, why => "none of the {$wj} judged runs with it was accepted" ) if %c<with><accepted> == 0;
+    return %( verdict => 'no-baseline', figures => %f, why => "{$oj} judged comparable runs without it; {MIN-SAMPLE} are needed to compare" ) if $oj < MIN-SAMPLE;
+    return %( verdict => 'contradicted', figures => %f, why => "accepted {pct($wr)} of {$wj} runs with it, against {pct($or)} of {$oj} without" ) if $wr < $or;
+    return %( verdict => 'too-few', figures => %f, why => "{%c<with><accepted>} accepted runs with it; {MIN-SAMPLE} are needed" ) if %c<with><accepted> < MIN-SAMPLE;
+    %( verdict => 'supported', figures => %f, why => "accepted {pct($wr)} of {$wj} runs with it, against {pct($or)} of {$oj} without" );
+}
+
+#| Let the runs move the lessons the runs may move: this person's own
+#| lessons that no person has decided, on trial or kept by the evidence.
+#| Supported moves trial to kept; contradicted moves trial, or kept by
+#| the evidence, to reverted, where it stays on record and is given to
+#| no run.  A person's keep or revert stands, and only a person restores
+#| a reverted lesson.  Project lessons are the team's, kept in its
+#| repository, and are never rewritten here.  Returns what changed.
+sub review-lessons(IO::Path $home, @work --> List) is export {
+    my @changed;
+    # lessons() named no project, so these are this person's own only
+    for lessons($home).grep({ !person-decided($_) }) -> %l {
+        my $state = (%l<state> // '').Str;
+        next unless $state eq 'trial' | 'kept';
+        my %j = judge-lesson(%l, @work);
+        my $to = %j<verdict> eq 'contradicted' ?? 'reverted' !! (%j<verdict> eq 'supported' && $state eq 'trial') ?? 'kept' !! '';
+        next if $to eq '';
+        my %n = set-lesson-state(%l, $to, %j<why>, by => EVIDENCE, figures => %j<figures>);
+        @changed.push(%( |%n, was => $state ));
+    }
+    @changed.List;
 }
 
 sub baseline(IO::Path $home) is export { read-doc(value-baseline-file($home)) }
