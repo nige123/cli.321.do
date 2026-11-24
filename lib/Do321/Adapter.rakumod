@@ -289,11 +289,29 @@ class Registry is export {
 #| one is given (tests), and with extra variables added to the inherited
 #| one otherwise, through env so the result does not depend on how the
 #| runtime's own process passes an environment on.
-sub launch-argv(Str $bin, @argv, %replace, %extra --> List) is export {
-    return spawn-argv($bin, @argv, %( |%replace, |%extra )) if %replace.elems;
-    return ($bin, |@argv) unless %extra.elems;
+sub launch-argv(Str $bin, @argv, %replace, %extra, :@unset --> List) is export {
+    if %replace.elems {
+        my %env = |%replace, |%extra;
+        %env{$_}:delete for @unset;
+        return spawn-argv($bin, @argv, %env);
+    }
+    my @drop = @unset.grep({ %*ENV{$_}:exists }).sort;
+    return ($bin, |@argv) unless %extra.elems || @drop;
     my $env-bin = on-path('env') // '/usr/bin/env'.IO;
-    ($env-bin.Str, |%extra.keys.sort.map({ "$_={%extra{$_}}" }), $bin, |@argv);
+    ($env-bin.Str, |@drop.map({ |('-u', $_) }), |%extra.keys.sort.map({ "$_={%extra{$_}}" }), $bin, |@argv);
+}
+
+#| The API keys each provider reads from the environment.  A harness is
+#| launched without the keys of providers it does not use, so a customer
+#| who brought an OpenAI key for one agent never hands it to another
+#| provider's harness, and a key reaches only the process that needs it.
+constant %PROVIDER-KEYS is export = %(
+    anthropic => <ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN>,
+    openai    => <OPENAI_API_KEY CODEX_API_KEY>,
+    google    => <GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_API_KEY>,
+);
+sub foreign-keys(@providers --> List) is export {
+    %PROVIDER-KEYS.keys.grep({ $_ ∉ @providers }).map({ |%PROVIDER-KEYS{$_} }).sort.List;
 }
 
 #| Neutral grants mapped onto an adapter's tool vocabulary.  Unknown
@@ -1001,7 +1019,7 @@ class StreamConsumer is export {
                             if $t ne '' {
                                 @!said.push($t);
                                 self!say($t);
-                                $!ctl.emit.(EVENT-PROGRESS, %( text => cap-tail($t, 500) )) with $!ctl;
+                                $!ctl.emit.(EVENT-PROGRESS, %( text => redact(cap-tail($t, 500)) )) with $!ctl;
                             }
                         }
                     }
@@ -1122,7 +1140,9 @@ class ClaudeCode does Adapter is export {
     method args(Spec $spec --> List) {
         my @tools = tool-names($spec.grants, CLAUDE-CODE-TOOLS);
         @tools.push('TodoWrite');
-        my @args = '-p', $spec.prompt, '--output-format', 'stream-json', '--verbose',
+        # The prompt goes on stdin (see run): on the command line it is
+        # readable by every user of the machine through the process list.
+        my @args = '-p', '--output-format', 'stream-json', '--verbose',
             '--permission-mode', 'dontAsk', '--allowedTools', @tools.join(',');
         @args.push('--json-schema', $spec.output-schema) if $spec.output-schema ne '';
         @args.push('--max-turns', ($spec.limits<maxTurns> // 0).Str) if ($spec.limits<maxTurns> // 0) > 0;
@@ -1149,7 +1169,8 @@ class ClaudeCode does Adapter is export {
 
     method run(Cancel $cancel, Spec $spec, Control $ctl --> Outcome) {
         my $start = now;
-        my $proc = Proc::Async.new(|launch-argv(self!binary, self.args($spec), %!env, $spec.hook-env));
+        my $proc = Proc::Async.new(:w, |launch-argv(self!binary, self.args($spec), %!env, $spec.hook-env,
+            unset => foreign-keys(self.manifest<providers>)));
         my $consumer = StreamConsumer.new(:transcript($!transcript), :$ctl);
         my $err = '';
         my $lock = Lock.new;
@@ -1162,6 +1183,7 @@ class ClaudeCode does Adapter is export {
             $out.errors.push("claude_code: process did not start: {$!.message}");
             return $out;
         }
+        try { await $proc.print($spec.prompt); $proc.close-stdin };
         my $done = Promise.new;
         start { my $r = try await $started; $done.keep($r // Any) }
         await Promise.anyof($done, $cancel.promise);
@@ -1181,7 +1203,7 @@ class ClaudeCode does Adapter is export {
         # field: a controller looks there for what it asked the agent to say.
         $out.final-words = cap-tail($said, 32 * 1024);
         with $env {
-            $out.summary = .summary;
+            $out.summary = redact(.summary);
             $out.session-ref = .session-ref if .session-ref ne '';
             $out.cost = doc('Cost', usd => .cost-usd, turns => .turns, tokens => (([+] .usage.values) // 0), basis => COST-HARNESS);
             %usage = .usage;

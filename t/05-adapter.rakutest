@@ -71,6 +71,12 @@ for '--permission-mode dontAsk', '--allowedTools Read,Glob,Grep,Edit,Write,TodoW
     ok $args.contains($want), "args carry $want" or diag $args;
 }
 ok !$args.contains('Bash') && !$args.contains('WebFetch'), 'ungranted tools do not appear';
+ok !$c.args(Spec.new(:prompt('fix the second sticker'))).grep(*.contains('sticker')), 'the prompt is not an argument: it goes on stdin';
+is foreign-keys(['anthropic']).join(' '), 'CODEX_API_KEY GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_API_KEY OPENAI_API_KEY', "a harness for one provider is launched without the others' keys";
+{
+    my @a = launch-argv('claude', ['-p'], %( ANTHROPIC_API_KEY => 'a', OPENAI_API_KEY => 'o', PATH => '/bin' ), %(), unset => foreign-keys(['anthropic']));
+    ok @a.grep(*.starts-with('ANTHROPIC_API_KEY=')) && !@a.grep(*.starts-with('OPENAI_API_KEY=')), 'a replaced environment loses them too' or diag @a.raku;
+}
 my %enf = $c.enforcement;
 ok !enforces(%enf, FEAT-NETWORK-DENY) && !enforces(%enf, FEAT-REPO-SCOPE) && !enforces(%enf, FEAT-LIVE-STEER) && !enforces(%enf, FEAT-PAUSE),
     'claude_code does not claim network_deny, repo_scope, live_steer or pause';

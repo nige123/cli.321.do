@@ -642,6 +642,21 @@ before. After a pin, `check` reports only what has changed since.
     `applied` only when the attempt that carries it has started — never on
     receipt. The session id is read off the stream's `system/init` event, so
     an attempt interrupted before its result object can still be resumed.
+  - **The prompt goes on stdin**, never the command line, where any user
+    of the machine could read it in the process list.
+  - **Only Anthropic's keys reach it.** The harness is launched without
+    the environment variables other providers read (`OPENAI_API_KEY`,
+    `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+    `GOOGLE_GENAI_API_KEY`; the table is `%PROVIDER-KEYS`), so a key a
+    customer brought for one provider is never handed to another's
+    harness. `ANTHROPIC_API_KEY` passes when it is set; when it is not,
+    Claude Code uses the login of the person running it. Their own
+    subscription signed in to the unmodified `claude` binary is theirs to
+    use; a service running Claude Code for other people should use an API
+    key.
+  - **What it says is redacted.** Progress text and the harness's summary
+    pass through `redact` before they become an event or a receipt, so a
+    key shape the model read in a file does not travel on.
   - `DO_321_CLAUDE_BINARY` names the harness executable for an isolated test
     environment without touching PATH; `testdata/fakeclaude/claude` is a
     controllable stand-in (`t/08-claudecode.rakutest`).

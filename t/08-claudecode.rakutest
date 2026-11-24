@@ -11,6 +11,7 @@ use Do321::Protocol;
 use Do321::Async;
 use Do321::Adapter;
 use Do321::Run;
+use Do321::JSON;
 
 my $bg = Cancel.new;
 my $agent = helper();
@@ -199,6 +200,30 @@ sub claude-registry(%env --> Registry) {
     is %r<status>, STATUS-BLOCKED, 'an unmet condition blocks a run the agent called done';
     is %r<blockedOn>, 'done conditions not met: 1 of 2 (#2 and tested)', 'blockedOn names it';
     is %r<blockedEvidence>, 'observed', 'the unmet condition is observed by 321';
+}
+
+# the prompt goes on stdin, only the provider's own key reaches the harness,
+# and what the harness says is redacted before it becomes an event or a receipt
+{
+    my $envlog = temp-dir().add('claude-env.log');
+    my ($log, $env) = claude-env('complete', FAKE_CLAUDE_ENV_LOG => $envlog.Str,
+        ANTHROPIC_API_KEY => 'sk-ant-test-0000000000', OPENAI_API_KEY => 'sk-openai-test-000000', GEMINI_API_KEY => 'gm-test',
+        FAKE_CLAUDE_SAY => 'found sk-ant-leakedleakedleaked in the config');
+    my %wp = pkg-for($agent, 'print the second sticker', 'it prints');
+    %wp<capabilities><granted> = [CAP-REPO-READ, CAP-REPO-WRITE, CAP-SHELL-RUN];
+    %wp<capabilities><limits> = load('Limits', { network => NETWORK-OPEN, maxTurns => 4, maxUsd => 1 });
+    my $col = Collector.new;
+    my %r = runner(claude-registry(%$env)).run($bg, %wp, $agent, Options.new(:sink($col)));
+    is %r<status>, STATUS-COMPLETED, 'it completes';
+    my @inv = read-lines($log);
+    my ($argv, $stdin) = @inv[0].split('stdin=', 2);
+    ok !$argv.contains('second sticker'), 'the prompt is not on the command line, where every user can read it' or diag $argv;
+    ok $stdin.contains('second') && $stdin.contains('sticker'), 'it arrives on stdin' or diag $stdin;
+    is read-lines($envlog).join(','), 'ANTHROPIC_API_KEY', "only Anthropic's key reaches Claude Code; OpenAI's and Google's are left out";
+    my @said = $col.all.grep({ .<kind> eq EVENT-PROGRESS }).map({ (.<payload><text> // '').Str }).grep(*.contains('working on it'));
+    ok @said && @said.all.contains('leakedleaked').not && @said[0].contains('<redacted>'), 'a key shape in what it says is redacted in the event' or diag @said.raku;
+    ok %r<summary>.contains('<redacted> in the config'), "the harness's summary is redacted on the receipt" or diag %r<summary>;
+    ok !canonical(%r).contains('leakedleaked'), 'and the key is nowhere in the receipt';
 }
 
 done-testing;
