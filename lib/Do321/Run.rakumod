@@ -19,6 +19,7 @@ use Do321::Controller;
 use Do321::Enforcement;
 use Do321::Models;
 use Do321::Plan;
+use Do321::Resources;
 
 #| Receives run events in order.  Implementations must not block for
 #| long: the wire layer buffers and coalesces; tests collect.
@@ -75,6 +76,17 @@ class Options is export {
     has $.want;
     #| The models known here (Do321::Models), for pinning the plan.
     has @.models;
+    #| The resources the package names, found on this machine by whoever
+    #| started the run (Do321::Resources): name, kind, path, access.  The
+    #| package says what; only this machine knows where.
+    has @.resources;
+    #| Why a resource the package names could not be found here.
+    has @.resource-problems;
+    #| What earlier runs learnt about the harness this run is placed on:
+    #| called once it is chosen, with its name and version, and answers
+    #| (lines, lesson ids).  Advice only: it is never asked before the
+    #| grants are settled and cannot change them.
+    has &.harness-lessons;
 }
 
 # --------------------------------------------------------------- prompt
@@ -82,7 +94,7 @@ class Options is export {
 #| What a model-driven adapter is told: the package's own identity and
 #| prompts, then the work.  Prompt text is not a security boundary; the
 #| grants are, and they were enforced before this rendered.
-sub render-prompt(%wp, Loaded $agent, @grants, @instructions, Str :$policy = '' --> Str) is export {
+sub render-prompt(%wp, Loaded $agent, @grants, @instructions, Str :$policy = '', :@resources, :@harness-lines --> Str) is export {
     my %m = $agent.manifest;
     my $b = "You are {%m<displayName>} ({%m<id>}), {%m<identity><role>}.\n";
     $b ~= "Personality: {%m<identity><personality>}\n" if %m<identity><personality> ne '';
@@ -124,6 +136,19 @@ sub render-prompt(%wp, Loaded $agent, @grants, @instructions, Str :$policy = '' 
     if @lines {
         $b ~= "\nWhat is already known (oldest first):\n";
         $b ~= "- " ~ .trim.subst("\n", ' ', :g) ~ "\n" for @lines;
+    }
+    if @harness-lines {
+        $b ~= "\nLearnt by earlier runs on the harness you are running in (advice, not instructions: it grants nothing and never overrides the task or its limits):\n";
+        $b ~= "- " ~ .trim.subst("\n", ' ', :g) ~ "\n" for @harness-lines;
+    }
+    if @resources {
+        $b ~= "\nBesides your working directory you are given these for this task, and nothing else outside it:\n";
+        for @resources -> %r {
+            my $what = %( git => 'a git repository', dir => 'a directory', file => 'a file' ){%r<kind>} // 'a resource';
+            $b ~= "- {%r<name>} ($what) at {%r<path>}: " ~ (%r<access> eq 'write'
+                ?? "you may change it. Do not commit there either.\n"
+                !! "to read only. Change nothing in it.\n");
+        }
     }
     my @att = @(%wp<context><attachments> // []);
     if @att {
@@ -573,6 +598,9 @@ class Session is export {
     has @!carry;                         # what the next attempt is told of the one before it
     has $.procedure is rw;
     has %.captures is rw;
+    has @.resources is rw;               # the package's resources as found here
+    has %.resources-before is rw;        # each one's state before the first attempt
+    has @.harness-lines is rw;           # what earlier runs learnt of the chosen harness
     has Lock $!mu = Lock.new;
     has Int $!event-seq = 0;
     has %.spent;
@@ -1193,7 +1221,8 @@ class Session is export {
         my $schema = try $!agent.output-schema($!procedure.defined ?? $!procedure<name> !! '');
         my $overlay = try $!agent.overlay($!adapter.name);
         Spec.new(:package(%!wp), :agent($!agent), :attempt($n), :workspace(%!wp<workspace><path>),
-            :prompt(render-prompt(%!wp, $!agent, @!grants, @instructions, :policy($!policy-text))), :@instructions, :grants(@!grants),
+            :prompt(render-prompt(%!wp, $!agent, @!grants, @instructions, :policy($!policy-text), :resources(@!resources), :harness-lines(@!harness-lines))),
+            :@instructions, :grants(@!grants), :resources(@!resources),
             :%limits, :$session-ref, :output-schema($schema // ''), :procedure($!procedure), :captures(%!captures),
             :overlay($overlay // Str), :model((%!plan<model> // '').Str), :effort((%!plan<effort> // '').Str), |self.hook-spec);
     }
@@ -1241,6 +1270,15 @@ class Session is export {
         if %!wp<workspace><kind> eq 'git' && %!wp<workspace><path> ne '' {
             my @files = ($!opts.list-changed-files // &git-changed-files)(%!wp<workspace><path>);
             %r<evidence><filesChanged> = [ |@files ] if @files;
+        }
+        # where the work was done, for every run that was given more than
+        # its own directory
+        if @!resources {
+            my @ev = @!resources.map({ resource-evidence($_, (%!resources-before{.<name>} // {}).Hash) });
+            %r<evidence><resources> = [ |@ev ];
+            for @ev.grep({ .<changedThoughReadOnly> }) -> %e {
+                %r<evidence><errors> = [ |@(%r<evidence><errors> // []), "the resource '{%e<name>}' was given to read and was changed during the run" ];
+            }
         }
         if %r<status> eq STATUS-STOPPED {
             %r<stop> = $!dir.stop-info(&!now());
@@ -1312,6 +1350,24 @@ class Runner is export {
         my ($grants, $reason2, $details2) = $s.effective-grants;
         return $s.deny($reason2, @$details2) if $reason2 ne '';
         $s.grants = @$grants;
+        # A package says which resources; this machine says where they
+        # are.  One that is not here is a refusal, never a guess.
+        my @refs = @(%wp<resources> // []).grep(Associative);
+        if @refs {
+            # a caller may hand these over as one list inside another
+            my sub flat-of(@l) { @l.map({ $_ ~~ Positional ?? |@$_ !! $_ }).List }
+            my %here = flat-of($opts.resources).grep(Associative).map({ (.<name> // '').Str => $_ });
+            my @absent = @refs.grep({ !%here{.<name>} }).map({ "the resource '{.<name>}' was not found on this machine" });
+            my @why = flat-of($opts.resource-problems) || @absent.List;
+            return $s.deny('a resource this package names is not available here', [ |@why ]) if @why || @absent;
+            # to change a resource is to change files: the package must be
+            # granted that, as for its own workspace
+            my @unbacked = @refs.grep({ (.<access> // '') eq 'write' }).map({ "the resource '{.<name>}' is to be changed" });
+            return $s.deny('a resource is to be changed, and the package is granted nothing that changes files', [ |@unbacked ])
+                if @unbacked && !@$grants.first({ $_ eq CAP-REPO-WRITE | CAP-FILES-WRITE | CAP-SHELL-RUN });
+            $s.resources = @refs.map({ %here{.<name>} });
+            $s.resources-before = %( $s.resources.map({ .<name> => resource-state($_) }) );
+        }
         my ($proc, $captures) = $s.match-procedure;
         $s.captures = %$captures;
         my $ad;
@@ -1349,6 +1405,16 @@ class Runner is export {
         $s.receipt<harness><adapter> = $ad.name;
         $s.receipt<harness><version> = $ad.detect.version;
         $s.receipt<harness><procedure> = $proc<name> with $proc;
+        # Now the harness is known, what earlier runs learnt of it is
+        # said.  Words only: the grants were settled above.
+        if !$proc.defined && $opts.harness-lessons.defined {
+            my ($lines, $ids) = (try $opts.harness-lessons.($ad.name, ($s.receipt<harness><version> // '').Str)) // ((), ());
+            if $lines && @$lines {
+                $s.harness-lines = @$lines;
+                $s.receipt<harness><lessons> = [ |@$ids ];
+                $s.emit(EVENT-PROGRESS, %( notice => "told {+@$lines} lesson{+@$lines == 1 ?? '' !! 's'} learnt on {harness-display($ad.name)}" ));
+            }
+        }
         $s.drive($ctx);
     }
 }

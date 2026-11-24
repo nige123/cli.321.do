@@ -23,7 +23,7 @@ constant RUN-VIEWS is export = <all active needs lines table evidence>;
 #| Every word, in the order the screen offers them.
 sub run-words(--> List) is export {
     (
-    RunWord.new(name => 'start',   usage => '[--harness NAME] [--isolate] <agent> <request...>', what => 'start a run that keeps going when you leave'),
+    RunWord.new(name => 'start',   usage => '[--harness NAME] [--isolate] [--with NAME[:write]] [--grant CAP] <agent> <request...>', what => 'start a run that keeps going when you leave'),
     RunWord.new(name => 'steer',   usage => '<run> <words...>', what => 'say something to a run while it works'),
     RunWord.new(name => 'hold',    usage => '<run>',            what => 'end its current step now and wait'),
     RunWord.new(name => 'resume',  usage => '<run>',            what => 'carry on a held run where it was'),
@@ -52,7 +52,7 @@ sub run-words-starting(Str $prefix, Bool :$screen = True --> List) is export {
 #| force, yes, view; or error, saying what is wrong in one line.
 #| Also under the :parse tag, for a module that wants the parser alone.
 sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export(:DEFAULT, :parse) {
-    my %r = verb => $verb, run => '', words => '', harness => '', isolate => False, workspace => '',
+    my %r = verb => $verb, run => '', words => '', harness => '', isolate => False, workspace => '', with => [], grant => [],
             force => False, yes => False, view => '', package => '', continue => '', json => False, brief => False;
     my $w = run-word($verb);
     return %( |%r, error => "'$verb' is not a run word" ) without $w;
@@ -68,6 +68,8 @@ sub parse-run-words(Str $verb, @args, Bool :$screen = False --> Hash) is export(
                 given @a.shift {
                     when '--harness'   { return err('--harness needs a name; 321 harness can lists them') unless @a; %r<harness> = @a.shift }
                     when '--isolate'   { %r<isolate> = True }
+                    when '--grant'     { return err('--grant needs a capability the agent lists as optional') unless @a; %r<grant>.push(@a.shift) }
+                    when '--with'      { return err('--with needs a resource name; 321 resources lists them') unless @a; %r<with>.push(@a.shift) }
                     when '--workspace' { return err('--workspace needs a directory') unless @a; %r<workspace> = @a.shift }
                     when '--package'   { return err('--package needs a work package file') unless @a; %r<package> = @a.shift }
                     when '--continue'  { return err('--continue needs a receipt file') unless @a; %r<continue> = @a.shift }

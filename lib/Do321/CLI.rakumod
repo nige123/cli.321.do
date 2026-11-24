@@ -45,6 +45,7 @@ use Do321::Plan;
 use Do321::Curate;
 use Do321::Choose;
 use Do321::Versions;
+use Do321::Resources;
 
 #| Stamped at build time in the release workflow.
 constant VERSION is export = '0.7.1';
@@ -141,6 +142,8 @@ class Global {
     #| --skill: installed skills selected for a run (Do321::Registry).
     has @.skill is rw;
     has @.attach is rw;
+    #| --with: resources this run is given besides its workspace (Do321::Resources).
+    has @.with is rw;
     has @.done is rw;
     has @.grant is rw;
     has Bool $.non-interactive is rw = False;
@@ -204,6 +207,7 @@ sub parse-global(@args --> List) {
             when '--effort'          { $g.effort = need() }
             when '--skill'           { $g.skill.push(need()) }
             when '--attach'          { $g.attach.push(need()) }
+            when '--with'            { $g.with.push(need()) }
             when '--done'            { $g.done.push(need()) }
             when '--grant'           { $g.grant.push(need()) }
             when '--non-interactive' { $g.non-interactive = True }
@@ -364,6 +368,7 @@ sub cli-run(Env $env is copy --> Int) {
         when 'outcome'  { return cmd-outcome($env, $g, @rest[1 .. *]) }
         when 'context'  { return cmd-context($env, $g, @rest[1 .. *]) }
         when 'lessons'  { return cmd-lessons($env, $g, @rest[1 .. *]) }
+        when 'resources' { return cmd-resources($env, $g, @rest[1 .. *]) }
         when 'skills'   { return cmd-skills($env, $g, @rest[1 .. *]) }
         when 'registry' { return cmd-registry($env, $g, @rest[1 .. *]) }
         when 'record'   { return cmd-record($env, $g, @rest[1 .. *]) }
@@ -1191,6 +1196,73 @@ sub cmd-outcome(Env $env, Global $g, @args --> Int) {
     0;
 }
 
+#| `321 resources`: what a run can be given besides its workspace, and
+#| where each is on this machine.
+sub cmd-resources(Env $env, Global $g, @args --> Int) {
+    my $home = home-of($env);
+    my @a = @args.grep({ $_ ne '--plain' });
+    my $json = $g.json-out || so @a.first('--json');
+    $g.brief = True if @a.first('--brief');
+    @a = @a.grep({ $_ ne '--json' && $_ ne '--brief' });
+    my $w = $env.stdout;
+    my $sub = @a ?? @a.shift !! 'list';
+    given $sub {
+        when 'list' {
+            my @r = resources($home);
+            if $json { $w.say(encode-json(%( schema => SCHEMA-RESOURCES, resources => [ |@r ] ))); return 0 }
+            if $g.brief { $w.say(brief-line(.<name>, .<kind>, .<path>, .<url> // '')) for @r; return 0 }
+            unless @r {
+                learn-say($env, [header('resources', 'none yet'), '',
+                    'A resource is something a run can be given besides its own directory: another repository, a directory, a file.', '',
+                    next-text('say where one is on this machine', '321 resources add NAME PATH')]);
+                return 0;
+            }
+            my @lines = header('resources', many-of(+@r, 'resource') ~ ' on this machine'), '';
+            for @r -> %r {
+                @lines.append(row-lines(%r<name> ~ ':', "{%( git => 'repository', dir => 'directory', file => 'file' ){%r<kind>} // %r<kind>} at {%r<path>}"));
+                @lines.append(row-lines('', "known as {%r<url>}")) if (%r<url> // '') ne '';
+            }
+            @lines.push('', next-text('give one to a run, to read, or to change', "321 --with {@r[0]<name>} <agent> <request...>   (--with {@r[0]<name>}:write to change it)"));
+            learn-say($env, @lines);
+            return 0;
+        }
+        when 'add' {
+            my $url = '';
+            my @p;
+            while @a {
+                my $f = @a.shift;
+                if $f eq '--url' { $url = (@a.shift // '').Str; return usage-error($env, 'resources', '--url needs the address the repository is known by') if $url eq '' }
+                elsif $f.starts-with('--') { return usage-error($env, 'resources', "add takes --url, not '$f'") }
+                else { @p.push($f) }
+            }
+            return usage-error($env, 'resources', 'say its name and where it is: 321 resources add NAME PATH [--url ADDRESS]') unless @p == 2;
+            # a checkout says what it is known by; asked only when not told
+            if $url eq '' && kind-at(@p[1]) eq 'git' {
+                my $o = try { my $p = run 'git', '-C', @p[1], 'remote', 'get-url', 'origin', :out, :err; my $t = $p.out.slurp(:close).trim; $p.err.slurp(:close); $p.exitcode == 0 ?? $t !! '' };
+                $url = $o if $o ~~ Str && $o ne '' && address-problem($o) eq '';
+            }
+            my ($r, $why) = add-resource($home, @p[0], @p[1], :$url);
+            with $why { $env.stderr.say("321: $why"); return 3 }
+            if $json { $w.say(encode-json($r)); return 0 }
+            if $g.brief { $w.say(brief-line($r<name>, $r<kind>, $r<path>, $r<url> // '')); return 0 }
+            learn-say($env, [header('resources add', $r<name>), '', |row-lines('resource:', "{%( git => 'repository', dir => 'directory', file => 'file' ){$r<kind>} // $r<kind>} at {$r<path>}"),
+                |(($r<url> // '') ne '' ?? row-lines('known as:', $r<url>) !! ()),
+                |row-lines('kept in:', '~/.321/resources.json; the path stays on this machine'), '',
+                next-text('give it to a run', "321 --with {$r<name>} <agent> <request...>")]);
+            return 0;
+        }
+        when 'remove' {
+            return usage-error($env, 'resources', 'say which: 321 resources remove NAME') unless @a == 1;
+            unless remove-resource($home, @a[0]) { $env.stderr.say("321: no resource here is called '{@a[0]}'"); return 3 }
+            if $g.brief || $json { $w.say($json ?? encode-json(%( removed => @a[0] )) !! brief-line(@a[0], 'removed')); return 0 }
+            learn-say($env, [header('resources remove', @a[0]), '', "321 no longer knows where {@a[0]} is. Nothing at that place was touched.", '',
+                next-text('see what is left', '321 resources')]);
+            return 0;
+        }
+        default { return usage-error($env, 'resources', "resources has list, add and remove, not '$sub'") }
+    }
+}
+
 #| `321 context`: regions of related work, each with a purpose and a history.
 sub cmd-context(Env $env, Global $g, @args --> Int) {
     my $home = home-of($env);
@@ -1341,7 +1413,7 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
             my @ls = lessons($home, :$project);
             my @work = read-work($home, :days(365));
             # those a registry keeps, held in the contexts pulled from it: read only here
-            my @there = registry-lessons($home);
+            my @there = (|registry-lessons($home), |registry-harness-lessons($home));
             if $json { $w.say(encode-json(%( lessons => [ @ls.map({ %( |$_, comparison => compare-lesson($_, @work) ) }) ], registry => [ |@there ] ))); return 0 }
             if $g.brief {
                 $w.say(brief-line(.<id>, .<state>, .<kept-in>, scope-text($_), .<text>)) for @ls;
@@ -1391,13 +1463,18 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                     when '--context' { return usage-error($env, 'lessons', "no work context is called '$v'") unless context-for($home, $v).defined; %scope<context> = $v }
                     when '--skill'   { %scope<skill> = $v }
                     when '--harness' { %scope<harness> = $v }
+                    when '--harness-version' { %scope<harnessVersion> = $v }
                     when '--from'    { $from = $v }
                     when '--when'    { $when = $v }
                     when '--because' { $because = $v }
-                    default { return usage-error($env, 'lessons', "add takes --agent, --context, --skill, --harness, --from, --when and --because, not '$f'") }
+                    default { return usage-error($env, 'lessons', "add takes --agent, --context, --skill, --harness, --harness-version, --from, --when and --because, not '$f'") }
                 }
             }
             %scope<context> = $g.context if $g.context ne '' && !(%scope<context>:exists);
+            return usage-error($env, 'lessons', '--harness-version goes with --harness: it says which versions of that harness the lesson holds for')
+                if (%scope<harnessVersion> // '') ne '' && (%scope<harness> // '') eq '';
+            return usage-error($env, 'lessons', "--harness-version is the leading numbers of a version (2 for every 2.x, 2.1 for every 2.1.x), not '{%scope<harnessVersion>}'")
+                if (%scope<harnessVersion> // '') ne '' && %scope<harnessVersion> !~~ / ^ \d+ ['.' \d+]* '.'? $ /;
             return usage-error($env, 'lessons', 'say what was learnt: 321 lessons add [--agent NAME] <words...>') unless @a;
             my %l = add-lesson($home, @a.join(' '), %scope, %( from => ($from.defined ?? 'run' !! 'person'), |($from.defined ?? (runId => $from) !! ()), by => who-am-i() ), :$when, :$because);
             if $json { $w.say(encode-json(%l)); return 0 }
@@ -1406,6 +1483,38 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                 |row-lines('state:', 'on trial: runs it applies to are given it as advice, and record that they were'),
                 |row-lines('kept in:', '~/.321/lessons, yours alone until you share it'), '',
                 next-text('after a few runs, see whether it helps', "321 lessons show {%l<id>}")]);
+            return 0;
+        }
+        when 'generalise' | 'generalize' {
+            # a private lesson that turned out to be about the harness: a
+            # person says so, and every agent placed on it is told
+            my ($harness, $version) = '', '';
+            my @ids;
+            while @a {
+                my $f = @a.shift;
+                if $f eq '--harness' | '--harness-version' {
+                    my $v = (@a.shift // '').Str;
+                    return usage-error($env, 'lessons', "$f needs a value") if $v eq '';
+                    if $f eq '--harness' { $harness = $v } else { $version = $v }
+                }
+                elsif $f.starts-with('--') { return usage-error($env, 'lessons', "generalise takes --harness and --harness-version, not '$f'") }
+                else { @ids.push($f) }
+            }
+            return usage-error($env, 'lessons', 'say which lesson: 321 lessons generalise ID [--harness NAME] [--harness-version PREFIX]') unless @ids == 1;
+            my $l = need-lesson(@ids[0]) // return 3;
+            my ($new, $why) = generalise-lesson($home, $l, :$harness, :$version, by => who-am-i());
+            without $new {
+                $env.stderr.say("321: {$l<id>} stays private: " ~ @$why.join('; '));
+                $env.stderr.say(next-text('say it again as a lesson about the tool alone', "321 lessons add --harness {$harness ne '' ?? $harness !! 'NAME'} <words...>"));
+                return 3;
+            }
+            if $json { $w.say(encode-json($new)); return 0 }
+            if $g.brief { $w.say(brief-line($new<id>, $new<state>, 'harness', $new<scope><harness>)); return 0 }
+            learn-say($env, [header('lessons generalise', $new<id>), '', |row-lines('lesson:', $new<text>), |row-lines('applies to:', scope-text($new)),
+                |row-lines('learnt from:', "lesson {$l<id>}" ~ ((($new<provenance> // {})<runId> // '') ne '' ?? ", run {$new<provenance><runId>}" !! '')),
+                |row-lines('state:', $new<existing> ?? "already made: {$new<state>}" !! 'on trial: every agent placed on that harness is given it as advice'),
+                |row-lines('kept in:', '~/.321/lessons; it grants nothing and changes no limit'), '',
+                next-text('retire it if it turns out wrong', "321 lessons revert {$new<id>}")]);
             return 0;
         }
         when 'teach' {
@@ -1436,13 +1545,31 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
             }
             my %s = %l<scope> ~~ Associative ?? %l<scope>.Hash !! {};
             my $to = (%s<context> // '').Str;
-            return usage-error($env, 'lessons', "a lesson is taught to a work context, and {%l<id>} is scoped to none: add it again with --context NAME") if $to eq '';
+            # a lesson about a harness and nothing else is taught as that:
+            # to this account, for every agent it places on the harness
+            my $about = lesson-kind(%l) eq 'harness' ?? %s<harness>.Str !! '';
+            if $about ne '' {
+                my @why = private-in((%l<text> // '').Str ~ ' ' ~ $when ~ ' ' ~ $because ~ ' ' ~ (%l<when> // '') ~ ' ' ~ (%l<because> // ''), $home);
+                if @why {
+                    $env.stderr.say("321: {%l<id>} is not sent: " ~ @why.join('; '));
+                    $env.stderr.say(next-text('say it again as a lesson about the tool alone', "321 lessons add --harness $about <words...>"));
+                    return 3;
+                }
+            }
+            return usage-error($env, 'lessons', "a lesson is taught to a work context or for a harness, and {%l<id>} is scoped to neither: add it again with --context NAME or --harness NAME") if $to eq '' && $about eq '';
             $when = (%l<when> // '').Str if $when eq '';
             $because = (%l<because> // '').Str if $because eq '';
             return usage-error($env, 'lessons', "say when it applies: 321 lessons teach {%l<id>} --when <words>") if $when eq '';
             return usage-error($env, 'lessons', "say why it holds: 321 lessons teach {%l<id>} --because <words>") if $because eq '';
-            my %body = context => $to, when => $when, do => (%l<text> // '').Str, because => $because;
-            %body<agent> = %s<agent>.split('/').tail if (%s<agent> // '') ne '';
+            my %body = when => $when, do => (%l<text> // '').Str, because => $because;
+            if $about ne '' {
+                %body<harness> = $about;
+                %body<harnessVersion> = %s<harnessVersion>.Str.subst(/ '.' $ /, '') if (%s<harnessVersion> // '') ne '';
+            }
+            else {
+                %body<context> = $to;
+                %body<agent> = %s<agent>.split('/').tail if (%s<agent> // '') ne '';
+            }
             my $card = try registry-get($home, '/api/lessons', send => encode-json(%body));
             if $! {
                 $env.stderr.say("321: {$!.message}");
@@ -1453,15 +1580,15 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                 $env.stderr.say('321: the registry answered, but not with a lesson: it is not recorded here as taught');
                 return EXIT-FAILED;
             }
-            my $at = ($card<at> // '').Str || $to;
+            my $at = ($card<at> // '').Str || $to || "harness $about";
             my %n = mark-taught(%l, $card<id>.Str, $at, :$when, :$because);
             if $json { $w.say(encode-json(%( |%n, card => $card ))); return 0 }
             if $g.brief { $w.say(brief-line(%n<id>, 'taught', %n<taught><id>, $at)); return 0 }
             learn-say($env, [header('lessons teach', "{%n<id>} taught to $at"), '', |row-lines('lesson:', %n<text>),
                 |row-lines('when:', $when), |row-lines('because:', $because),
                 |row-lines('known as:', "{%n<taught><id>} at {registry-url($home)}, " ~ (($card<state> // '') eq 'trial' ?? 'on trial there' !! ($card<state> // '') ne '' ?? "{$card<state>} there" !! 'as the registry keeps it')),
-                |row-lines('told to:', "runs in $at and the names under it, once their copy is pulled again"), '',
-                next-text('refresh your own copy', "321 context pull $at")]);
+                |row-lines('told to:', $about ne '' ?? "every agent this account places on $about, on each machine once it syncs" !! "runs in $at and the names under it, once their copy is pulled again"), '',
+                $about ne '' ?? next-text('bring another machine up to date', '321 registry sync') !! next-text('refresh your own copy', "321 context pull $at")]);
             return 0;
         }
         when 'show' | 'keep' | 'revert' | 'remove' | 'share' {
@@ -1562,7 +1689,7 @@ sub cmd-registry(Env $env, Global $g, @args --> Int) {
             return 0;
         }
         when 'sync' | 'status' {
-            my %s = try { $sub eq 'sync' ?? registry-sync($home) !! registry-state($home) } // %();
+            my %s = try { $sub eq 'sync' ?? registry-sync($home, harnesses => $env.adapters.all.map(*.name).grep({ $_ ne 'procedure' && $_ ~~ / ^ <[a..z 0..9]> <[a..z 0..9 . _ -]>* $ / }).List) !! registry-state($home) } // %();
             if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
             my $failed = $sub eq 'sync' && (%s<error> // '') ne '';
             my $told = '';
@@ -3068,6 +3195,25 @@ sub build-package(Config $cfg, Loaded $agent, Global $g, Str $request, Str $work
         @attachments.push(doc('Attachment', name => $abs.basename, sha256 => sha256-hex($b), uri => 'file://' ~ $abs.Str));
     }
     %wp<context><attachments> = @attachments if @attachments;
+    # The resources this task is given, and no others: each named as the
+    # machine knows it, to read unless it is said to be changed.  The
+    # package carries the name and the address; where it is stays here.
+    if $g.with {
+        my @known = resources($home);
+        my @refs;
+        for $g.with -> $w {
+            my ($name, $access) = $w.contains(':') ?? ($w.substr(0, $w.rindex(':')), $w.substr($w.rindex(':') + 1)) !! ($w, ACCESS-READ);
+            X::Do321::Usage.new(message => "--with {$w}: a resource is given to read or to write (--with $name or --with {$name}:write)").throw
+                unless $access eq ACCESS-READ | ACCESS-WRITE;
+            my $hit = @known.first({ .<name> eq $name });
+            X::Do321::Usage.new(message => "no resource here is called '$name'; say where it is: 321 resources add $name <path>").throw without $hit;
+            X::Do321::Usage.new(message => "--with {$name}:write: {%m<displayName> // $agent.id} is granted nothing that changes files, so it is given '$name' to read: --with $name").throw
+                if $access eq ACCESS-WRITE && !@grants.first({ $_ eq CAP-REPO-WRITE | CAP-FILES-WRITE | CAP-SHELL-RUN });
+            X::Do321::Usage.new(message => "--with $name is said twice").throw if @refs.first({ .<name> eq $name });
+            @refs.push(doc('ResourceRef', :$name, :$access, |(($hit<url> // '') ne '' ?? (url => $hit<url>.Str) !! ())));
+        }
+        %wp<resources> = @refs;
+    }
     # What is already known: the work context this run belongs to, and the
     # lessons whose scope matches it.  They go in as known things, beside
     # the task and under it; nothing here adds a grant or moves a limit.
@@ -3205,6 +3351,15 @@ sub render-receipt($w, %r, IO::Path $run-dir, Str :$invocation = '', Str :$prefi
     $w.say('');
     my @files = @(%r<evidence><filesChanged> // []);
     row('changed:', @files.join(', ')) if @files;
+    # what it was given besides its own directory, and what it left there
+    for @(%r<evidence><resources> // []) -> %e {
+        my @c = @(%e<filesChanged> // []);
+        my $where = (%e<worktreeOf> // '') ne '' ?? "a worktree of {%e<worktreeOf>} in {%e<path>}" !! (%e<path> // '').Str;
+        my $said = %e<changedThoughReadOnly> ?? "given to read, and changed: {@c.join(', ')}"
+                !! @c ?? "changed {@c.join(', ')}" !! (%e<access> eq 'write' ?? 'nothing changed' !! 'read');
+        row("{%e<name>}:", "$said; $where");
+    }
+    with (%r<harness> // {})<lessons> { row('told:', many-of(.elems, 'lesson') ~ ' learnt on this harness: ' ~ .join(', ') ~ '   (321 lessons show ID)') if .elems && $verbose }
     for @(%r<evidence><toolCalls> // []) -> %c {
         last unless $verbose;
         my $state = %c<unavailable> ne '' ?? 'not performed' !! (%c<ok> ?? 'ok' !! "exit {%c<exitCode>}");
@@ -3376,7 +3531,9 @@ sub cmd-agent(Env $env, Global $g, Str $name, @words --> Int) {
                 !! pretty-on()
                     ?? SinkFunc.new(:f(-> %e { my $t = brief-event-text(%e); $live.say($t) if $t ne '' }))
                     !! SinkFunc.new(:f(-> % {}));
+    my ($found, $absent) = resolve-resources(home-of($env), @(%wp<resources> // []));
     my %receipt = runner-of($env).run($ctx, %wp, $agent, Options.new(:$directives, :$signals, :$sink, :history-dir($run-dir.Str),
+        :resources(@$found), :resource-problems(@$absent), :harness-lessons(harness-teller(home-of($env), %wp)),
         :policy($cfg.policy), :adapter($g.adapter), :package-raw($raw-package.encode('utf-8')),
         :$want, :models(models-here(home-of($env)))));
     $ctx.cancel;

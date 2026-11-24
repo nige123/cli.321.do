@@ -84,7 +84,15 @@
         "proposal": { "$ref": "deployment-proposal.v1.json", "description": "The approved deployment proposal, verbatim, so execution can compare a fresh plan with exactly what was approved. Its proposalDigest must equal params.proposalDigest." }
       }
     },
-    "outputSchema": { "type": "string", "description": "A file inside the agent package; defaults to the package's outputSchemas.default." }
+    "outputSchema": { "type": "string", "description": "A file inside the agent package; defaults to the package's outputSchemas.default." },
+    "resources": {
+      "description": "What the run is given besides its workspace: other repositories, a directory, a file. Each is named by what it is, never by where it is: the runtime that executes the package finds it on its own machine, by name and then by url, and refuses the run when it cannot. A resource not listed is not given. access is read unless it says write, and write needs a grant that changes files.",
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+        "url": { "type": "string", "description": "The address a repository is known by. Never carries credentials." },
+        "access": { "enum": ["read", "write"] } } }
+    }
   },
   "$defs": {
     "ulid": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },

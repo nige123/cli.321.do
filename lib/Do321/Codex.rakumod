@@ -199,6 +199,13 @@ class Codex does Adapter is export {
             }
         }
         @common.push('-c', "model_reasoning_effort=\"{$spec.effort}\"") if $spec.effort ne '';
+        # A resource to change is one more place the sandbox lets it write.
+        # One to read needs nothing: the sandbox reads anywhere and writes
+        # only where it is told.  Not on a resumed session, which keeps the
+        # places it began with.
+        if $spec.session-ref eq '' && $sandbox ne 'read-only' {
+            for $spec.resources.grep({ .<access> eq 'write' && .<kind> ne 'file' }) -> %r { @common.push('--add-dir', %r<path>) }
+        }
         $spec.session-ref ne ''
             ?? ('exec', 'resume', |@common, $spec.session-ref, '-').List
             !! ('exec', |@common, '-').List;

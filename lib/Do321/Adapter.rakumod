@@ -51,6 +51,7 @@ class Spec is export {
     has %.hook-controls;         # controller name => the controls to register for this run
     has Str $.hook-self = '';    # the 321 command the harness should call back
     has %.hook-env;              # extra environment for the harness, so its hooks can report back
+    has @.resources;             # what the run is given besides its workspace: name, kind, path, access
 }
 
 #| What the adapter can say and hear while it runs.
@@ -1128,6 +1129,9 @@ class ClaudeCode does Adapter is export {
         @args.push('--max-turns', ($spec.limits<maxTurns> // 0).Str) if ($spec.limits<maxTurns> // 0) > 0;
         @args.push('--max-budget-usd', sprintf('%.2f', $spec.limits<maxUsd>)) if ($spec.limits<maxUsd> // 0) > 0;
         @args.push('--resume', $spec.session-ref) if $spec.session-ref ne '';
+        # the directories the run was given besides its own: a file names
+        # the directory it is in
+        for $spec.resources -> %r { @args.push('--add-dir', %r<kind> eq 'file' ?? %r<path>.IO.parent.Str !! %r<path>) }
         # Hooks for this run only: handed to the harness on its command
         # line, so the caller's settings file is not written.
         if $spec.hook-controls && $spec.hook-self ne '' {

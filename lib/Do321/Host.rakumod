@@ -30,6 +30,7 @@ use Do321::RunDir;
 use Do321::Fold;
 use Do321::Harnesses;
 use Do321::Learn;
+use Do321::Resources;
 
 constant HOST-VERSION is export = '0.7.1';
 #| How long a delivered stop may take before the host signals the runtime.
@@ -50,7 +51,7 @@ constant EXIT-LOST is export = 6;
 #| gives one.  Returns (RunDir, error).
 sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-path = '', IO::Path :$home = home-dir(),
                Str :$via = 'mission-control', :%continues, RunDir :$follows, Str :$harness = '', Bool :$isolate = False,
-               Str :$context = '' --> List) is export {
+               Str :$context = '', :@with, :@grant --> List) is export {
     return (RunDir, 'say what the agent should do') if $request.trim eq '';
     # a follow-up goes on from a receipt: a run still going has none
     my $prev-bytes;
@@ -75,6 +76,8 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
     my $cfg = try load-trust($trust-path ne '' ?? $trust-path.IO !! default-trust-path());
     return (RunDir, $!.message) if $!;
     my $g = Do321::CLI::Global.new(:$trust-path, :$workspace, context => $ctx);
+    $g.with.push($_) for @with;
+    $g.grant.push($_) for @grant;
     my ($agent, $err) = load-agent-named($cfg, $g, $agent-name);
     return (RunDir, $err) with $err;
     my ($ws, $kind) = resolve-workspace($workspace);
@@ -100,6 +103,21 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
         my $why = $!.message;
         drop-worktree(%isolation) if %isolation;
         return (RunDir, $why);
+    }
+    # A run with a worktree of its workspace gets one of every repository
+    # it may change, so nothing it writes lands in a checkout a person or
+    # another run is using.  What it only reads is read where it is.
+    my %res-at;
+    if $isolate {
+        my ($found, $) = resolve-resources($home, @(%wp<resources> // []));
+        for @$found.grep({ .<kind> eq 'git' && .<access> eq ACCESS-WRITE }) -> %r {
+            my ($path, $base, $why) = make-worktree(%r<path>, $home);
+            with $why {
+                drop-worktree($_) for %isolation, |%res-at.values;
+                return (RunDir, "the resource '{%r<name>}': $why");
+            }
+            %res-at{%r<name>} = %( path => $path, of => %r<path>, base => $base );
+        }
     }
     # A follow-up is the same agent as it was running: the grants, limits
     # and placement the followed package carried, not this shell's
@@ -135,6 +153,7 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
     return (RunDir, ($!.message.contains('DO_321_HOME') || $!.message.contains('not safe to use') ?? '' !! 'cannot make the run directory: ') ~ $!.message) if $!;
     my %m = $agent.manifest;
     write-atomic($rd.package-file, to-wire('WorkPackage', %wp) ~ "\n", :durable);
+    write-atomic(run-resources-file($rd.dir), encode-json-pretty(%res-at) ~ "\n", :durable) if %res-at;
     write-atomic(follows-file($rd), $prev-bytes.decode, :durable) with $prev-bytes;
     my %run = schema => SCHEMA-RUN, runId => %wp<packageId>, attempt => 1, continues => (%continues ?? %continues !! Nil),
         follows => ($follows.defined ?? %( runId => $follows.id, receiptDigest => digest-bytes($prev-bytes) ) !! Nil),
@@ -142,6 +161,7 @@ sub launch-run(Str $agent-name, Str $request, Str :$workspace = '', Str :$trust-
                    byline => byline-of(%m) },
         request => $request, workspace => $ws, grants => [ |@(%wp<capabilities><granted>) ],
         harness => { requested => $adapter }, isolation => (%isolation ?? %isolation !! Nil), queue => %queue,
+        with => [ |@with ], asked => [ |@grant ],
         launchedBy => { uid => my-uid(), via => $via }, launchedAt => now-iso();
     write-atomic($rd.run-file, encode-json-pretty(%run) ~ "\n", :durable);
 
@@ -276,11 +296,6 @@ sub agent-words(Str $id --> Hash) {
 
 sub home-dir-of(IO::Path $home --> IO::Path) { $home }
 
-#| Take back a worktree no run used.
-sub drop-worktree(%iso) {
-    try { my $p = run 'git', '-C', %iso<of>, 'worktree', 'remove', '--force', %iso<path>, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close) }
-}
-
 #| The runs this one waits behind, oldest first, from evidence alone:
 #| a run at work in the same workspace, a run at work for the same
 #| agent when the agent's places are all taken, and any run waiting for
@@ -320,24 +335,6 @@ sub queue-reason(RunDir $r, @behind --> Str) is export {
 #| Whether an agent can change files: one that can, holds its workspace.
 sub writes(%m --> Bool) {
     so (|@(%m<capabilities><required> // []), |@(%m<capabilities><optional> // [])).first({ $_ eq 'repo.write' | 'files.write' | 'shell.run' });
-}
-
-#| A worktree of the workspace at its last commit, for one run, under
-#| ~/.321/worktrees.  Nothing is committed: the person reviews what the
-#| run changed there and takes it, or removes the worktree.  Returns
-#| (path, base commit, error).
-sub make-worktree(Str $ws, IO::Path $home --> List) {
-    my $root = private-dir($home.add('worktrees'));
-    my $path = $root.add(new-ulid()).Str;
-    my $head = run 'git', '-C', $ws, 'rev-parse', 'HEAD', :out, :err;
-    my $base = $head.out.slurp(:close).trim;
-    $head.err.slurp(:close);
-    return (Str, Str, "$ws has no commit yet, so there is nothing to make a worktree of") if $head.exitcode != 0 || $base eq '';
-    my $add = run 'git', '-C', $ws, 'worktree', 'add', '--detach', $path, $base, :out, :err;
-    $add.out.slurp(:close);
-    my $err = $add.err.slurp(:close);
-    return (Str, Str, "git could not make a worktree: {$err.lines.grep(*.trim ne '').tail // 'it said nothing'}") if $add.exitcode != 0;
-    ($path, $base, Str);
 }
 
 #| Whether an agent can touch files at all; one that cannot gets no
@@ -683,7 +680,8 @@ sub restart-run(RunDir $r, Str :$via = 'mission-control', Str :$harness = '' -->
     my %iso = (%run<isolation> // {}).Hash;
     my $ws = %iso ?? (%iso<of> // '') !! (%run<workspace> // '');
     my $h = $harness ne '' ?? $harness !! ((%run<harness> // {})<requested> // '');
-    launch-run(%run<agent><name> // '', %run<request> // '', :workspace($ws), :$via, :%continues, :harness($h), :isolate(so %iso));
+    launch-run(%run<agent><name> // '', %run<request> // '', :workspace($ws), :$via, :%continues, :harness($h), :isolate(so %iso),
+        with => @(%run<with> // []).map(*.Str).List, grant => @(%run<asked> // []).map(*.Str).List);
 }
 
 # ---------------------------------------------------------------- stopping

@@ -152,7 +152,7 @@ subtest 'a lesson is taught to the registry only when a person says, with when a
 
     my $loose = cli('--brief', 'lessons', 'add', '--agent', 'helper', 'no context for this one')[1].split("\t")[0];
     my ($rc, $out, $err) = cli('lessons', 'teach', $loose, '--when', 'w', '--because', 'b', :registry($http), :%more);
-    ok $rc != 0 && $err.contains('scoped to none') && $err.contains('--context'), 'a lesson scoped to no context cannot be taught' or diag $err;
+    ok $rc != 0 && $err.contains('scoped to neither') && $err.contains('--context'), 'a lesson scoped to no context cannot be taught' or diag $err;
     my $id = cli('--brief', 'lessons', 'add', '--agent', 'example.test/helper', '--context', 'checkout.acme.example', '--when', 'taking a payment', 'count money in pence')[1].split("\t")[0];
     is lesson($home, $id)<when>, 'taking a payment', 'add keeps when a lesson applies';
     ($rc, $out, $err) = cli('lessons', 'teach', $id, :registry($http), :%more);

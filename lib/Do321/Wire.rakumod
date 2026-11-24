@@ -32,6 +32,8 @@ use Do321::Trust;
 use Do321::Run;
 use Do321::Keys;
 use Do321::Choose;
+use Do321::Resources;
+use Do321::Learn;
 
 constant EXIT-COMPLETED is export = 0;
 constant EXIT-BLOCKED   is export = 2;
@@ -307,6 +309,16 @@ sub serve(Cancel $ctx, WireOptions $opts --> Int) is export {
         %run-opts<follows> = $prev;
     }
     %run-opts<policy> = $opts.trust.policy with $opts.trust;
+    # A package from anywhere names its resources; this machine says
+    # where they are, and a run started with worktrees of its own says
+    # where those are.  What earlier runs learnt of the harness is said
+    # too, once the run is placed.
+    if $opts.home ne '' {
+        my ($found, $absent) = resolve-resources($opts.home.IO, @(($wp<resources> // [])), at => read-run-resources($opts.history-dir));
+        %run-opts<resources> = @$found;
+        %run-opts<resource-problems> = @$absent;
+        %run-opts<harness-lessons> = harness-teller($opts.home.IO, %$wp);
+    }
     my $run-options = Options.new(|%run-opts);
 
     my %receipt;

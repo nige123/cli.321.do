@@ -59,7 +59,10 @@ define 'WorkPackage', (
     idempotencyKey => 'str?', supersedesPackageId => 'str?', correlation => 'obj:Correlation',
     agent => 'obj:AgentRef', placement => 'str', workspace => 'obj:Workspace',
     objective => 'str', instructions => 'str?', context => 'obj:Context', completion => 'obj:Completion',
-    capabilities => 'obj:Grants', authority => 'obj:Authority', approval => 'ptr:Approval?', outputSchema => 'str?');
+    capabilities => 'obj:Grants', authority => 'obj:Authority', approval => 'ptr:Approval?', outputSchema => 'str?',
+    resources => 'list:ResourceRef?');
+# A resource is named by what it is, never by where it is on a machine.
+define 'ResourceRef', (name => 'str', url => 'str?', access => 'str?');
 define 'Issuer', (kind => 'str', id => 'str', url => 'str?');
 define 'Correlation', (refs => 'list:Ref?',);
 define 'Ref', (kind => 'str', id => 'str');
@@ -110,7 +113,7 @@ define 'PlanEvidence', (comparable => 'int', judged => 'int', accepted => 'int',
     usdRuns => 'int?', basis => 'str');
 define 'Continuation', (runId => 'str', receiptId => 'str', receiptDigest => 'str', attempts => 'int');
 define 'RunLink', (runId => 'str', receiptId => 'str', receiptDigest => 'str');
-define 'HarnessInfo', (adapter => 'str', version => 'str?', procedure => 'str?', sessionRefs => 'strs?');
+define 'HarnessInfo', (adapter => 'str', version => 'str?', procedure => 'str?', sessionRefs => 'strs?', lessons => 'strs?');
 define 'Attempt', ( n => 'int', adapter => 'str', startedAt => 'str', endedAt => 'str', endReason => 'str',
     sessionRef => 'str?', cost => 'obj:Cost', model => 'str?', effort => 'str?', profile => 'str?');
 define 'DirectiveSummary', ( received => 'strs', applied => 'strs', rejected => 'list:RejectedDirective',
@@ -123,7 +126,12 @@ define 'ConditionProof', (met => 'bool', proof => 'str?');
 define 'Evidence', (
     filesChanged => 'strs?', artifacts => 'list:Artifact?', externalAction => 'ptr:ExternalAction?',
     approvalCheck => 'ptr:ApprovalCheck?', denials => 'strs?', errors => 'strs?', toolFailures => 'strs?', noChange => 'bool?',
-    toolCalls => 'list:ToolCall?', proposal => 'ptr:DeploymentProposal?', controllers => 'list:ControllerEvidence?');
+    toolCalls => 'list:ToolCall?', proposal => 'ptr:DeploymentProposal?', controllers => 'list:ControllerEvidence?',
+    resources => 'list:ResourceEvidence?');
+# Where the work was done: the working area and each resource the run was
+# given, with the branch and commit it began at and what it left changed.
+define 'ResourceEvidence', (name => 'str', kind => 'str', access => 'str', path => 'str?', url => 'str?', worktreeOf => 'str?',
+    branch => 'str?', base => 'str?', head => 'str?', filesChanged => 'strs?', changedThoughReadOnly => 'bool?');
 # What governed the work besides the runtime's own grants: one record per
 # controller (IZ4, say) that applied, with what really operated.
 define 'ControllerEvidence', (name => 'str', harness => 'str', subject => 'str', digest => 'str?', levels => 'strs',

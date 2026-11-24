@@ -121,7 +121,7 @@ sub registry-get(IO::Path $home, Str $path, Str :$send = '') is export {
 
 #| Fetch what this person may see and keep a copy.  A failure keeps the
 #| copy there was and records what went wrong; it never empties it.
-sub registry-sync(IO::Path $home --> Hash) is export {
+sub registry-sync(IO::Path $home, :@harnesses --> Hash) is export {
     private-dir($home);
     private-dir(registry-dir($home));
     my %state = url => registry-url($home), triedAt => stamp-now(), withToken => (registry-token($home) ne '');
@@ -148,6 +148,24 @@ sub registry-sync(IO::Path $home --> Hash) is export {
     else {
         write-atomic(registry-dir($home).add('contexts.json'), encode-json($contexts) ~ "\n");
         %state<contexts> = ($contexts<contexts> // []).elems;
+    }
+    # The lessons this account keeps about the harnesses here: its own,
+    # so asked for only by someone the registry knows.  A registry that
+    # has none to give, or will not give them, leaves the copy there was.
+    if @harnesses && registry-token($home) ne '' {
+        my %kept = ((read-doc(registry-dir($home).add('harness-lessons.json')) // {})<harnesses> // {}).Hash;
+        my $n = 0;
+        for @harnesses -> $h {
+            my $got = try registry-get($home, "/api/lessons?harness=$h");
+            if $! { %state<harnessLessonsNote> = $!.message; next }
+            next unless $got<lessons> ~~ Positional;
+            %kept{$h} = [ @($got<lessons>).grep(Associative).grep({ (.<harness> // '').Str eq $h }).map({ %(
+                id => (.<id> // '').Str, name => (.<name> // '').Str, at => (.<at> // '').Str, state => (.<state> // '').Str,
+                harness => $h, harnessVersion => (.<harnessVersion> // '').Str, text => ((.<text> // '').Str || (.<do> // '').Str) ) }) ];
+            $n += %kept{$h}.elems;
+        }
+        write-atomic(registry-dir($home).add('harness-lessons.json'), encode-json(%( harnesses => %kept, pulledAt => stamp-now() )) ~ "\n");
+        %state<harnessLessons> = $n;
     }
     %state<syncedAt> = stamp-now();
     write-atomic(registry-dir($home).add('state.json'), encode-json(%state) ~ "\n");

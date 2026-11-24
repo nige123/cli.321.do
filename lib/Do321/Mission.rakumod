@@ -157,7 +157,7 @@ sub cmd-start(%o, @args --> Int) {
     # and a request are built into one here
     my ($r, $err) = %w<package> ne ''
         ?? launch-package(%w<package>.IO, :workspace($ws), :continue(%w<continue>), :$harness)
-        !! launch-run(%w<agent>, %w<words>, :workspace($ws), :via('321 start'), :$harness, :isolate(%w<isolate> || %o<isolate>));
+        !! launch-run(%w<agent>, %w<words>, :workspace($ws), :via('321 start'), :$harness, :isolate(%w<isolate> || %o<isolate>), with => @(%w<with> // []).List, grant => @(%w<grant> // []).List);
     with $err { note "$ME: $err"; return $r.defined ?? EXIT-INTERNAL !! 5 }
     say-started(%o, $r, 'start');
 }

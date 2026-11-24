@@ -268,15 +268,32 @@ sub share-lesson(%l, Str $project, Str $by --> Hash) is export {
     %n;
 }
 
+#| Is a harness's version one of those a lesson names?  The lesson gives
+#| leading parts of a version, and whole parts are compared: 2 is every
+#| 2.x, 2.1 is every 2.1.x and never 2.10.  What a harness prints may
+#| have words around the number ("2.1.331 (Claude Code)"); the first
+#| number in it is its version.
+sub version-within(Str $version, Str $of --> Bool) is export {
+    my @want = $of.trim.subst(/ '.' $ /, '').split('.');
+    return False unless @want && @want.all ~~ / ^ \d+ $ /;
+    my $found = $version ~~ / (\d+ ['.' \d+]*) /;
+    return False unless $found;
+    my @have = $found[0].Str.split('.');
+    @have.elems >= @want.elems && so (@have.head(@want.elems) Zeq @want).all;
+}
+
 #| Does a lesson apply to this piece of work?  Every scope it states must
 #| match; a scope it does not state is not asked.  A harness-scoped
 #| lesson applies only when the harness was named, because learning is
 #| not assumed to carry from one harness to another.  A project lesson
 #| applies only to work in its project.  A context's lesson applies in
 #| that context and in the names under it.
-sub lesson-applies(%l, Str :$agent = '', Str :$context = '', Str :$harness = '', :@skills) is export {
+sub lesson-applies(%l, Str :$agent = '', Str :$context = '', Str :$harness = '', Str :$harness-version = '', :@skills) is export {
     return False if (%l<state> // '') eq 'reverted';
     my %s = %l<scope> ~~ Associative ?? %l<scope>.Hash !! {};
+    # what held on one version of a harness is not assumed of another: a
+    # lesson that names versions applies where the version begins as it says
+    return False if (%s<harnessVersion> // '') ne '' && !version-within($harness-version, %s<harnessVersion>.Str);
     return False if (%s<agent> // '') ne '' && %s<agent> ne $agent && !$agent.ends-with('/' ~ %s<agent>);
     return False if (%s<context> // '') ne '' && !context-within($context, %s<context>);
     return False if (%s<harness> // '') ne '' && %s<harness> ne $harness;
@@ -290,8 +307,9 @@ sub scope-text(%l --> Str) is export {
     @p.push("agent {%s<agent>}") if (%s<agent> // '') ne '';
     @p.push("context {%s<context>}") if (%s<context> // '') ne '';
     @p.push("skill {%s<skill>}") if (%s<skill> // '') ne '';
-    @p.push("harness {%s<harness>}") if (%s<harness> // '') ne '';
+    @p.push("harness {%s<harness>}" ~ ((%s<harnessVersion> // '') ne '' ?? " {%s<harnessVersion>.subst(/ '.' $ /, '')}.x" !! '')) if (%s<harness> // '') ne '';
     @p.push('this project') if (%l<kept-in> // '') eq 'project';
+    return "every agent placed on {@p.tail} (a harness lesson)" if lesson-kind(%l) eq 'harness';
     @p ?? @p.join(', ') !! 'every run of yours';
 }
 
@@ -302,7 +320,10 @@ sub known-lines(IO::Path $home, Str :$agent = '', Str :$context = '', Str :$harn
     my @lines;
     my @ids;
     my $project = project-root($workspace);
-    my @mine = lessons($home, :$project).grep({ lesson-applies($_, :$agent, :$context, :$harness, :@skills) });
+    # A lesson about a harness is said where the harness is known: once
+    # the runtime has placed the run (harness-lines, below), not here,
+    # where it is at most asked for.
+    my @mine = lessons($home, :$project).grep({ !about-harness($_) && lesson-applies($_, :$agent, :$context, :$harness, :@skills) });
     if $context ne '' {
         with context-for($home, $context) -> %c {
             # a copy of a name above this one says whose words these are
@@ -340,6 +361,105 @@ sub known-lines(IO::Path $home, Str :$agent = '', Str :$context = '', Str :$harn
     (@lines.List, @ids.List);
 }
 
+# ----------------------------------------------------- lessons about a harness
+
+#| Does this lesson say how to use a harness?  Its scope names one.
+sub about-harness(%l --> Bool) is export { ((%l<scope> // {})<harness> // '') ne '' }
+
+#| A harness lesson that names no agent, context, skill or project is
+#| about the tool and nothing else, so it is reusable: every agent placed
+#| on that harness is told it, a person's own agents and anyone else's
+#| alike.  Any other lesson is private to the scope it names.
+sub lesson-kind(%l --> Str) is export {
+    my %s = %l<scope> ~~ Associative ?? %l<scope>.Hash !! {};
+    return 'private' if (%l<kept-in> // '') eq 'project' || %s<project>;
+    about-harness(%l) && (%s<agent> // '') eq '' && (%s<context> // '') eq '' && (%s<skill> // '') eq '' ?? 'harness' !! 'private';
+}
+
+constant HARNESS-LESSONS-CAP is export = 12;
+
+#| The harness lessons an account keeps at the registry, as `321
+#| registry sync` last copied them: read only here.
+sub registry-harness-lessons(IO::Path $home, Str $harness = '' --> List) is export {
+    my %h = ((read-doc($home.add('registry').add('harness-lessons.json')) // {})<harnesses> // {}).Hash;
+    ($harness ne '' ?? @(%h{$harness} // []) !! %h.keys.sort.map({ |@(%h{$_} // []) })).grep(Associative).List;
+}
+
+#| What a run is told once it has been placed on a harness: the lessons
+#| about that harness, at that version, that apply to this agent and
+#| this work.  Returns (lines, ids).  Words only, and asked after the
+#| grants are settled.
+sub harness-lines(IO::Path $home, Str $harness, Str $version, Str :$agent = '', Str :$context = '', Str :$workspace = '', :@skills --> List) is export {
+    return ((), ()) if $harness eq '';
+    my $project = project-root($workspace);
+    my @l = lessons($home, :$project)
+        .grep({ about-harness($_) && lesson-applies($_, :$agent, :$context, :$harness, :harness-version($version), :@skills) });
+    # then what this person's account keeps at the registry for the
+    # harness, as last synced: never one of their own a second time
+    my %taught = @l.map({ ((.<taught> // {})<id> // '').Str => True });
+    my @there = registry-harness-lessons($home, $harness).grep({
+        (.<text> // '') ne '' && (.<state> // '') ne 'reverted' && !%taught{(.<id> // '').Str}
+            && ((.<harnessVersion> // '') eq '' || version-within($version, .<harnessVersion>.Str)) });
+    my @all = (|@l, |@there).head(HARNESS-LESSONS-CAP);
+    (@all.map({ .<text>.Str }).List, @all.map({ .<id>.Str }).grep(* ne '').List);
+}
+
+#| What the runtime asks once a run is placed: the lessons about that
+#| harness for this package's agent, in the work context the run was
+#| started in, and a note beside the run that it was told them.
+sub harness-teller(IO::Path $home, %wp --> Callable) is export {
+    my $run = (%wp<packageId> // '').Str;
+    my $agent = ((%wp<agent> // {})<id> // '').Str;
+    my $workspace = ((%wp<workspace> // {})<path> // '').Str;
+    -> Str $harness, Str $version {
+        my %ap = (runs-applied($home){$run} // {}).Hash;
+        my ($lines, $ids) = harness-lines($home, $harness, $version, :$agent, context => (%ap<context> // '').Str, :$workspace,
+            skills => @(%ap<skills> // []).map(*.Str).List);
+        record-harness-lessons($home, $run, $harness, @$ids, :$agent);
+        ($lines, $ids);
+    }
+}
+
+#| Why these words should not be shared beyond the work they came from,
+#| or nothing when no reason is seen.  A reusable lesson is about a tool;
+#| a path, an address, a secret or the name of a private work context in
+#| it is somebody's work showing through.  This is a guard for an honest
+#| mistake, not a proof that the words are safe: a person still reads
+#| them before they go anywhere.
+sub private-in(Str $text, IO::Path $home --> List) is export {
+    my @why;
+    @why.push('it names a path on a machine') if $text ~~ / [ ^ | <[\s"'(=]> ] [ '/' | '~/' ] <[\w.-]>+ '/' <[\w.-]> /;
+    @why.push('it carries a web address') if $text ~~ / <[a..z]>+ '://' /;
+    @why.push('it carries an email address') if $text ~~ / <[\w.+-]>+ '@' <[\w-]>+ '.' <[\w]> /;
+    @why.push('it carries what looks like a secret') if $text ~~ / [ 'sk-' | 'ghp_' | 'xox' <[bpa]> '-' | 'AKIA' ] <[\w-]> ** 8..* / || $text ~~ / <[A..Za..z0..9+/_-]> ** 32..* /;
+    for contexts($home).map({ (.<name> // '').Str }).grep({ .contains('.') }) -> $c {
+        if $text.lc.contains($c.lc) { @why.push("it names the work context $c"); last }
+    }
+    @why.List;
+}
+
+#| Make a reusable harness lesson of a private one: the same words, for
+#| the harness the first was learnt on, and for no agent, context or
+#| project.  A person does this, having read the words; nothing does it
+#| for them.  The first lesson stays as it was, and the new one says
+#| where it came from, so either can be corrected or retired.
+#| Returns (lesson, problems).
+sub generalise-lesson(IO::Path $home, %l, Str :$harness = '', Str :$version = '', Str :$by = '' --> List) is export {
+    my %p = %l<provenance> ~~ Associative ?? %l<provenance>.Hash !! {};
+    my $h = $harness ne '' ?? $harness !! ((%l<scope> // {})<harness> // %p<harness> // '').Str;
+    return (Nil, ['it does not say which harness it was learnt on; name one with --harness']) if $h eq '';
+    my @why = private-in(%l<text>.Str, $home);
+    return (Nil, @why) if @why;
+    with lessons($home).first({ ((.<provenance> // {})<generalisedFrom> // '') eq %l<id> && ((.<scope> // {})<harness> // '') eq $h }) {
+        return (%( |$_, existing => True ), []);
+    }
+    my %scope = harness => $h;
+    %scope<harnessVersion> = $version if $version ne '';
+    my %prov = from => 'lesson', generalisedFrom => %l<id>.Str, by => $by, harness => $h;
+    %prov{$_} = %p{$_}.Str for <runId outcome agentVersion model>.grep({ (%p{$_} // '') ne '' });
+    (add-lesson($home, %l<text>.Str, %scope, %prov, when => (%l<when> // '').Str, because => (%l<because> // '').Str), []);
+}
+
 # ------------------------------------------------- what was applied, and what came of it
 
 sub applied-file(IO::Path $home --> IO::Path) is export { $home.add('learn').add('applied.ndjson') }
@@ -355,6 +475,19 @@ sub record-applied(IO::Path $home, Str $run-id, Str :$agent = '', Str :$context 
 }
 
 #| run id -> what it was started with.
+#| A run was told these lessons about the harness it was placed on: they
+#| join what it was started knowing, and the harness it really ran on is
+#| noted, so the comparisons count it.
+sub record-harness-lessons(IO::Path $home, Str $run-id, Str $harness, @ids, Str :$agent = '') is export {
+    return unless @ids;
+    my %was = (runs-applied($home){$run-id} // {}).Hash;
+    my @all = (|@(%was<lessons> // []), |@ids).unique;
+    private-dir($home);
+    private-dir($home.add('learn'));
+    append-line(applied-file($home), %( agent => $agent, context => '', skills => [], |%was, runId => $run-id, harness => $harness,
+        lessons => [ |@all ], at => (%was<at> // stamp-now()) ));
+}
+
 sub runs-applied(IO::Path $home --> Hash) is export { %( read-lines(applied-file($home)).map({ (.<runId> // '') => $_ }) ) }
 
 #| What a person or a work system says came of a run.  A run that

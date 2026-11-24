@@ -999,6 +999,78 @@ refuse an early edit and a turn end with no report), and
 are left byte for byte, so no hook is ever pointed at something that
 cannot answer. The safe order is iz4 first, then 321.
 
+## Resources: work in more than one repository
+
+A run has one workspace. Work often needs more: a second repository, a
+directory of documents, one file. Those are resources.
+
+Two halves are kept apart, so a work system never has to know a
+machine's paths:
+
+| What | Where | Says |
+|---|---|---|
+| Which resources a piece of work is given | the work package, `resources` | each one's `name`, the `url` a repository is known by, and `access` (`read`, or `write`) |
+| Where each is on this machine | `~/.321/resources.json` | a name, a path, the kind found there (`git`, `dir`, `file`) and the address |
+
+`321 resources add NAME PATH [--url ADDRESS]` says where one is; for a
+checkout the address is read from `origin` when it is not given.
+An address that carries credentials (a user or token before `@`, a token
+in the query) is refused: it says which repository, never how to get in.
+`321 resources` lists them and `321 resources remove NAME` forgets one,
+touching nothing at that place.
+
+`321 --with NAME <agent> <request...>` gives a run a resource to read;
+`--with NAME:write` to change. It is said once per resource, and a run
+is given those and no others: nothing is offered because it happens to
+be configured. `write` is refused unless the run is granted something
+that changes files (`repo.write`, `files.write` or `shell.run`), here and
+again in the runtime for a package from anywhere.
+
+A package issued by a work system names its resources the same way, and
+the runtime that executes it finds each on its own machine: by name, and
+otherwise by address (`git@host:owner/repo.git` and
+`https://host/owner/repo` are the same repository). One it cannot find
+ends the run denied, naming the resource and the command that adds it.
+Nothing is guessed, cloned or fetched.
+
+The agent is told each resource, where it is and whether it may change
+it. Claude Code is given every one with `--add-dir`. Codex is given the
+ones to change as further writable roots; its sandbox already reads
+anywhere and writes nowhere else, so on Codex a resource to read cannot
+be written. A harness built on `CommandHarness` reads `$spec.resources`.
+
+**Concurrent work.** `321 start --isolate` gives a run a git worktree of
+its workspace, and also of every git resource it may change, under
+`~/.321/worktrees`, each at that repository's last commit. The checkouts
+themselves, and anything uncommitted in them, are left exactly as they
+were, so a person and several runs can work in the same repositories at
+once. A resource that is only read, or is not git, is used where it is:
+it needs no worktree. Without `--isolate` a second writing run waits its
+turn for the workspace, as before. `321 start` also takes `--with` and
+`--grant`, and a restarted run is given the same ones.
+
+**Evidence.** The receipt's `evidence.resources` has one record per
+resource: its name, kind, access and path (a worktree says what it is a
+worktree of), and for a checkout the branch, the commit it began at
+(`base`), the commit after (`head`) and the paths that differ now and
+did not before the run. Paths already changed before the run are a
+person's work in progress and are not counted as the run's. Test results
+are evidence the way they always were: a completion condition with its
+proof.
+
+**What this is not.** Worktrees keep edits from colliding; they are not
+permissions and not a sandbox. A resource given to read is said to be
+for reading, and a change to one is put on the receipt
+(`changedThoughReadOnly`, and a line in `evidence.errors`); it is
+prevented only where the harness enforces it, as for the workspace.
+Credentials are never 321's: git finds them on the machine as it does
+for a person.
+
+Not built: cloning a repository a machine does not have; a cloud
+checkout as a working area; a branch per run (worktrees are detached at
+a commit, and the person takes or discards what a run left); resources
+shown in Mission Control.
+
 ## Getting better: contexts, lessons, outcomes, value, skills
 
 `321 help learning` lists the commands. Everything here works locally
@@ -1055,8 +1127,8 @@ reference in `correlation`, both already part of `work-package.v1`, and
 **Lessons.** A lesson is a sentence of advice, a scope and a provenance.
 The scope may name an agent, a work context, a skill and a harness;
 every part it names must match the run. A harness-scoped lesson applies
-only when that harness was named for the run, because learning is not
-assumed to carry between harnesses. A lesson is `trial` when added,
+only to a run placed on that harness, because learning is not assumed
+to carry between harnesses (see Lessons about a harness, below). A lesson is `trial` when added,
 then `kept` or `reverted` by a person; a reverted lesson is given to no
 run and stays on record. Matching lessons go into `context.lines`,
 labelled as advice that grants nothing; they change no grant and no
@@ -1069,6 +1141,49 @@ names one) and reports each side's count, finish rate, median reported
 cost and median time. Fewer than three runs on either side is reported
 as too few. It is a comparison of recorded runs, not a controlled trial,
 and says so.
+
+**Lessons about a harness.** A lesson whose scope names a harness is
+about how to use that tool. It is said to a run once the runtime has
+placed it, whether the harness was asked for or chosen, in a block of
+its own (`Learnt by earlier runs on the harness you are running in`),
+and never before the grants are settled. This holds for a package from
+anywhere: a run a work system issued is told the lessons this machine
+holds for the harness it lands on. The receipt lists their ids in
+`harness.lessons`, the run is counted among those given them, and the
+work package is not altered.
+
+A harness lesson that names no agent, context or skill is reusable:
+every agent placed on that harness is told it, a person's own packages
+and 321's alike. One that also names an agent or a context stays within
+that scope. `--harness-version PARTS` limits a lesson to versions with those
+leading parts, compared whole (`2` is every 2.x, `2.1` every 2.1.x and
+never 2.10), because what held on one version is not assumed of
+another; at most twelve are said to a run.
+
+`321 lessons generalise ID [--harness NAME] [--harness-version PREFIX]`
+makes a reusable harness lesson of a private one, such as the lesson a
+correction taught: the same words, for the harness that run was on, and
+for no agent or context. A person does this, having read the words. It
+is refused when the words carry a path, an address, an email address,
+something shaped like a secret or the name of an organisation's work
+context; that guard catches an honest slip and proves nothing more. The
+new lesson is on trial, says which lesson and run it came from, and is
+kept, reverted or removed like any other; the first is left as it was.
+
+**An account's harness lessons at the registry.** `321 lessons teach
+ID` sends a reusable harness lesson with `POST /api/lessons`: exactly
+its harness, the version parts when it names some, when it applies, the
+words as what to do, and why. No context, agent, run or path is sent,
+and words the guard above objects to are not sent at all. It is the
+account's own there, on trial. `321 registry sync`, with a token, asks
+`/api/lessons?harness=NAME` for each harness 321 knows and keeps what it
+is given in `~/.321/registry/harness-lessons.json`; without a token it
+asks for none and keeps the copy there was. A run placed on that harness
+is told those that hold for its version, after this machine's own and
+never a reverted one, within the same twelve. They are read only here.
+The registry's side of this was built to the same interface and was not
+yet released when this was written: until it is, teach is refused by the
+registry and sync says the lessons were not given.
 
 `321 lessons share ID` copies a lesson into the repository of the
 current workspace. Nothing else writes there, and 321 commits nothing:
@@ -1220,7 +1335,8 @@ it does not mean the figures are what the receipt says. A receipt
 signed by a key that is no longer the one here is reported unsigned.
 
 Not built: lessons proposed by 321 from a run nobody said anything
-of (only a person's words become one); promotion of a lesson into a
+of (only a person's words become one); harness lessons served to every
+account (an account's own are below); promotion of a lesson into a
 registry skill; publishing agents, skills or contexts to the
 registry from the CLI (a taught lesson is the one thing sent besides
 outcome reports); keeping, reverting or removing a registry lesson from

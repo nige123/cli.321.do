@@ -1,0 +1,228 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+use Do321::Learn;
+use Do321::Resources;
+
+# 321 on its own: no work system, no account and no registry.  A run is
+# given more than one repository, two runs change the same repository at
+# once without meeting, and what one run taught about a harness reaches
+# another agent placed on it.  The harness is a stand-in: these prove the
+# runtime's part, not a model's.
+
+sub git(IO::Path $dir, *@args) {
+    my $p = run 'git', '-C', $dir.Str, '-c', 'user.name=t', '-c', 'user.email=t@example.test', |@args, :out, :err;
+    my $o = $p.out.slurp(:close); $p.err.slurp(:close);
+    $o.trim;
+}
+sub repo(Str $file --> IO::Path) {
+    my $d = temp-dir().resolve;
+    git($d, 'init', '-q', '-b', 'main');
+    $d.add($file).spurt("first\n");
+    git($d, 'add', '.'); git($d, 'commit', '-q', '-m', 'first');
+    $d;
+}
+
+my $home = temp-dir().resolve; $home.chmod(0o700);
+my $app  = repo('app.txt');
+my $lib  = repo('lib.txt');
+my $docs = temp-dir().resolve; $docs.add('guide.md').spurt("how it fits together\n");
+my $log  = temp-dir().add('argv.log');
+my $pkg  = fixture('example.test/helper');
+my $trust = temp-dir().add('trust.json');
+$trust.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+    publishers => { 'example.test' => { packages => { helper => { path => $pkg.Str, version => '1.2.0', digest => compute($pkg)[0], trust => LEVEL-DEVELOPMENT } } } },
+    aliases => { helper => 'example.test/helper' } })));
+# nothing here can reach a work system or a registry: the address is dead
+my %env = DO_321_HOME => $home.Str, DO_321_CONTEXT => '', DO_321_REGISTRY => 'http://127.0.0.1:1', DO_321_CLAUDE_BINARY => fake-claude().Str,
+          DO_321_CODEX_BINARY => '/nonexistent/codex', FAKE_CLAUDE_LOG => $log.Str;
+sub c(*@args, :%more) { x321('--trust', $trust.Str, |@args, env => %( |%env, |%more ), cwd => $app) }
+sub receipts(--> List) { $home.add('runs').d ?? $home.add('runs').dir.grep(*.d).sort.grep({ .add('receipt.json').e }).map({ %( |parse-json(.add('receipt.json').slurp), dir => .basename ) }).List !! () }
+sub last-receipt() { receipts().sort({ .<dir> }).tail }
+# what the stand-in harness was started with, as it was typed
+sub said(--> Str) { $log.slurp.subst('\\n', "\n", :g).subst('\\', '', :g) }
+sub wait-for(&cond, Num $secs = 30e0 --> Bool) { my $end = now + $secs; while now < $end { return True if cond(); sleep 0.2 }; False }
+
+subtest 'on its own: a pinned agent and one a person brings, with no work system' => {
+    my ($rc, $out, $err) = c('--plain', '--network', 'open', 'helper', 'explain', 'the', 'build');
+    is $rc, 0, 'an agent pinned in the trust file runs' or diag "$out\n$err";
+    ($rc, $out, $err) = x321('--plain', '--package-dir', fixture('local/helper').Str, 'helper', 'say', 'what', 'this', 'is', env => %env, cwd => $app);
+    is $rc, 0, 'and so does a package a person brings, from a directory' or diag "$out\n$err";
+    my @r = receipts();
+    is @r.map({ .<agent><id> }).sort, ('example.test/helper', 'local/helper'), 'each leaves a receipt naming its agent';
+    is @r.map({ .<issuer><kind> }).unique, ('local',), 'issued here, by the person, to no work system' or diag @r.map({ .<issuer> }).raku;
+}
+
+subtest 'a resource: named for everyone, placed on this machine' => {
+    my ($rc, $out, $err) = c('--plain', 'resources', 'add', 'lib', $lib.Str, '--url', 'https://token@github.com/acme/lib.git');
+    ok $rc != 0 && $err.contains('credentials'), 'an address that carries credentials is refused' or diag "$out\n$err";
+    ($rc, $out, $err) = c('--plain', 'resources', 'add', 'lib', $lib.Str, '--url', 'https://github.com/acme/lib.git');
+    is $rc, 0, 'a repository is added by name and address' or diag "$out\n$err";
+    is c('--plain', 'resources', 'add', 'docs', $docs.Str)[0], 0, 'and a plain directory, which is not git';
+    ($rc, $out) = c('--brief', 'resources');
+    is $out.lines.map({ .split("\t")[0, 1].join(' ') }), ('docs dir', 'lib git'), 'both are listed with what they are' or diag $out;
+    ok same-address('git@github.com:acme/lib.git', 'https://github.com/acme/lib') && !same-address('https://github.com/acme/lib', 'https://github.com/acme/other'),
+        'an address is the same repository however it is spelt';
+    my ($found, $absent) = resolve-resources($home, [ %( name => 'theirs', url => 'git@github.com:acme/lib.git', access => 'read' ), %( name => 'nowhere' ) ]);
+    is ($found.map({ .<path> }), +$absent), (($lib.Str,), 1), 'a package from elsewhere finds it by address; one this machine lacks is a problem, never a guess' or diag $absent.raku;
+}
+
+subtest 'work in more than one repository, each to read or to change' => {
+    $lib.add('wip.txt').spurt("a person's unfinished work\n");
+    $log.spurt('');
+    my ($rc, $out, $err) = c('--plain', '--grant', 'repo.write', '--with', 'lib:write', '--with', 'docs', 'helper', 'rename', 'the', 'field', 'in', 'both',
+        more => %( FAKE_CLAUDE_WRITE => 'calc.go', FAKE_CLAUDE_WRITE_ADDED => '1:changed.txt' ));
+    is $rc, 0, 'a run is given a second repository to change and a directory to read' or diag "$out\n$err";
+    my $argv = said();
+    ok $argv.contains("--add-dir {$lib.Str}") && $argv.contains("--add-dir {$docs.Str}"), 'the harness is told both directories' or diag $argv.substr(0, 400);
+    ok $argv.contains('lib (a git repository)') && $argv.contains('you may change it') && $argv.contains('to read only'), 'and the agent is told which it may change' or diag $argv.substr(0, 900);
+    my %r = last-receipt();
+    my $run = $home.add('runs').add(%r<dir>);
+    my %wp = parse-json($run.add('work-package.json').slurp);
+    is %wp<resources>.map({ "{.<name>} {.<access>} {.<url> // ''}" }), ('lib write https://github.com/acme/lib.git', 'docs read '), 'the package names each resource and what it is for';
+    nok encode-json(%wp<resources>).contains($lib.Str) || encode-json(%wp<resources>).contains($docs.Str), 'and carries no path of this machine';
+    ok !validate-work-package(load('WorkPackage', %wp)), 'it is a valid work package';
+    my %ev = %r<evidence><resources>.map({ .<name> => $_ });
+    is %ev<lib><filesChanged>, ['changed.txt'], 'the receipt says what the run changed there, and not what was already unfinished' or diag %ev<lib>.raku;
+    ok %ev<lib><base> eq git($lib, 'rev-parse', 'HEAD') && %ev<lib><branch> eq 'main' && %ev<lib><path> eq $lib.Str, 'with the place, the branch and the commit it began at';
+    is (%ev<docs><kind>, %ev<docs><access>), ('dir', 'read'), 'a directory that is not git is recorded as what it is';
+    is %r<evidence><filesChanged>, ['calc.go'], 'beside what changed in its own workspace';
+    ok $lib.add('wip.txt').slurp.contains('unfinished'), 'the person\'s uncommitted work is as they left it';
+
+    ($rc, $out, $err) = c('--plain', '--with', 'lib', 'helper', 'read', 'the', 'other', 'repository', more => %( FAKE_CLAUDE_WRITE_ADDED => '1:sneaked.txt' ));
+    %r = last-receipt();
+    ok %r<evidence><resources>[0]<changedThoughReadOnly> && %r<evidence><errors>.first(*.contains("'lib' was given to read and was changed")),
+        'a change to a resource given to read is on the receipt' or diag %r<evidence>.raku;
+    $lib.add('sneaked.txt').unlink;
+
+    ($rc, $out, $err) = c('--plain', '--with', 'elsewhere', 'helper', 'look', 'around');
+    ok $rc != 0 && $err.contains("no resource here is called 'elsewhere'") && $err.contains('321 resources add elsewhere'), 'a resource this machine does not know is refused, with the way on' or diag "$out\n$err";
+    ($rc, $out, $err) = c('--plain', '--with', 'lib:write', 'helper', 'change', 'it');
+    ok $rc != 0 && $err.contains('granted nothing that changes files'), 'and one cannot be changed by a run granted nothing that changes files' or diag "$out\n$err";
+}
+
+subtest 'two runs change the same repositories at once, each in a worktree of its own' => {
+    $app.add('person.txt').spurt("mine, uncommitted\n");
+    .unlink for $app.add('calc.go'), $lib.add('changed.txt');
+    $home.add('runs').chmod(0o700);
+    my @ids;
+    for 'first change', 'second change' -> $req {
+        my ($rc, $out, $err) = c('--brief', 'start', '--isolate', '--with', 'lib:write', '--with', 'docs', '--grant', 'repo.write', 'helper', $req,
+            more => %( FAKE_CLAUDE_WRITE => 'calc.go', FAKE_CLAUDE_WRITE_ADDED => '1:changed.txt' ));
+        is $rc, 0, "started: $req" or diag "$out\n$err";
+        @ids.push($out.split("\t")[0].trim);
+    }
+    ok wait-for({ so @ids.map({ $home.add('runs').add($_).add('receipt.json').e }).all }), 'both finish'
+        or diag @ids.map({ my $d = $home.add('runs').add($_); $d.dir.map(*.basename).join(' ') ~ "\n" ~ ($d.add('events.ndjson').e ?? $d.add('events.ndjson').slurp !! '') ~ ($d.add('host.log').e ?? $d.add('host.log').slurp !! '') }).join("\n");
+    my @r = @ids.map({ parse-json($home.add('runs').add($_).add('receipt.json').slurp) });
+    is @r.map({ .<status> }).unique, ('completed',), 'both completed' or diag @r.map({ (.<status>, .<summary>, .<evidence><errors>) }).raku;
+    my @where = @r.map({ .<evidence><resources>.first({ .<name> eq 'lib' }) });
+    ok @where.map({ .<path> }).unique.elems == 2 && @where.map({ .<path> }).all.starts-with($home.add('worktrees').Str), 'each changed its own worktree of the second repository' or diag @where.raku;
+    is @where.map({ .<worktreeOf> }).unique, ($lib.Str,), 'which the receipt says is a worktree, and of what';
+    ok @where.map({ .<filesChanged> // [] }).all eqv ['changed.txt'], 'each receipt lists its own change there' or diag @where.raku;
+    ok @r.map({ .<evidence><resources>.first({ .<name> eq 'docs' })<path> }).all eq $docs.Str, 'what is only read is read where it is, with no worktree';
+    nok $lib.add('changed.txt').e || $app.add('calc.go').e, 'neither checkout was written to';
+    ok $app.add('person.txt').slurp.contains('mine') && $lib.add('wip.txt').slurp.contains('unfinished'), 'and the uncommitted work in both is untouched';
+}
+
+subtest 'what one run taught about a harness, another agent on it is told' => {
+    my %first = receipts().first({ .<agent><id> eq 'example.test/helper' && .<harness><adapter> eq 'claude_code' });
+    my ($rc, $out, $err) = c('--plain', 'outcome', %first<dir>, 'corrected', 'Ask', 'for', 'the', 'whole', 'file', 'before', 'editing;', 'partial', 'reads', 'lose', 'the', 'imports');
+    is $rc, 0, 'a person corrects a run' or diag "$out\n$err";
+    my %private = lessons($home).first({ ((.<provenance> // {})<fromOutcome> // '') eq %first<dir> });
+    is (lesson-kind(%private), %private<scope><agent>), ('private', 'helper'), 'which teaches that agent a private lesson';
+    ($rc, $out, $err) = c('--brief', 'lessons', 'generalise', %private<id>);
+    is $rc, 0, 'the person says it is about the harness' or diag "$out\n$err";
+    my %general = lessons($home).first({ ((.<provenance> // {})<generalisedFrom> // '') eq %private<id> });
+    is (lesson-kind(%general), %general<scope><harness>, %general<scope><agent> // ''), ('harness', 'claude_code', ''), 'and it becomes a lesson for that harness and no one agent';
+    is (%general<provenance><runId>, %general<state>), (%first<dir>, 'trial'), 'that says which run it came from, and is on trial';
+
+    # another agent altogether: a person's own package, under its own name
+    my $scribe = copy-fixture('local/helper');
+    $scribe.add('agent.json').spurt($scribe.add('agent.json').slurp.subst('"local/helper"', '"local/scribe"').subst('"name": "helper"', '"name": "scribe"'));
+    $scribe.add('DIGEST').spurt(compute($scribe)[0] ~ "\n");
+    $log.spurt('');
+    ($rc, $out, $err) = x321('--plain', '--package-dir', $scribe.Str, 'scribe', 'tidy', 'the', 'readme', env => %env, cwd => $app);
+    is $rc, 0, 'a different agent, one the person brought, runs on that harness' or diag "$out\n$err";
+    my $argv = said();
+    ok $argv.contains('Learnt by earlier runs on the harness') && $argv.contains('partial reads lose the imports'), 'and is told the lesson' or diag $argv.substr(0, 600);
+    my %r = last-receipt();
+    is (%r<agent><id>, %r<harness><lessons>), ('local/scribe', [%general<id>]), 'its receipt names the lesson it was told';
+    ok (runs-applied($home){%r<dir>}<lessons> // []).first(%general<id>), 'and the run is counted among those given it';
+    nok encode-json(parse-json($home.add('runs').add(%r<dir>).add('work-package.json').slurp)).contains('partial reads'), 'the package it was issued is not changed by it';
+    is %r<evidence><resources> // [], [], 'a lesson gives no resource';
+
+    is harness-lines($home, 'codex', '0.164.0', agent => 'local/scribe')[0], (), 'a run placed on another harness is not told it';
+    my %old = add-lesson($home, 'pass the flag twice', %( harness => 'claude_code', harnessVersion => '9.' ), %( from => 'person', by => 'tester' ));
+    is harness-lines($home, 'claude_code', 'fake-claude 0.0.1', agent => 'local/scribe')[1], (%general<id>,), 'nor a lesson that holds for other versions of it';
+    ok harness-lines($home, 'claude_code', '9.2.0 (Claude Code)', agent => 'x/y')[1].first(%old<id>), 'which a run on those versions is';
+    ok version-within('2.1.331 (Claude Code)', '2.1') && version-within('codex-cli 0.164.0', '0') && !version-within('2.10.0', '2.1') && !version-within('2.1', '2.1.3') && !version-within('unknown', '2'),
+        'a version is matched by whole parts: 2.1 is every 2.1.x and never 2.10';
+
+    my %secret = add-lesson($home, 'the token is in /home/acme/checkout/.env', %( agent => 'helper' ), %( from => 'person', by => 'tester', harness => 'claude_code' ));
+    ($rc, $out, $err) = c('--plain', 'lessons', 'generalise', %secret<id>);
+    ok $rc != 0 && $err.contains('stays private') && $err.contains('a path on a machine'), 'words that carry a path stay private' or diag "$out\n$err";
+    is c('--plain', 'lessons', 'revert', %general<id>, 'it', 'was', 'wrong')[0], 0, 'a harness lesson is retired like any other';
+    is harness-lines($home, 'claude_code', 'fake-claude 0.0.1', agent => 'local/scribe')[0], (), 'and then no run is told it';
+}
+
+subtest 'a harness lesson kept by the account at a registry reaches this machine, and one is taught there only by a person' => {
+    my $curl = (try { my $p = run 'curl', '--version', :out, :err; $p.out.slurp(:close); $p.err.slurp(:close); $p.exitcode == 0 }) // False;
+    unless $curl { skip 'curl is not installed', 1; return }
+    my $reg = temp-dir();
+    $reg.add('api').mkdir;
+    $reg.add('api/agents').spurt(encode-json({ schema => 'agent-registry.v1', visibility => 'public', agents => [] }));
+    # curl reads a file address without its query, so one document answers
+    $reg.add('api/lessons').spurt(encode-json({ schema => 'context-lessons.v1', harness => 'claude_code', lessons => [
+        { id => 'whole-file.acme.example', at => 'acme.example', scope => 'harness', harness => 'claude_code', harnessVersion => '0', state => 'trial', text => 'Read the whole file before the first edit' },
+        { id => 'newer.acme.example', at => 'acme.example', scope => 'harness', harness => 'claude_code', harnessVersion => '9', state => 'kept', text => 'Use the newer flag' },
+        { id => 'gone.acme.example', at => 'acme.example', scope => 'harness', harness => 'claude_code', state => 'reverted', text => 'Retired advice' },
+        { id => 'org.acme.example', at => 'acme.example', scope => 'organisation', state => 'kept', text => 'An organisation lesson, not a harness one' } ] }));
+    my %there = DO_321_REGISTRY => "file://$reg", DO_321_REGISTRY_TOKEN => 't0ken';
+    my ($rc, $out, $err) = c('--plain', 'registry', 'sync', more => %there);
+    is $rc, 0, 'a sync a person asks for copies them' or diag "$out\n$err";
+    is registry-harness-lessons($home, 'claude_code').map({ .<id> }), ('whole-file.acme.example', 'newer.acme.example', 'gone.acme.example'), 'the harness lessons, and not the organisation\'s';
+    my ($lines, $ids) = harness-lines($home, 'claude_code', 'fake-claude 0.0.1', agent => 'local/scribe');
+    is $ids, ('whole-file.acme.example',), 'a run on that version is told the one that holds for it, never a reverted one' or diag $ids.raku;
+    is harness-lines($home, 'codex', '0.1.0')[1], (), 'and a run on another harness none';
+    $log.spurt('');
+    is c('--plain', '--network', 'open', 'helper', 'explain', 'the', 'build')[0], 0, 'a run goes on that harness';
+    ok said().contains('Read the whole file before the first edit') && !said().contains('Use the newer flag'), 'and is told it';
+    is last-receipt()<harness><lessons>, ['whole-file.acme.example'], 'which its receipt names';
+    $reg.add('api/lessons').spurt(encode-json({ lessons => [] }));
+    is c('--plain', 'registry', 'sync', more => %( DO_321_REGISTRY => "file://$reg", DO_321_REGISTRY_TOKEN => '' ))[0] == 0 && registry-harness-lessons($home, 'claude_code').elems, 3, 'a sync with no token asks for none and keeps the copy there was';
+
+    # teaching: a stand-in for curl that keeps what it was asked to send
+    my $bin = temp-dir();
+    my $seen = temp-dir();
+    $bin.add('curl').spurt(qq:to/SH/);
+        #!/bin/sh
+        cat > $seen/config
+        f=\$(sed -n 's/^data-binary = "@\\(.*\\)"\$/\\1/p' $seen/config)
+        [ -n "\$f" ] && cp "\$f" $seen/body
+        cat $seen/answer
+        SH
+    $bin.add('curl').chmod(0o755);
+    $seen.add('answer').spurt(encode-json({ id => 'ask-once.acme.example', at => 'acme.example', state => 'trial', scope => 'harness', harness => 'claude_code' }) ~ "\n201");
+    my %send = PATH => "$bin:" ~ %*ENV<PATH>, DO_321_REGISTRY => 'https://registry.example', DO_321_REGISTRY_TOKEN => 't0ken';
+    my %mine = add-lesson($home, 'Ask for one change at a time', %( harness => 'claude_code', harnessVersion => '2.' ), %( from => 'person', by => 'tester' ),
+        when => 'editing several files', because => 'a long request loses the later edits');
+    ($rc, $out, $err) = c('--plain', 'lessons', 'teach', %mine<id>, more => %send);
+    is $rc, 0, 'a person teaches a harness lesson' or diag "$out\n$err";
+    my %body = parse-json($seen.add('body').slurp);
+    is %body.keys.sort, <because do harness harnessVersion when>, 'what is sent is the lesson and its harness: no context, agent, run or path' or diag %body.raku;
+    is (%body<harness>, %body<harnessVersion>, %body<do>), ('claude_code', '2', 'Ask for one change at a time'), 'as the registry spells them';
+    is lesson($home, %mine<id>)<taught><id>, 'ask-once.acme.example', 'and the lesson here says where it went';
+    my %leaky = add-lesson($home, 'Run it from /srv/acme/checkout/bin first', %( harness => 'claude_code' ), %( from => 'person', by => 'tester' ), when => 'always', because => 'it is faster');
+    $seen.add('body').unlink;
+    ($rc, $out, $err) = c('--plain', 'lessons', 'teach', %leaky<id>, more => %send);
+    ok $rc != 0 && $err.contains('is not sent') && !$seen.add('body').e, 'words that carry a path are not sent' or diag "$out\n$err";
+}
+
+done-testing;

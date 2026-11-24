@@ -21,7 +21,8 @@
     "agent": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "version": { "type": "string" }, "digest": { "type": "string" } } },
     "harness": {
       "type": "object", "additionalProperties": false, "required": ["adapter"],
-      "properties": { "adapter": { "type": "string" }, "version": { "type": "string" }, "procedure": { "type": "string" }, "sessionRefs": { "type": "array", "items": { "type": "string" } } }
+      "properties": { "adapter": { "type": "string" }, "version": { "type": "string" }, "procedure": { "type": "string" }, "sessionRefs": { "type": "array", "items": { "type": "string" } },
+        "lessons": { "type": "array", "items": { "type": "string" }, "description": "The ids of the lessons about this harness the run was told once it was placed on it. Advice in the prompt; no grant or limit comes from one." } }
     },
     "attempts": {
       "type": "array",
@@ -57,6 +58,15 @@
         "denials": { "type": "array", "items": { "type": "string" } },
         "toolCalls": { "type": "array", "items": { "type": "object", "required": ["tool", "op", "capability", "ok", "exitCode", "durationMs"], "properties": { "tool": { "type": "string" }, "op": { "type": "string" }, "capability": { "type": "string" }, "params": { "type": "object" }, "argv": { "type": "array", "items": { "type": "string" } }, "ok": { "type": "boolean" }, "exitCode": { "type": "integer" }, "durationMs": { "type": "integer" }, "unavailable": { "type": "string" }, "summary": { "type": "string" }, "outputSha256": { "type": "string" } } } },
         "proposal": { "$ref": "deployment-proposal.v1.json" },
+        "resources": {
+          "description": "Where the work was done besides the workspace: one record per resource the package named. path is where it was on the executing machine (a worktree made for the run says what it is a worktree of). For a git checkout, base is the commit it was at before the run and head the commit after; filesChanged lists paths that differ now and did not before. changedThoughReadOnly is set when a resource given to read was changed: reported, and prevented only where the harness enforces it.",
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": false, "required": ["name", "kind", "access"], "properties": {
+            "name": { "type": "string" }, "kind": { "enum": ["git", "dir", "file"] }, "access": { "enum": ["read", "write"] },
+            "path": { "type": "string" }, "url": { "type": "string" }, "worktreeOf": { "type": "string" }, "branch": { "type": "string" },
+            "base": { "type": "string" }, "head": { "type": "string" }, "filesChanged": { "type": "array", "items": { "type": "string" } },
+            "changedThoughReadOnly": { "type": "boolean" } } }
+        },
         "controllers": {
           "description": "What governed the work besides the runtime's own grants: one record per controller that applied (an IZ4, say). levels are separate facts: aware (its context reached the agent), checked (a change check ran), guarded (operations were intercepted before they ran), verified (the finished result was checked and passed). controls says how each harness control was operated. A gap is listed, never read as a pass.",
           "type": "array",

@@ -140,6 +140,11 @@ sub topics(--> List) is export {
       'Advice with a scope and a provenance, on trial from the next run its scope matches; show sets runs given it against those without. It grants nothing. share copies one into this repository; teach sends one to the registry for its context. add also takes --skill, --from, --when, --because.',
       '321 lessons add --agent helper run the tests with prove -j4'),
 
+    t('resources', 'Agents and trust', 'other repositories and files a run can be given',
+      ['321 resources [add NAME PATH [--url ADDRESS] | remove NAME]', '321 --with NAME[:write] <agent> <request...>'],
+      'What a run is given besides its own directory. A resource has a name; where it is on this machine stays in ~/.321/resources.json. A run gets those named with --with and no others, to read, or NAME:write to change. With 321 start --isolate each one it may change is a worktree of its own. The receipt records where the work was done. Not a sandbox.',
+      '321 --with api:write --with docs b1ll rename the field in both'),
+
     t('skills', LEARN, 'skills here, and those the registry offers',
       ['321 skills [available]', '321 skills install|show|rollback|remove PUBLISHER/NAME', '321 --skill PUBLISHER/NAME <agent> <request...>'],
       'Reusable know-how: words that tell an agent how to do a kind of work. install fetches one you may see, checks its text against the registry\'s digest, and keeps the version it replaces; rollback puts that back. A skill grants nothing: --skill puts its words in the run\'s work package, and the grants are the package\'s alone.',

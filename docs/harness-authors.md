@@ -44,6 +44,15 @@ result. The prompt never goes on the command line, where every process
 list would show it; if your harness only takes it as an argument, say
 `method prompt-on-stdin(--> Bool) { False }` and it is passed last.
 
+A run may be given more than its workspace: other repositories, a
+directory, a file (`321 --with NAME`). They are in `$spec.resources`,
+each a hash with `name`, `kind` (`git`, `dir`, `file`), `path` and
+`access` (`read` or `write`). The prompt already tells the agent where
+they are; if your harness confines file access to directories it is
+told, pass them in `args`, and give write access only to those whose
+`access` is `write`. Lessons earlier runs learnt about your harness
+reach the agent in the prompt too, with nothing for you to do.
+
 ## 3. Claim only what the harness does
 
 `enforcement` decides where your harness may be used. 321 never places a

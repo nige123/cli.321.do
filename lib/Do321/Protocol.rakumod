@@ -514,6 +514,16 @@ sub validate-work-package(%w --> Problems) is export {
     $c.one-of('workspace.ownership', %w<workspace><ownership>, 'caller', 'runtime');
     $c.add('workspace.path', 'is required for a git workspace') if %w<workspace><kind> eq 'git' && %w<workspace><path> eq '';
     $c.require('objective', %w<objective>);
+    my %named;
+    for @(%w<resources> // []).kv -> $i, %r {
+        my $n = (%r<name> // '').Str;
+        $c.add("resources[$i].name", 'must be letters, digits, dot, dash or underscore') unless $n ~~ / ^ <[a..z A..Z 0..9]> <[a..z A..Z 0..9 . _ -]> ** 0..63 $ /;
+        $c.add("resources[$i].name", 'is named twice') if %named{$n}++;
+        $c.one-of("resources[$i].access", %r<access>, 'read', 'write') if (%r<access> // '') ne '';
+        # an address says which repository, never how to get in
+        $c.add("resources[$i].url", 'must not carry credentials')
+            if (%r<url> // '') ~~ / ^ <[a..z A..Z]> <[a..z A..Z 0..9 + . -]>* '://' <-[/@]>* '@' / || (%r<url> // '') ~~ / <[?&]> [ 'token' | 'access_token' | 'key' | 'password' ] '=' /;
+    }
     for @(%w<context><attachments> // []).kv -> $i, %a { $c.require("context.attachments[$i].name", %a<name>) }
     if !%w<completion><conditions>.defined {
         $c.add('completion.conditions', 'is required (an empty list is allowed)');
