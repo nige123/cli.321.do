@@ -492,10 +492,17 @@ sub runs-applied(IO::Path $home --> Hash) is export { %( read-lines(applied-file
 
 #| What a person or a work system says came of a run.  A run that
 #| finished is not thereby accepted: until this is said, it is unknown.
-sub record-outcome(IO::Path $home, Str $run-id, Str $outcome, Str :$note = '', Str :$by = '' --> Hash) is export {
+#| `steers` and `answered` say what a person had to do while the run went
+#| on (a work system that saw it says so): the words they steered it with,
+#| and how many of its questions they answered.  Absent, it is unknown,
+#| which is not the same as none.
+sub record-outcome(IO::Path $home, Str $run-id, Str $outcome, Str :$note = '', Str :$by = '', :@steers, :$answered --> Hash) is export {
     private-dir($home);
     private-dir($home.add('learn'));
     my %o = schema => SCHEMA-OUTCOME, runId => $run-id, outcome => $outcome, note => $note, by => $by, at => stamp-now();
+    my @s = @steers.map(*.Str.trim.subst(/\s+/, ' ', :g)).grep(* ne '');
+    %o<steers> = @s.Array if @steers || $answered.defined;
+    %o<answered> = ($answered // 0).Int if @steers || $answered.defined;
     append-line(outcomes-file($home), %o);
     %o;
 }
@@ -531,6 +538,7 @@ class Work is export {
     has Str $.profile = '';         # the configuration the run ended on
     has Str $.model = '';           # the model's name there, '' when the harness used its own
     has Str $.effort = '';
+    has $.driven;                   # steers and answers a person gave it; undefined when nobody said
     method who(--> Str) { $!agent.contains('/') ?? $!agent.split('/').tail !! $!agent }
     method finished(--> Bool) { so $!status eq 'completed' | 'no_change' }
 }
@@ -566,9 +574,17 @@ sub read-work(IO::Path $home, Int :$days = 30, Int :$cap = 2000, DateTime :$now 
             lessons => @((%ap{$id} // {})<lessons> // []),
             task => (($doc<plan> // {})<task> // '').Str, profile => (($doc<plan> // {})<profile> // '').Str,
             model => (($doc<plan> // {})<modelName> // '').Str, effort => (($doc<plan> // {})<effort> // '').Str,
-            outcome => ((%oc{$id} // {})<outcome> // '').Str));
+            outcome => ((%oc{$id} // {})<outcome> // '').Str,
+            driven => driven-of(%oc{$id} // {})));
     }
     @out.List;
+}
+
+#| How many times a person stepped in on a run, as its outcome says:
+#| each steer and each answer.  Undefined when the outcome said nothing of it.
+sub driven-of(%o) is export {
+    return Any unless (%o<steers>:exists) || (%o<answered>:exists);
+    @(%o<steers> // []).elems + (%o<answered> // 0).Int;
 }
 
 my sub median(@n) {
@@ -600,6 +616,9 @@ sub sums(@work --> Hash) is export {
         unknown => @work.elems - @known.elems,
         median-usd => median(@priced.map(*.usd)),
         median-seconds => median(@work.map(*.seconds)),
+        driven => ([+] @work.grep({ .driven.defined }).map(*.driven)) // 0,
+        driven-runs => @work.grep({ .driven.defined }).elems,
+        stepped-in-runs => @work.grep({ .driven.defined && .driven > 0 }).elems,
     );
 }
 
@@ -642,18 +661,56 @@ sub propose-from-outcome(IO::Path $home, %o --> Hash) is export {
     my $run = (%o<runId> // '').Str;
     return %() if $run eq '';
     with lessons($home).first({ ((.<provenance> // {})<fromOutcome> // '') eq $run }) { return %( |$_, existing => True ) }
+    my ($scope, $prov) = outcome-basis($home, %o);
+    return %() unless $scope;
+    add-lesson($home, $text.substr(0, LESSON-TEXT-MAX), $scope.Hash, %( |$prov.Hash, from => 'outcome', fromOutcome => $run ));
+}
+
+#| Whose run it was and what it ran on, for a lesson learnt from what was
+#| said of it: the scope (the agent, and its work context) and the
+#| provenance.  Nil when the run names no agent.
+my sub outcome-basis(IO::Path $home, %o) {
+    my $run = (%o<runId> // '').Str;
     my $doc = read-doc($home.add('runs').add($run).add('receipt.json'));
     my %ap = (runs-applied($home){$run} // {}).Hash;
     my $agent = ($doc ?? (($doc<agent> // {})<id> // '') !! (%ap<agent> // '')).Str;
-    return %() if $agent eq '';
+    return Nil if $agent eq '';
     my %scope = agent => ($agent.contains('/') ?? $agent.split('/').tail !! $agent);
     %scope<context> = %ap<context>.Str if (%ap<context> // '') ne '';
     my %plan = $doc && $doc<plan> ~~ Associative ?? $doc<plan>.Hash !! {};
-    my %prov = from => 'outcome', fromOutcome => $run, runId => $run, outcome => %o<outcome>.Str, by => (%o<by> // '').Str,
+    my %prov = runId => $run, outcome => (%o<outcome> // '').Str, by => (%o<by> // '').Str,
         agent => $agent, agentVersion => ($doc ?? (($doc<agent> // {})<version> // '') !! '').Str,
         harness => ($doc ?? (($doc<harness> // {})<adapter> // '') !! (%ap<harness> // '')).Str,
         model => (%plan<modelName> // %plan<model> // '').Str;
-    add-lesson($home, $text.substr(0, LESSON-TEXT-MAX), %scope, %prov);
+    (%scope, %prov);
+}
+
+#| A steer is a person driving the work by hand: what they had to tell it
+#| while it ran is what it should have known.  Each steer an outcome
+#| carries becomes ONE lesson on trial for the run's agent (and its work
+#| context), on any harness or model, in the person's own words, whatever
+#| the verdict: an accepted run that needed steering still needed it.  The
+#| same words already on trial or kept for that agent are that lesson, not
+#| a second one (a person repeating themselves is the lesson most worth
+#| keeping, and the evidence decides it); a run never proposes a steer
+#| twice.  No model is asked.  Returns one entry per steer, in order.
+sub propose-from-steers(IO::Path $home, %o --> List) is export {
+    my @steers = @(%o<steers> // []).map(*.Str.trim.subst(/\s+/, ' ', :g)).grep(* ne '');
+    return () unless @steers;
+    my $run = (%o<runId> // '').Str;
+    return () if $run eq '';
+    my ($scope, $prov) = outcome-basis($home, %o);
+    return () unless $scope;
+    my sub same(Str $t) { $t.fc.subst(/<-[\w\s]>/, '', :g).trim }
+    my @out;
+    for @steers.kv -> $i, $text {
+        my $words = $text.substr(0, LESSON-TEXT-MAX);
+        my @mine = lessons($home).grep({ ((.<scope> // {})<agent> // '') eq ($scope<agent> // "") });
+        with @mine.first({ ((.<provenance> // {})<fromSteer> // '') eq "$run#$i" }) { @out.push(%( |$_, existing => True )); next }
+        with @mine.first({ (.<state> // '') eq 'trial' | 'kept' && same((.<text> // '').Str) eq same($words) }) { @out.push(%( |$_, existing => True )); next }
+        @out.push(add-lesson($home, $words, $scope.Hash, %( |$prov.Hash, from => 'steer', fromSteer => "$run#$i" )));
+    }
+    @out.List;
 }
 
 #| Did a person decide this lesson?  Any change of state not made by

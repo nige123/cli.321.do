@@ -1031,6 +1031,10 @@ my sub sum-rows(%s --> List) {
     @said.push("{%s<rejected>} rejected") if %s<rejected>;
     @said.push("{%s<unknown>} not yet said") if %s<unknown>;
     @r.append: row-lines('outcomes:', "{%s<finished>} of {%s<runs>} finished; " ~ (@said ?? @said.join(', ') !! 'none'));
+    # how often a person had to drive the work by hand, where a work
+    # system said; the fewer the better, and only counted where known
+    @r.append: row-lines('stepped in:', "{many-of(%s<driven>, 'time')} on {%s<stepped-in-runs>} of the {many-of(%s<driven-runs>, 'run')} a work system reported on"
+        ~ sprintf(', %.1f a run', %s<driven> / %s<driven-runs>)) if %s<driven-runs>;
     @r.List;
 }
 
@@ -1039,7 +1043,8 @@ my sub sums-doc(%s --> Hash) {
        spend => %( usd => %s<usd>, runsReporting => %s<priced-runs>, runsNotReporting => %s<unpriced-runs>, runsWithoutAModel => %s<modelless-runs> ),
        tokens => (%s<token-runs> ?? %( total => %s<tokens>, runsReporting => %s<token-runs> ) !! Nil),
        seconds => %s<seconds>.Int, retries => %s<retries>,
-       outcomes => %( accepted => %s<accepted>, corrected => %s<corrected>, rejected => %s<rejected>, unknown => %s<unknown> ) );
+       outcomes => %( accepted => %s<accepted>, corrected => %s<corrected>, rejected => %s<rejected>, unknown => %s<unknown> ),
+       steppedIn => (%s<driven-runs> ?? %( times => %s<driven>, runs => %s<stepped-in-runs>, runsReported => %s<driven-runs> ) !! Nil) );
 }
 
 #| `321 value`: what the work cost and, where it can be shown, what it
@@ -1164,6 +1169,27 @@ sub cmd-outcome(Env $env, Global $g, @args --> Int) {
     my $json = $g.json-out || so @a.first('--json');
     $g.brief = True if @a.first('--brief');
     @a = @a.grep({ $_ ne '--json' && $_ ne '--brief' });
+    # what a person had to do while it ran: --steer WORDS (each one value,
+    # as often as they steered) and --answered N (questions they answered)
+    my @steers;
+    my $answered;
+    my @pos;
+    my $i = 0;
+    while $i < @a {
+        given @a[$i] {
+            when '--steer' {
+                return usage-error($env, 'outcome', '--steer takes what the person told the run, as one value') if $i + 1 >= @a;
+                @steers.push(@a[$i + 1]); $i += 2;
+            }
+            when '--answered' {
+                return usage-error($env, 'outcome', '--answered takes how many questions a person answered, a whole number')
+                    unless $i + 1 < @a && @a[$i + 1] ~~ /^ \d+ $/;
+                $answered = @a[$i + 1].Int; $i += 2;
+            }
+            default { @pos.push($_); $i++ }
+        }
+    }
+    @a = @pos;
     return usage-error($env, 'outcome', 'say which run and what came of it: accepted, rejected or corrected') if @a < 2;
     my ($ref, $word) = @a[0], @a[1];
     return usage-error($env, 'outcome', "an outcome is accepted, rejected or corrected, not '$word'") unless is-in($word, OUTCOMES);
@@ -1176,12 +1202,15 @@ sub cmd-outcome(Env $env, Global $g, @args --> Int) {
     }
     my $by = (%*ENV<DO_321_OUTCOME_BY> // '').Str;
     $by = who-am-i() if $by eq '';
-    my %o = (try record-outcome($home, @m[0], $word, note => @a[2 .. *].join(' '), :$by)) // %();
+    my %o = (try record-outcome($home, @m[0], $word, note => @a[2 .. *].join(' '), :$by, :@steers, :$answered)) // %();
     if $! { $env.stderr.say("321: {$!.message}"); return EXIT-FAILED }
     # what was said may teach something, and is evidence for what was taught
     my %lesson = (try propose-from-outcome($home, %o)) // %();
+    # and so does every time a person had to steer it by hand
+    my @taught = (try propose-from-steers($home, %o)) // ();
     my @moved = (try review-lessons($home, read-work($home, :days(365)))) // ();
     if $json { $env.stdout.say(encode-json(%( |%o, |(%lesson ?? (lesson => %( id => %lesson<id>, state => %lesson<state>, new => !%lesson<existing> )) !! ()),
+        |(@taught ?? (steerLessons => [ @taught.map({ %( id => .<id>, state => .<state>, new => !.<existing>, text => .<text> ) }) ]) !! ()),
         |(@moved ?? (reviewed => [ @moved.map({ %( id => .<id>, from => .<was>, to => .<state>, why => (.<history>[*-1]<why> // '') ) }) ]) !! ()) ))); return 0 }
     if $g.brief { $env.stdout.say(brief-line(@m[0], $word, (%lesson ?? %lesson<id> !! ''))); return 0 }
     my $had = $home.add('runs').add(@m[0]).add('receipt.json').e;
@@ -1191,6 +1220,8 @@ sub cmd-outcome(Env $env, Global $g, @args --> Int) {
         |(%lesson ?? row-lines('lesson:', %lesson<existing>
             ?? "already learnt from this run as {%lesson<id>} ({%lesson<state>})"
             !! "{%lesson<id>}, on trial: {scope-text(%lesson)} is given what you said as advice from its next run, on any model or harness") !! ()),
+        |((%o<answered>:exists) ?? row-lines('stepped in:', "{many-of(@(%o<steers> // []).elems, 'steer')} and {many-of(%o<answered>, 'answer')} from a person while it ran") !! ()),
+        |@taught.map({ |row-lines('steer:', .<existing> ?? "already a lesson as {.<id>} ({.<state>}): {.<text>}" !! "{.<id>}, on trial, so it need not be said again: {.<text>}") }),
         |@moved.map({ |row-lines('evidence:', "{.<id>} {.<was>} -> {.<state>}: {.<history>[*-1]<why>}") }), '',
         (%lesson && !%lesson<existing> ?? next-text('see it, and stop it if it is wrong', "321 lessons show {%lesson<id>}") !! next-text('see what the work has come to', '321 value'))]);
     0;
@@ -1602,7 +1633,7 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                     my %p = %l<provenance> // {};
                     learn-say($env, [header('lessons show', %l<id>), '', |row-lines('lesson:', %l<text>), |row-lines('applies to:', scope-text(%l)),
                         |row-lines('state:', %l<state>), |row-lines('kept in:', %l<kept-in> eq 'project' ?? "this project ({%l<file>})" !! '~/.321/lessons, yours alone'),
-                        |row-lines('came from:', (%p<from> eq 'outcome' ?? "what was said of run {%p<runId>} ({%p<outcome>}" ~ ((%p<harness> // '') ne '' ?? ", run on {%p<harness>}" ~ ((%p<model> // '') ne '' ?? " {%p<model>}" !! '') !! '') ~ ')' !! %p<from> eq 'run' ?? "run {%p<runId>}" !! 'a person') ~ ", {%p<by> // '?'}, {%p<at> // '?'}" ~ ((%p<sharedBy> // '') ne '' ?? "; shared by {%p<sharedBy>}" !! '')),
+                        |row-lines('came from:', (%p<from> eq 'outcome' | 'steer' ?? (%p<from> eq 'steer' ?? 'what a person had to tell run ' !! 'what was said of run ') ~ "{%p<runId>} ({%p<outcome>}" ~ ((%p<harness> // '') ne '' ?? ", run on {%p<harness>}" ~ ((%p<model> // '') ne '' ?? " {%p<model>}" !! '') !! '') ~ ')' !! %p<from> eq 'run' ?? "run {%p<runId>}" !! 'a person') ~ ", {%p<by> // '?'}, {%p<at> // '?'}" ~ ((%p<sharedBy> // '') ne '' ?? "; shared by {%p<sharedBy>}" !! '')),
                         |((%l<taught> // {})<id> ?? row-lines('taught:', "to {%l<taught><at>}, as {%l<taught><id>}") !! ()),
                         |row-lines('evidence:', verdict(%c)),
                         |row-lines('the runs say:', judge-lesson(%l, read-work($home, :days(365)))<why>),

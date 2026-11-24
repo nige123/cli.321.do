@@ -139,4 +139,46 @@ subtest 'the command: a correction teaches, once, and says so' => {
     ok parse-json($out)<reviewed> ~~ Positional, 'and says what it moved';
 }
 
+subtest 'a steer a person had to give becomes a lesson, and the value report counts the stepping in' => {
+    receipt('D1', '321.do/b1ll', :harness<claude_code>, :model<sonnet>);
+    record-applied($home, 'D1', :agent<321.do/b1ll>, :context<print.shop>);
+    my %o = record-outcome($home, 'D1', 'accepted', by => '123.do:nige', steers => ['  check the workshop  printer path first ', 'keep labels at 62mm'], answered => 1);
+    is (%o<steers>.join('|'), %o<answered>), ('check the workshop printer path first|keep labels at 62mm', 1), 'what the person did is kept with the outcome';
+    my @l = propose-from-steers($home, %o);
+    is @l.elems, 2, 'each steer proposes a lesson, even on an accepted run';
+    is (@l[0]<text>, @l[0]<state>, @l[0]<scope><agent>, @l[0]<scope><context>, @l[0]<scope><harness> // ''),
+       ('check the workshop printer path first', 'trial', 'b1ll', 'print.shop', ''), 'in the words given, on trial, for that agent in its context, on any harness';
+    is (@l[0]<provenance><from>, @l[0]<provenance><fromSteer>, @l[0]<provenance><by>), ('steer', 'D1#0', '123.do:nige'), 'and says it came from a steer on that run';
+    my @again = propose-from-steers($home, %o);
+    ok @again.all.<existing> && @again[0]<id> eq @l[0]<id>, 'the same run never proposes its steers twice';
+    receipt('D2', '321.do/b1ll');
+    my @repeat = propose-from-steers($home, record-outcome($home, 'D2', 'accepted', steers => ['Check the workshop printer path first.'], answered => 0));
+    ok @repeat[0]<existing> && @repeat[0]<id> eq @l[0]<id>, 'the same words on another run are the same lesson, not a second';
+    receipt('D3', '321.do/b1ll');
+    record-outcome($home, 'D3', 'accepted', answered => 0);
+    nok propose-from-steers($home, record-outcome($home, 'D3', 'accepted')), 'an outcome with no steers teaches nothing from them';
+    my %d = run-outcomes($home);
+    is (driven-of(%d<D1>), driven-of(%d<D2>), driven-of(%d<D3>).defined), (3, 1, False), 'stepped in: steers plus answers; unknown when the outcome said nothing of it';
+    my @w = read-work($home, :days(365)).grep({ .id eq 'D1' | 'D2' | 'D3' });
+    my %s = sums(@w);
+    is (%s<driven>, %s<driven-runs>, %s<stepped-in-runs>), (4, 2, 2), 'the sums count where it was reported, and nothing where it was not';
+}
+
+subtest 'the command: --steer and --answered' => {
+    receipt('01KAAAAAAAAAAAAAAAAASTEER1', '321.do/b1ll', :harness<claude_code>);
+    my sub cli(*@a) { x321(|@a, env => %( DO_321_HOME => $home.Str, DO_321_CONTEXT => '', DO_321_OUTCOME_BY => '123.do:nige' ), cwd => $home) }
+    my ($code, $out, $err) = cli('outcome', 'STEER1', 'accepted', '--steer', 'run the label test before reporting', '--answered', '2', '--json');
+    is $code, 0, 'the outcome is recorded' or diag $err;
+    my $doc = parse-json($out);
+    is ($doc<steers>.join('|'), $doc<answered>), ('run the label test before reporting', 2), 'with what the person had to do';
+    is $doc<steerLessons>.elems, 1, 'and the steer is a lesson';
+    ok $doc<steerLessons>[0]<new>, 'a new one';
+    ($code, $out, $err) = cli('outcome', 'STEER1', 'accepted', '--steer', 'run the label test before reporting', '--answered', '2');
+    ok $out.contains('stepped in:') && $out.contains('already a lesson as'), 'and a person is told it in words' or diag $out ~ $err;
+    ($code, $out, $err) = cli('outcome', 'STEER1', 'accepted', '--answered', 'some');
+    isnt $code, 0, 'an answered that is not a number is a usage error';
+    ($code, $out, $err) = cli('value', '--days', '365');
+    ok $out.contains('stepped in:'), 'value says how often a person stepped in' or diag $out ~ $err;
+}
+
 done-testing;

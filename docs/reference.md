@@ -1247,6 +1247,16 @@ that says it for a person names itself and them in `DO_321_OUTCOME_BY`
 (123.do's worker uses `123.do:<handle>`); without it the outcome is the
 local user's.
 
+**Stepping in teaches too.** `--steer WORDS` (one value, given once for
+each steer) is what a person had to tell the run while it went on, and
+`--answered N` how many of its questions they answered. Each steer
+becomes one lesson on trial for the run's agent and its work context, on
+any harness or model and whatever the verdict, since an accepted run that
+needed steering still needed it; the same words already on trial or kept
+for that agent are that lesson, not a second one. `321 value` counts the
+times a person stepped in, over the runs whose outcome said; an outcome
+that said nothing of it is unknown, not none.
+
 **A correction teaches.** An outcome of `corrected` or `rejected` that
 carries words becomes one lesson on trial, in those words as written:
 no model is asked. It is scoped to the run's agent and its work context,
