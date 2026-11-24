@@ -146,8 +146,8 @@ sub topics(--> List) is export {
       '321 --with api:write --with docs b1ll rename the field in both'),
 
     t('skills', LEARN, 'skills here, and those the registry offers',
-      ['321 skills [available]', '321 skills install|show|rollback|remove PUBLISHER/NAME', '321 --skill PUBLISHER/NAME <agent> <request...>'],
-      'Reusable know-how: words that tell an agent how to do a kind of work. install fetches one you may see, checks its text against the registry\'s digest, and keeps the version it replaces; rollback puts that back. A skill grants nothing: --skill puts its words in the run\'s work package, and the grants are the package\'s alone.',
+      ['321 skills [available]', '321 skills install|show|rollback|remove PUBLISHER/NAME', '321 skills make NAME LESSON... | publish mine/NAME', '321 --skill PUBLISHER/NAME <agent> <request...>'],
+      'Know-how that tells an agent how to do a kind of work. install fetches one and checks its digest; make puts kept lessons together as mine/NAME; publish sends that to the registry, private to your account. A skill grants nothing: --skill puts its words in the run\'s package.',
       '321 skills install acme/review'),
     t('registry', LEARN, 'the agent registry and your copy of it',
       ['321 registry [sync]', '321 registry token   (the token from standard input)', '321 registry use URL'],

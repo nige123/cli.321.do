@@ -1324,6 +1324,23 @@ granted, not a grant. The registry never serves agent packages; an
 agent still runs from a package pinned in the trust file. 321 calls
 `curl` for this and says so when it is missing.
 
+**Lessons become a skill.** `321 skills make NAME LESSON...
+[--describe WORDS]` puts KEPT lessons together as the skill
+`mine/NAME`, a standard `SKILL.md` (YAML frontmatter with `name` and
+`description`, saying what it is for and when to use it, then one line
+a lesson with its when and because). A lesson on trial or reverted is
+refused, and so are words carrying a path, an address, a secret or a
+private context's name, since a skill is made to be shared. The same
+lessons again change nothing; different ones make the next version and
+keep the last. Each lesson records the skill it is in and is still told
+where its scope applies. `321 lessons` suggests the command once one
+agent has three kept lessons in no skill. `321 skills publish
+mine/NAME` sends it to the registry's `POST /api/skills` with the
+account token, after checking the words against their digest again;
+the registry keeps it PRIVATE to the token's account, as a new version
+only when it changed, and making it public is a person's act on the
+registry's site. What the registry answered is kept on the skill.
+
 **An agent's record.** `321 record AGENT` reads
 `/api/agents/NAME/record`: for each version, how many reports from how
 many accounts, how often the work was accepted, corrected or rejected,

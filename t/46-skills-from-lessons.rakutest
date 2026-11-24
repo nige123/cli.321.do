@@ -1,0 +1,121 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::Shape;
+use Do321::Protocol;
+use Do321::Digest;
+use Do321::Trust;
+use Do321::Wire;
+use Do321::Registry;
+use Do321::Learn;
+use Do321::Promote;
+
+# Lessons become a skill that can be shared.  Only KEPT lessons go in; a
+# lesson on trial or reverted is refused, and so are words that would show
+# somebody's work (a path, an address, a secret).  The skill is mine/NAME,
+# private to this machine, made again as a new version when its lessons
+# change, and each lesson says which skill it is in.  Publishing sends it to
+# the registry under the token's account, where it stays private: making it
+# public is a person's act on the site.
+
+my $curl = (try { my $p = run 'curl', '--version', :out, :err; $p.out.slurp(:close); $p.err.slurp(:close); $p.exitcode == 0 }) // False;
+unless $curl { plan :skip-all('curl is not installed'); exit 0 }
+
+my $home = temp-dir();
+$home.chmod(0o700);
+my $dir = fixture('example.test/helper');
+my $trust = temp-dir().add('trust.json');
+$trust.spurt(to-wire('TrustConfig', load('TrustConfig', { schema => SCHEMA-TRUST-CONFIG,
+    publishers => { 'example.test' => { packages => { helper => { path => $dir.Str, version => '1.2.0', digest => compute($dir)[0], trust => LEVEL-DEVELOPMENT } } } },
+    aliases => { helper => 'example.test/helper' }, policy => { adapters => { preferred => ['fake'] } } })));
+my $bin = temp-dir();
+my $seen = temp-dir();
+$bin.add('curl').spurt(qq:to/SH/);
+    #!/bin/sh
+    cat > $seen/config
+    f=\$(sed -n 's/^data-binary = "@\\(.*\\)"\$/\\1/p' $seen/config)
+    [ -n "\$f" ] && cp "\$f" $seen/body
+    echo x >> $seen/calls
+    cat $seen/answer
+    SH
+$bin.add('curl').chmod(0o755);
+sub answer(Int $code, %doc) { $seen.add('answer').spurt(encode-json(%doc) ~ "\n$code") }
+sub calls(--> Int) { $seen.add('calls').e ?? $seen.add('calls').lines.elems !! 0 }
+sub cli(*@args, Str :$token = '' --> List) {
+    x321('--trust', $trust.Str, |@args, env => %( DO_321_HOME => $home.Str, DO_321_REGISTRY => 'https://registry.example.test',
+        DO_321_REGISTRY_TOKEN => $token, DO_321_CONTEXT => '', PATH => "$bin:" ~ %*ENV<PATH> ), cwd => $home);
+}
+sub flat(Str $t --> Str) { $t.subst(/\s+/, ' ', :g) }
+sub add(*@words --> Str) { cli('--brief', 'lessons', 'add', |@words)[1].split("\t")[0] }
+
+my $a = add('--agent', 'helper', '--when', 'a label prints', 'check the workshop printer path first');
+my $b = add('--agent', 'helper', 'use the narrow template for 62mm labels');
+my $c = add('--agent', 'helper', 'say which printer was used');
+my $t = add('--agent', 'helper', 'still on trial');
+my $p = add('--agent', 'helper', 'read /home/sam/printers.conf for the queue');
+cli('lessons', 'keep', $_) for $a, $b, $c, $p;
+
+subtest 'only kept lessons that show nobody\'s work make a skill' => {
+    my ($rc, $out, $err) = cli('skills', 'make', 'label-printing', $a, $t);
+    ok $rc != 0 && $err.contains("lesson $t is on trial"), 'a lesson on trial is refused, saying how to keep it' or diag $err;
+    ($rc, $out, $err) = cli('skills', 'make', 'label-printing', $a, $p);
+    ok $rc != 0 && $err.contains('names a path'), 'words that show a path on someone\'s machine are refused' or diag $err;
+    ($rc, $out, $err) = cli('skills', 'make', 'Label Printing', $a);
+    ok $rc != 0 && $err.contains('is not a skill name'), 'a name the registry would refuse is refused here' or diag $err;
+    nok installed-skill($home, 'mine/label-printing').defined, 'and nothing was made by any of that';
+}
+
+subtest 'the lessons make mine/NAME, a skill a run can be given' => {
+    my ($rc, $out, $err) = cli('skills', 'make', 'label-printing', $a, $b);
+    ok $rc == 0 && flat($out).contains('mine/label-printing version 1, private to this machine'), 'made, private to this machine' or diag "$out$err";
+    ok flat($out).contains('321 skills publish mine/label-printing'), 'and the next step is sharing it';
+    my $text = skill-text($home, 'mine/label-printing');
+    ok $text.contains('- When a label prints: check the workshop printer path first') && $text.contains('use the narrow template'), 'its words are the lessons\' own' or diag $text;
+    ok $text.contains('it grants nothing'), 'and it says it grants nothing';
+    my @fm = $text.lines[^4];
+    is (@fm[0], @fm[1], @fm[3]), ('---', 'name: label-printing', '---'), 'it is a standard SKILL.md: frontmatter naming it';
+    ok @fm[2] ~~ /^ 'description: "How HELPER works, from 2 lessons kept by its runs. Use when giving HELPER work of this kind."' $/, 'and saying what it is and when to use it' or diag @fm[2];
+    my $q = cli('--brief', 'skills', 'make', 'quoted', $a, '--describe', 'Print "labels" \\ well.');
+    ok skill-text($home, 'mine/quoted').lines[2] eq 'description: "Print \\"labels\\" \\\\ well."', 'a description is quoted as YAML wants' or diag skill-text($home, 'mine/quoted').lines[2];
+    is (lesson($home, $b)<skills> // []).List, ('mine/label-printing',), 'each lesson says which skill it is in';
+    is lesson($home, $a)<state>, 'kept', 'and is still kept, still told where it applies';
+    ($rc, $out) = cli('--brief', 'skills', 'make', 'label-printing', $a, $b);
+    ok $out.contains("\tunchanged\t") && installed-skill($home, 'mine/label-printing')<version> eq '1', 'the same lessons again change nothing' or diag $out;
+    ($rc, $out) = cli('--brief', 'skills', 'make', 'label-printing', $a, $b, $c);
+    is installed-skill($home, 'mine/label-printing')<version>, '2', 'another lesson makes the next version';
+    ok skill-dir($home, 'mine/label-printing').add('versions').e, 'and the first is kept';
+}
+
+subtest 'enough kept lessons are suggested as a skill' => {
+    my $home2 = $home;
+    my $d = add('--agent', 'scribe', 'one'); my $e = add('--agent', 'scribe', 'two'); my $f = add('--agent', 'scribe', 'three');
+    cli('lessons', 'keep', $_) for $d, $e;
+    nok flat(cli('lessons')[1]).contains('make them a skill'), 'two kept lessons are not yet a skill';
+    cli('lessons', 'keep', $f);
+    my $o = cli('lessons')[1]; ok flat($o).contains("321 skills make scribe-ways " ~ ($d, $e, $f).sort.join(" ")), 'three are, and the command is given whole' or diag $o;
+}
+
+subtest 'publishing sends it to the registry, which keeps it private' => {
+    my ($rc, $out, $err) = cli('skills', 'publish', 'mine/label-printing');
+    ok $rc != 0 && $err.contains('needs your registry token') && calls() == 0, 'without a token nothing is sent' or diag $err;
+    answer(201, %( schema => 'skill-description.v1', id => 'acme/label-printing', version => 1, sharing => 'private', created => True, changed => True,
+        url => 'https://registry.example.test/skills/acme/label-printing' ));
+    ($rc, $out, $err) = cli('skills', 'publish', 'mine/label-printing', :token<t0ken>);
+    ok $rc == 0 && flat($out).contains('acme/label-printing version 1, new') && flat($out).contains('your account only'), 'published, and it says who sees it' or diag "$out$err";
+    my %sent = parse-json($seen.add('body').slurp);
+    is (%sent<name>, %sent<instructions>), ('label-printing', skill-text($home, 'mine/label-printing')), 'the name and the words as they are here';
+    nok %sent<visibility>:exists, 'and nothing asks for it to be public';
+    my $cfg = $seen.add('config').slurp;
+    ok $cfg.contains('url = "https://registry.example.test/api/skills"') && $cfg.contains('Authorization: Bearer t0ken'), 'posted to /api/skills with the token';
+    is installed-skill($home, 'mine/label-printing')<published><id>, 'acme/label-printing', 'what the registry answered is kept on the skill';
+    answer(422, { error => 'invalid_skill', message => 'The skill was not stored. Fix the named fields.' });
+    ($rc, $out, $err) = cli('skills', 'publish', 'mine/label-printing', :token<t0ken>);
+    ok $rc != 0 && $err.contains('not stored'), 'a refusal is said in the registry\'s words' or diag $err;
+    skill-dir($home, 'mine/label-printing').add('SKILL.md').spurt("altered\n");
+    my $n = calls();
+    ($rc, $out, $err) = cli('skills', 'publish', 'mine/label-printing', :token<t0ken>);
+    ok $rc != 0 && $err.contains('no longer matches its digest') && calls() == $n, 'words changed by hand are not sent' or diag $err;
+}
+
+done-testing;

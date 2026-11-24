@@ -46,6 +46,7 @@ use Do321::Curate;
 use Do321::Choose;
 use Do321::Versions;
 use Do321::Resources;
+use Do321::Promote;
 
 #| Stamped at build time in the release workflow.
 constant VERSION is export = '0.7.1';
@@ -1466,6 +1467,11 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                 }
             }
             @l.push: '' if @ls || @there;
+            # enough kept lessons for one agent to make a skill worth sharing
+            with skill-ready($home, :$project).sort(*.key).first -> $ready {
+                @l.push: next-text("{$ready.value.elems} lessons {$ready.key.uc} learnt are kept: make them a skill to share",
+                    "321 skills make {$ready.key}-ways {$ready.value.join(' ')}");
+            }
             @l.push: @ls ?? next-text('see whether one helps: the runs with it against the runs without', "321 lessons show {@ls[0]<id>}")
                          !! next-text('add one; it is tried from the next run it applies to', '321 lessons add --agent <agent> <what was learnt...>');
             learn-say($env, @l);
@@ -1938,7 +1944,39 @@ sub cmd-skills(Env $env, Global $g, @args --> Int) {
                 }
             }
         }
-        default { return usage-error($env, 'skills', "it is available, install, show, rollback or remove, not '$sub'") }
+        when 'make' {
+            # lessons the runs kept, put together under a name: a skill of this machine's
+            my $describe = '';
+            with @a.first('--describe', :k) -> $i { $describe = (@a[$i + 1] // '').Str; @a.splice($i, 2) }
+            return usage-error($env, 'skills', 'say its name and the kept lessons that make it: 321 skills make NAME LESSON...') if @a < 2;
+            my ($ws) = resolve-workspace($g.workspace);
+            my ($m, $what) = try skill-from-lessons($home, @a[0], @a[1 .. *], description => $describe, project => project-root($ws));
+            return fail-line($!.message, 'see the lessons and their states', '321 lessons') if $!;
+            my %m = $m.Hash;
+            if $json { $w.say(encode-json(%( |%m, result => $what ))); return 0 }
+            if $g.brief { $w.say(brief-line(%m<id>, %m<version>, $what, %m<digest>)); return 0 }
+            my @from = @((%m<provenance> // {})<lessons> // []);
+            learn-say($env, [header('skills make', "{%m<id>} $what"), '',
+                |row-lines('skill:', "{%m<id>} version {%m<version>}, private to this machine"),
+                |row-lines('made of:', "{many-of(@from.elems, 'kept lesson')}: {@from.join(', ')}; they are still told where they apply"),
+                |row-lines('what:', %m<description>),
+                |row-lines('use it:', "321 --skill {%m<id>} <agent> <request...>; it adds no permission"), '',
+                next-text('share it: the registry keeps it private to your account', "321 skills publish {%m<id>}")]);
+            return 0;
+        }
+        when 'publish' {
+            return usage-error($env, 'skills', "say which skill: 321 skills publish {LOCAL-PUBLISHER}/NAME") unless @a;
+            my $p = try publish-skill($home, @a[0]);
+            return fail-line($!.message, 'see the skills here', '321 skills') if $!;
+            if $json { $w.say(encode-json($p)); return 0 }
+            if $g.brief { $w.say(brief-line($p<id>, $p<version>, $p<sharing>, ($p<created> ?? 'created' !! $p<changed> ?? 'updated' !! 'unchanged'))); return 0 }
+            learn-say($env, [header('skills publish', "{@a[0]} -> {$p<id>}"), '',
+                |row-lines('at the registry:', "{$p<id>} version {$p<version>}, " ~ ($p<created> ?? 'new' !! $p<changed> ?? 'a new version' !! 'unchanged: it already says this')),
+                |row-lines('who sees it:', $p<sharing> eq 'public' ?? 'everyone: it is public' !! 'your account only; a person makes it public on the registry\'s site'), '',
+                next-text('decide who may use it', $p<url> ne '' ?? $p<url> !! '321 registry')]);
+            return 0;
+        }
+        default { return usage-error($env, 'skills', "it is available, install, show, rollback, remove, make or publish, not '$sub'") }
     }
 }
 
