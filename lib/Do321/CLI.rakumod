@@ -1976,7 +1976,20 @@ sub cmd-skills(Env $env, Global $g, @args --> Int) {
                 next-text('decide who may use it', $p<url> ne '' ?? $p<url> !! '321 registry')]);
             return 0;
         }
-        default { return usage-error($env, 'skills', "it is available, install, show, rollback, remove, make or publish, not '$sub'") }
+        when 'export' {
+            # the open Agent Skills folder, for any harness that reads it
+            return usage-error($env, 'skills', 'say which skill and where: 321 skills export PUBLISHER/NAME FOLDER') if @a < 2;
+            my $f = try export-skill($home, @a[0], @a[1].IO);
+            return fail-line($!.message, 'see the skills here', '321 skills') if $!;
+            if $json { $w.say(encode-json(%( id => @a[0], file => $f.Str ))); return 0 }
+            if $g.brief { $w.say(brief-line(@a[0], $f.Str)); return 0 }
+            learn-say($env, [header('skills export', @a[0]), '',
+                |row-lines('written:', $f.Str.subst(($*HOME // '').Str, '~')),
+                |row-lines('format:', 'Agent Skills (agentskills.io): a folder with SKILL.md, frontmatter naming it and saying when to use it'), '',
+                next-text('a harness that reads skills loads it from its skills folder, e.g. Claude Code', '321 skills export ' ~ @a[0] ~ ' ~/.claude/skills')]);
+            return 0;
+        }
+        default { return usage-error($env, 'skills', "it is available, install, show, rollback, remove, make, publish or export, not '$sub'") }
     }
 }
 

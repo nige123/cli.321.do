@@ -118,4 +118,49 @@ subtest 'publishing sends it to the registry, which keeps it private' => {
     ok $rc != 0 && $err.contains('no longer matches its digest') && calls() == $n, 'words changed by hand are not sent' or diag $err;
 }
 
+subtest 'names follow the open format: single hyphens, never at either end' => {
+    ok skill-name-ok($_), "$_ is a name" for <label-printing ab a1-b2>;
+    nok skill-name-ok($_), "$_ is not" for (|<-label label- label--printing a Label x_y>, 'a' x 49);
+}
+
+subtest 'a skill is written out as an open-format folder any harness can load' => {
+    my ($mrc, $mout) = cli('--brief', 'skills', 'make', 'label-printing', $a, $b, $c);
+    ok $mout.contains("\tupdated\t") || $mout.contains("\tinstalled\t"), 'a copy altered by hand is made again, not called unchanged' or diag $mout;
+    is skill-text($home, 'mine/label-printing'), skill-text-from('label-printing', installed-skill($home, 'mine/label-printing')<description>, ($a, $b, $c).map({ lesson($home, $_) })),
+        'and its words are the lessons\' again';
+    my $to = temp-dir();
+    sub yaml-ok(IO::Path $f --> Str) {
+        my $p = run 'python3', '-I', '-c', 'import sys,yaml; t=open(sys.argv[1]).read(); d=yaml.safe_load(t.split("---\n")[1]); print(d["name"] + "|" + d["description"])', $f.Str, :out, :err;
+        my $o = $p.out.slurp(:close).trim; $p.err.slurp(:close); $o;
+    }
+    my ($rc, $out, $err) = cli('skills', 'export', 'mine/label-printing', $to.Str);
+    my $f = $to.add('label-printing').add('SKILL.md');
+    ok $rc == 0 && $f.e, 'written to FOLDER/NAME/SKILL.md, the folder named as the skill' or diag "$out$err";
+    is $f.slurp, skill-text($home, 'mine/label-printing'), 'a skill made here goes as it is: it already has its frontmatter';
+    is frontmatter-name($f.slurp), 'label-printing', 'and its frontmatter names the folder';
+    is yaml-ok($f), 'label-printing|' ~ installed-skill($home, 'mine/label-printing')<description>, 'a YAML parser reads the same name and description';
+    ok cli('skills', 'export', 'mine/label-printing', $to.Str)[0] == 0, 'writing it again over itself is fine';
+
+    # a skill from the registry with no frontmatter of its own
+    my $plain = "Read the diff twice.\n";
+    install-skill-doc($home, %( id => 'acme/review', name => 'review', publisher => 'acme', version => 1, digest => text-digest($plain),
+        instructions => $plain, description => 'Read a change before it lands. Use when reviewing a "diff".', harnesses => [], requires => [] ), source => 'registry');
+    ($rc, $out, $err) = cli('skills', 'export', 'acme/review', $to.Str);
+    my $r = $to.add('review').add('SKILL.md').slurp;
+    ok $rc == 0 && $r.starts-with("---\nname: review\ndescription: \"Read a change before it lands. Use when reviewing a \\\"diff\\\".\"\n---\n"), 'one without frontmatter is given it from its name and description' or diag "$r$err";
+    ok $r.ends-with($plain), 'and its words follow unchanged';
+    is yaml-ok($to.add('review').add('SKILL.md')), 'review|Read a change before it lands. Use when reviewing a "diff".', 'quotes in a description survive a YAML parser';
+
+    $to.add('review').add('.321-skill').unlink;
+    $to.add('review').add('SKILL.md').spurt("---\nname: review\ndescription: someone else's\n---\nother\n");
+    ($rc, $out, $err) = cli('skills', 'export', 'acme/review', $to.Str);
+    ok $rc != 0 && $err.contains('is another skill'), 'another skill of that name in the folder is not overwritten' or diag $err;
+
+    my $odd = "---\nname: something-else\ndescription: x\n---\nbody\n";
+    install-skill-doc($home, %( id => 'acme/odd', name => 'odd', publisher => 'acme', version => 1, digest => text-digest($odd),
+        instructions => $odd, description => 'x', harnesses => [], requires => [] ), source => 'registry');
+    ($rc, $out, $err) = cli('skills', 'export', 'acme/odd', $to.Str);
+    ok $rc != 0 && $err.contains("names it 'something-else'"), 'frontmatter naming it otherwise is refused: a harness matches name to folder' or diag $err;
+}
+
 done-testing;

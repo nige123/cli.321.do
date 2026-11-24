@@ -1341,6 +1341,17 @@ the registry keeps it PRIVATE to the token's account, as a new version
 only when it changed, and making it public is a person's act on the
 registry's site. What the registry answered is kept on the skill.
 
+**Skills in the open format, for any harness.** Skill names follow the
+open Agent Skills rule (agentskills.io/specification: lowercase letters,
+digits and single hyphens, not at either end). `321 skills export
+PUBLISHER/NAME FOLDER` writes `FOLDER/NAME/SKILL.md`, the layout other
+harnesses load (for example `~/.claude/skills` for Claude Code): a skill
+made here goes as it is, and one from the registry with no frontmatter
+is given `name` and `description` from its own record. Frontmatter that
+names the skill otherwise is refused, since a harness matches the name
+to the folder, and another skill of that name already in the folder is
+not overwritten.
+
 **An agent's record.** `321 record AGENT` reads
 `/api/agents/NAME/record`: for each version, how many reports from how
 many accounts, how often the work was accepted, corrected or rejected,

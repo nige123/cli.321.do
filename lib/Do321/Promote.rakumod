@@ -28,8 +28,61 @@ constant LOCAL-PUBLISHER is export = 'mine';
 #| The fewest kept lessons for one agent before a skill is suggested.
 constant SKILL-SUGGEST-AT is export = 3;
 
-#| The registry's rule for a skill's name.
-sub skill-name-ok(Str $n --> Bool) is export { so $n ~~ / ^ <[a..z 0..9]> <[a..z 0..9 -]> ** 1..47 $ / }
+#| A skill's name: the open Agent Skills rule (agentskills.io/specification:
+#| lowercase letters, digits and hyphens, never starting or ending with a
+#| hyphen, never two together) within the registry's 2 to 48 characters.
+sub skill-name-ok(Str $n --> Bool) is export {
+    so $n ~~ / ^ <[a..z 0..9]> <[a..z 0..9 -]> ** 0..46 <[a..z 0..9]> $ / && !$n.contains('--')
+}
+
+#| The standard frontmatter for a skill, from its name and description.
+sub skill-frontmatter(Str $name, Str $description --> Str) is export {
+    my $d = $description.subst(/\s+/, ' ', :g).trim;
+    ('---', "name: $name", 'description: "' ~ $d.subst('\\', '\\\\', :g).subst('"', '\\"', :g) ~ '"', '---').join("\n") ~ "\n";
+}
+
+#| The name a SKILL.md's frontmatter gives, or '' when it has none.
+sub frontmatter-name(Str $text --> Str) is export {
+    return '' unless $text.starts-with("---\n");
+    my $end = $text.index("\n---", 4) // return '';
+    for $text.substr(4, $end - 4).lines -> $l {
+        return ~$0 if $l ~~ / ^ 'name:' \s* '"'? (<-["\s]>+) '"'? \s* $ /;
+    }
+    '';
+}
+
+#| Write a skill out as an Agent Skills folder, DIR/NAME/SKILL.md, for any
+#| harness that reads the open format.  A skill with no frontmatter (as
+#| ones made at the registry before this may be) is given it from its
+#| name and description; one whose frontmatter names it otherwise is
+#| refused, since a harness matches the name to the folder.  An existing
+#| SKILL.md is replaced only when it is the same skill.
+sub export-skill(IO::Path $home, Str $id, IO::Path $to --> IO::Path) is export {
+    my $m = installed-skill($home, $id);
+    fail-with("$id is not a skill on this machine: 321 skills lists them") without $m;
+    my $name = ($m<name> // $id.split('/')[1]).Str;
+    fail-with("'$name' does not meet the open skill format's name rule (lowercase letters, digits and single hyphens, not at either end), so other harnesses would not load it") unless skill-name-ok($name);
+    my $text = skill-text($home, $id);
+    fail-with("the copy of $id here no longer matches its digest: install or make it again") unless text-digest($text) eq ($m<digest> // '');
+    my $desc = ($m<description> // '').Str.subst(/\s+/, ' ', :g).trim;
+    my $have = frontmatter-name($text);
+    if $have eq '' {
+        fail-with("$id has no description, which the open format requires") if $desc eq '';
+        fail-with("{$id}'s description is longer than the 1024 characters the open format allows") if $desc.chars > 1024;
+        $text = skill-frontmatter($name, $desc) ~ "\n" ~ $text;
+    }
+    elsif $have ne $name { fail-with("{$id}'s own frontmatter names it '$have', not '$name'") }
+    fail-with("there is no folder at $to") unless $to.d;
+    my $dir = $to.add($name);
+    my $file = $dir.add('SKILL.md');
+    if $file.e && $file.slurp ne $text {
+        fail-with("$file is another skill: a harness would see two of that name") unless frontmatter-name($file.slurp) eq $name && $dir.add('.321-skill').e && $dir.add('.321-skill').slurp.trim eq $id;
+    }
+    $dir.mkdir;
+    $file.spurt($text);
+    $dir.add('.321-skill').spurt("$id\n");
+    $file;
+}
 
 #| The text of a skill made of lessons, in the standard skill format: a
 #| SKILL.md whose YAML frontmatter carries `name` and `description` (what
@@ -39,7 +92,7 @@ sub skill-name-ok(Str $n --> Bool) is export { so $n ~~ / ^ <[a..z 0..9]> <[a..z
 #| make the same text.
 sub skill-text-from(Str $name, Str $description, @lessons --> Str) is export {
     my $desc = $description.subst(/\s+/, ' ', :g).trim;
-    my @l = '---', "name: $name", 'description: "' ~ $desc.subst('\\', '\\\\', :g).subst('"', '\\"', :g) ~ '"', '---', '',
+    my @l = skill-frontmatter($name, $desc).chomp, '',
         "# $name", '', $desc, '',
         'What was learnt doing this work, kept because the runs bore it out. It is advice on how to work: it grants nothing, and never overrides the task or its limits.', '';
     for @lessons -> %l {
@@ -54,7 +107,7 @@ sub skill-text-from(Str $name, Str $description, @lessons --> Str) is export {
 #| Make (or make the next version of) skill `mine/NAME` from these lessons.
 #| Returns (meta, 'installed' | 'updated' | 'unchanged').
 sub skill-from-lessons(IO::Path $home, Str $name, @ids, Str :$description = '', Str :$project = '' --> List) is export {
-    fail-with("'$name' is not a skill name: 2 to 48 lowercase letters, numbers and hyphens, starting with a letter or number") unless skill-name-ok($name);
+    fail-with("'$name' is not a skill name: 2 to 48 lowercase letters, numbers and single hyphens, not starting or ending with one") unless skill-name-ok($name);
     fail-with('name the lessons that make it: 321 lessons lists them') unless @ids;
     my @ls;
     for @ids.unique -> $id {
@@ -77,7 +130,9 @@ sub skill-from-lessons(IO::Path $home, Str $name, @ids, Str :$description = '', 
     my $id = LOCAL-PUBLISHER ~ "/$name";
     my $was = installed-skill($home, $id);
     my $digest = text-digest($text);
-    return ($was.Hash, 'unchanged') if $was ~~ Associative && ($was<digest> // '') eq $digest && ($was<description> // '') eq $desc;
+    # unchanged only when the words on disk are still these: a copy altered by hand is made again
+    return ($was.Hash, 'unchanged') if $was ~~ Associative && ($was<digest> // '') eq $digest && ($was<description> // '') eq $desc
+        && (try skill-text($home, $id)) eq $text;
     my $version = ($was ~~ Associative ?? (($was<version> // '0').Int + 1) !! 1).Str;
     my @harnesses = @ls.map({ ((.<scope> // {})<harness> // '').Str }).grep(* ne '').unique;
     my ($meta, $what) = install-skill-doc($home, %( id => $id, name => $name, publisher => LOCAL-PUBLISHER, version => $version,
