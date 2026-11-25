@@ -50,7 +50,7 @@ use Do321::Promote;
 use Do321::SkillFormat;
 
 #| Stamped at build time in the release workflow.
-constant VERSION is export = '0.7.1';
+constant VERSION is export = '0.8.0';
 
 #| Everything a command touches, so tests can substitute all of it.
 class Env is export {
