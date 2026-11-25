@@ -185,20 +185,24 @@ subtest 'a harness lesson kept by the account at a registry reaches this machine
         { id => 'whole-file.acme.example', at => 'acme.example', scope => 'harness', harness => 'claude_code', harnessVersion => '0', state => 'trial', text => 'Read the whole file before the first edit' },
         { id => 'newer.acme.example', at => 'acme.example', scope => 'harness', harness => 'claude_code', harnessVersion => '9', state => 'kept', text => 'Use the newer flag' },
         { id => 'gone.acme.example', at => 'acme.example', scope => 'harness', harness => 'claude_code', state => 'reverted', text => 'Retired advice' },
+        { id => 'plan-first.s7.321.do', name => 'plan-first', at => '321.do', scope => 'harness', harness => 'claude_code', state => 'kept', shared => True, origin => 'shared', text => 'Ask for a plan before a large edit' },
         { id => 'org.acme.example', at => 'acme.example', scope => 'organisation', state => 'kept', text => 'An organisation lesson, not a harness one' } ] }));
     my %there = DO_321_REGISTRY => "file://$reg", DO_321_REGISTRY_TOKEN => 't0ken';
     my ($rc, $out, $err) = c('--plain', 'registry', 'sync', more => %there);
     is $rc, 0, 'a sync a person asks for copies them' or diag "$out\n$err";
-    is registry-harness-lessons($home, 'claude_code').map({ .<id> }), ('whole-file.acme.example', 'newer.acme.example', 'gone.acme.example'), 'the harness lessons, and not the organisation\'s';
+    is registry-harness-lessons($home, 'claude_code').map({ .<id> }), ('whole-file.acme.example', 'newer.acme.example', 'gone.acme.example', 'plan-first.s7.321.do'), 'the harness lessons, and not the organisation\'s';
     my ($lines, $ids) = harness-lines($home, 'claude_code', 'fake-claude 0.0.1', agent => 'local/scribe');
-    is $ids, ('whole-file.acme.example',), 'a run on that version is told the one that holds for it, never a reverted one' or diag $ids.raku;
+    is $ids, ('whole-file.acme.example', 'plan-first.s7.321.do'), 'a run on that version is told those that hold for it, never a reverted one, the account\'s own first' or diag $ids.raku;
+    is $lines[1], 'From another organisation, passed on by the registry: Ask for a plan before a large edit', 'and one another account shared is said to be from outside';
+    ok c('--plain', 'lessons')[1].contains('shared by another account'), 'which the list of lessons says too';
     is harness-lines($home, 'codex', '0.1.0')[1], (), 'and a run on another harness none';
     $log.spurt('');
     is c('--plain', '--network', 'open', 'helper', 'explain', 'the', 'build')[0], 0, 'a run goes on that harness';
     ok said().contains('Read the whole file before the first edit') && !said().contains('Use the newer flag'), 'and is told it';
-    is last-receipt()<harness><lessons>, ['whole-file.acme.example'], 'which its receipt names';
+    ok said().contains('From another organisation, passed on by the registry: Ask for a plan before a large edit'), 'and the shared one, as another organisation\'s';
+    is last-receipt()<harness><lessons>, ['whole-file.acme.example', 'plan-first.s7.321.do'], 'which its receipt names';
     $reg.add('api/lessons').spurt(encode-json({ lessons => [] }));
-    is c('--plain', 'registry', 'sync', more => %( DO_321_REGISTRY => "file://$reg", DO_321_REGISTRY_TOKEN => '' ))[0] == 0 && registry-harness-lessons($home, 'claude_code').elems, 3, 'a sync with no token asks for none and keeps the copy there was';
+    is c('--plain', 'registry', 'sync', more => %( DO_321_REGISTRY => "file://$reg", DO_321_REGISTRY_TOKEN => '' ))[0] == 0 && registry-harness-lessons($home, 'claude_code').elems, 4, 'a sync with no token asks for none and keeps the copy there was';
 
     # teaching: a stand-in for curl that keeps what it was asked to send
     my $bin = temp-dir();

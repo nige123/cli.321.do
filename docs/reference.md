@@ -1199,6 +1199,16 @@ never a reverted one, within the same twelve. They are read only here.
 Both need an account's token (`321 registry token`): without one, teach
 is refused by the registry and sync asks for no harness lessons.
 
+**Lessons other accounts shared.** At the registry an owner or admin may
+offer a kept harness lesson to everyone, on the site; a person at 321.do
+reads it before any other account is told it. The same sync brings those
+too, marked `shared`. A run is told them after the account's own, each
+beginning "From another organisation, passed on by the registry:", and
+`321 lessons` lists them as shared by another account. They are advice
+like any lesson and grant nothing. An account refuses them all at the
+registry (`/@<handle>/lessons/shared`), where its members also see which
+ones their work is told. Offering is done on the site, not from here.
+
 `321 lessons share ID` copies a lesson into the repository of the
 current workspace. Nothing else writes there, and 321 commits nothing:
 the team gets the lesson when a person commits and merges the file.
@@ -1402,8 +1412,9 @@ it does not mean the figures are what the receipt says. A receipt
 signed by a key that is no longer the one here is reported unsigned.
 
 Not built: lessons proposed by 321 from a run nobody said anything
-of (only a person's words become one); harness lessons served to every
-account (an account's own are below); promotion of a lesson into a
+of (only a person's words become one); reporting to the registry which
+runs were told a shared lesson, so its pooled evidence does not yet come
+from 321 itself; promotion of a lesson into a
 registry skill; publishing agents, skills or contexts to the
 registry from the CLI (a taught lesson is the one thing sent besides
 outcome reports); keeping, reverting or removing a registry lesson from

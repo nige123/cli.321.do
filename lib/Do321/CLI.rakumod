@@ -1450,7 +1450,7 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
             if $json { $w.say(encode-json(%( lessons => [ @ls.map({ %( |$_, comparison => compare-lesson($_, @work) ) }) ], registry => [ |@there ] ))); return 0 }
             if $g.brief {
                 $w.say(brief-line(.<id>, .<state>, .<kept-in>, scope-text($_), .<text>)) for @ls;
-                $w.say(brief-line(.<id>, .<state>, 'registry', (.<at> ne '' ?? "context {.<at>}" !! 'this organisation'), .<text>)) for @there;
+                $w.say(brief-line(.<id>, .<state>, 'registry', (.<shared> ?? 'shared by another account' !! .<at> ne '' ?? "context {.<at>}" !! 'this organisation'), .<text>)) for @there;
                 return 0;
             }
             my @l = header('lessons', (@ls ?? many-of(@ls.elems, 'lesson') !! @there ?? 'none of yours yet' !! 'none yet') ~ (@there ?? ", {@there.elems} from the registry" !! '')), '';
@@ -1463,7 +1463,7 @@ sub cmd-lessons(Env $env, Global $g, @args --> Int) {
                 @l.append: '' if @ls;
                 @l.push: 'from the registry, read only here:';
                 for @there -> %x {
-                    @l.push: sprintf('  %-28s %-9s %s', (%x<name> ne '' ?? %x<name> !! %x<id>), %x<state>, 'in ' ~ (%x<at> ne '' ?? %x<at> !! 'this organisation'));
+                    @l.push: sprintf('  %-28s %-9s %s', (%x<name> ne '' ?? %x<name> !! %x<id>), %x<state>, (%x<shared> ?? 'shared by another account' !! 'in ' ~ (%x<at> ne '' ?? %x<at> !! 'this organisation')));
                     @l.append: wrap-at(%x<text>, 66).map({ (' ' x 10) ~ $_ });
                 }
             }

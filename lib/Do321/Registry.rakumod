@@ -149,8 +149,10 @@ sub registry-sync(IO::Path $home, :@harnesses --> Hash) is export {
         write-atomic(registry-dir($home).add('contexts.json'), encode-json($contexts) ~ "\n");
         %state<contexts> = ($contexts<contexts> // []).elems;
     }
-    # The lessons this account keeps about the harnesses here: its own,
-    # so asked for only by someone the registry knows.  A registry that
+    # The lessons this account keeps about the harnesses here, and those
+    # other accounts shared with everyone through the registry (marked
+    # shared, so a run is told they come from outside the account): asked
+    # for only by someone the registry knows.  A registry that
     # has none to give, or will not give them, leaves the copy there was.
     if @harnesses && registry-token($home) ne '' {
         my %kept = ((read-doc(registry-dir($home).add('harness-lessons.json')) // {})<harnesses> // {}).Hash;
@@ -161,7 +163,7 @@ sub registry-sync(IO::Path $home, :@harnesses --> Hash) is export {
             next unless $got<lessons> ~~ Positional;
             %kept{$h} = [ @($got<lessons>).grep(Associative).grep({ (.<harness> // '').Str eq $h }).map({ %(
                 id => (.<id> // '').Str, name => (.<name> // '').Str, at => (.<at> // '').Str, state => (.<state> // '').Str,
-                harness => $h, harnessVersion => (.<harnessVersion> // '').Str, text => ((.<text> // '').Str || (.<do> // '').Str) ) }) ];
+                harness => $h, harnessVersion => (.<harnessVersion> // '').Str, shared => so (.<shared> // False), text => ((.<text> // '').Str || (.<do> // '').Str) ) }) ];
             $n += %kept{$h}.elems;
         }
         write-atomic(registry-dir($home).add('harness-lessons.json'), encode-json(%( harnesses => %kept, pulledAt => stamp-now() )) ~ "\n");

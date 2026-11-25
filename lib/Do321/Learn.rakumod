@@ -377,6 +377,8 @@ sub lesson-kind(%l --> Str) is export {
 }
 
 constant HARNESS-LESSONS-CAP is export = 12;
+#| What goes before a lesson another account shared, when a run is told it.
+constant SHARED-LESSON-SAYS is export = 'From another organisation, passed on by the registry: ';
 
 #| The harness lessons an account keeps at the registry, as `321
 #| registry sync` last copied them: read only here.
@@ -400,8 +402,10 @@ sub harness-lines(IO::Path $home, Str $harness, Str $version, Str :$agent = '', 
     my @there = registry-harness-lessons($home, $harness).grep({
         (.<text> // '') ne '' && (.<state> // '') ne 'reverted' && !%taught{(.<id> // '').Str}
             && ((.<harnessVersion> // '') eq '' || version-within($version, .<harnessVersion>.Str)) });
-    my @all = (|@l, |@there).head(HARNESS-LESSONS-CAP);
-    (@all.map({ .<text>.Str }).List, @all.map({ .<id>.Str }).grep(* ne '').List);
+    # the account's own before those another account shared; a shared one
+    # is someone else's words, and the run is told so
+    my @all = (|@l, |@there.grep({ !.<shared> }), |@there.grep({ so .<shared> })).head(HARNESS-LESSONS-CAP);
+    (@all.map({ (.<shared> ?? SHARED-LESSON-SAYS !! '') ~ .<text>.Str }).List, @all.map({ .<id>.Str }).grep(* ne '').List);
 }
 
 #| What the runtime asks once a run is placed: the lessons about that
