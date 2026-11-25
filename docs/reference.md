@@ -1350,9 +1350,22 @@ made here goes as it is, and one from the registry with no frontmatter
 is given `name` and `description` from its own record. Frontmatter that
 names the skill otherwise is refused, since a harness matches the name
 to the folder, and another skill of that name already in the folder is
-not overwritten. The tests run the format's own reference validator,
-`skills-ref validate` (github.com/agentskills/agentskills), on both kinds
-of export where it is installed, and skip that check where it is not.
+not overwritten.
+
+`321 skills check PUBLISHER/NAME|FOLDER` checks a skill against the
+format with no other program: `Do321::SkillFormat` is a Raku grammar for
+the strict part of YAML the format's reference validator (skills-ref,
+github.com/agentskills/agentskills, which parses with strictyaml)
+accepts, and applies its rules in its words: only `name`, `description`,
+`license`, `allowed-tools`, `metadata` and `compatibility`; the name's
+characters, length (64 after NFKC), case, hyphens and folder; the
+description (1 to 1024) and compatibility (at most 500). Flow style,
+anchors, tags and repeated keys are refused, as strictyaml refuses them.
+It exits 1 when the skill does not meet the format. `export` refuses a
+skill the check refuses, and `make` checks what it makes.
+`t/47-skill-format.rakutest` pins 49 cases to the verdicts skills-ref
+gave them, and where skills-ref is installed runs every case through it
+again, comparing verdicts and the name and description each reads.
 
 **An agent's record.** `321 record AGENT` reads
 `/api/agents/NAME/record`: for each version, how many reports from how

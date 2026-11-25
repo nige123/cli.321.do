@@ -1,0 +1,130 @@
+use Test;
+use lib 't/lib';
+use Do321Test;
+use Do321::JSON;
+use Do321::SkillFormat;
+
+# The open Agent Skills format checked by a Raku grammar, with no other
+# program.  Each case below is a SKILL.md's frontmatter and the verdict the
+# format's reference validator (skills-ref, github.com/agentskills/agentskills
+# at 83021e2) gave it when these were written; where skills-ref is installed
+# the cases are run through it again, and the name and description each
+# reads are compared too, so a drift on either side shows.
+
+my %c =
+  plain => "name: s\ndescription: Does a. Use when b.",
+  quoted-dq => "name: s\ndescription: \"Has \\\"quotes\\\" and: colon\"",
+  quoted-sq => "name: s\ndescription: 'It''s fine: yes'",
+  folded => "name: s\ndescription: >\n  folded\n  text",
+  literal => "name: s\ndescription: |\n  one\n  two",
+  literal-strip => "name: s\ndescription: |-\n  one",
+  comments => "# top\nname: s # trailing\ndescription: d # here",
+  hash-in-word => "name: s\ndescription: use C# and F#",
+  blank-lines => "\nname: s\n\ndescription: d\n",
+  metadata => "name: s\ndescription: d\nmetadata:\n  author: me\n  version: \"1.0\"",
+  metadata-block => "name: s\ndescription: d\nmetadata:\n  note: |\n    a\n    b\n  k: v",
+  all-fields => "name: s\ndescription: d\nlicense: MIT\ncompatibility: needs git\nallowed-tools: Bash(git:*) Read\nmetadata:\n  a: b",
+  unicode-name => "name: s\ndescription: café ünïcode ✓",
+  upper => "name: S\ndescription: d",
+  hyphen-end => "name: s-\ndescription: d",
+  double-hyphen => "name: s--t\ndescription: d",
+  underscore => "name: s_t\ndescription: d",
+  no-name => "description: d",
+  no-desc => "name: s",
+  empty-desc => "name: s\ndescription: \"\"",
+  blank-desc => "name: s\ndescription:",
+  extra-field => "name: s\ndescription: d\nversion: 1",
+  flow-list => "name: s\ndescription: d\nallowed-tools: [Read, Bash]",
+  flow-map => "name: s\ndescription: d\nmetadata: \{a: b\}",
+  anchor => "name: s\ndescription: &x d",
+  tag => "name: s\ndescription: !!str d",
+  duplicate => "name: s\nname: s\ndescription: d",
+  long-desc => "name: s\ndescription: " ~ ('x' x 1025),
+  max-desc => "name: s\ndescription: " ~ ('x' x 1024),
+  long-compat => "name: s\ndescription: d\ncompatibility: " ~ ('x' x 501),
+  tab-indent => "name: s\ndescription: d\nmetadata:\n\ta: b",
+  number-desc => "name: s\ndescription: 42",
+  bool-desc => "name: s\ndescription: yes",
+  colon-in-plain => "name: s\ndescription: a: b",
+  multi-line-plain => "name: s\ndescription: first\n  second",
+  nested-two => "name: s\ndescription: d\nmetadata:\n  a:\n    b: c",
+  crlf => "name: s\r\ndescription: d\r",
+  extra-spaces => "name:   s  \ndescription:    two  spaces  inside   ",
+  dashes-in-desc => "name: s\ndescription: a --- b",
+  url-desc => "name: s\ndescription: see https://x.example/a#b",
+  colon-end => "name: s\ndescription: ends with:",
+  quoted-name => "name: \"s\"\ndescription: d",
+  sq-multiline => "name: s\ndescription: 'one\n  two'",
+  empty-metadata => "name: s\ndescription: d\nmetadata:",
+  folded-keep => "name: s\ndescription: >+\n  kept\n",
+  comment-only-line => "name: s\n# between\ndescription: d",
+  indented-key => " name: s\ndescription: d",
+  key-no-space => "name:s\ndescription: d",
+  dq-multiline => "name: s\ndescription: \"one\n  two\n\n  three\"",
+  ;
+my %valid = (<all-fields blank-lines bool-desc comment-only-line comments crlf dashes-in-desc dq-multiline empty-metadata extra-spaces folded folded-keep hash-in-word literal literal-strip max-desc metadata metadata-block multi-line-plain nested-two number-desc plain quoted-dq quoted-name quoted-sq sq-multiline unicode-name url-desc >).map(* => True);
+
+my $root = temp-dir();
+sub folder(Str $k --> IO::Path) {
+    my $d = $root.add($k); $d.mkdir; my $s = $d.add('s'); $s.mkdir;
+    $s.add('SKILL.md').spurt("---\n{%c{$k}}\n---\nbody\n");
+    $s;
+}
+
+subtest 'each case gets the reference validator\'s verdict' => {
+    for %c.keys.sort -> $k {
+        my @p = folder-problems(folder($k));
+        is (@p ?? 'invalid' !! 'valid'), (%valid{$k} ?? 'valid' !! 'invalid'), $k or diag @p.join(' / ');
+    }
+}
+
+subtest 'values are read as YAML reads them' => {
+    my sub d(Str $k) { parse-frontmatter("---\n{%c{$k}}\n---\n")[0]<description> }
+    is d('quoted-dq'), 'Has "quotes" and: colon', 'double quotes and their escapes';
+    is d('quoted-sq'), "It's fine: yes", "single quotes, '' for one";
+    is d('folded'), "folded text\n", '> folds lines';
+    is d('literal'), "one\ntwo\n", '| keeps them';
+    is d('literal-strip'), 'one', '|- strips the last line break';
+    is d('comments'), 'd', 'a comment is not the value';
+    is d('hash-in-word'), 'use C# and F#', 'but a # inside a word is';
+    is d('multi-line-plain'), 'first second', 'a plain value over two lines folds';
+    is d('dq-multiline'), "one two\nthree", 'a quoted one too, an empty line being a newline';
+    is d('extra-spaces'), 'two  spaces  inside', 'spaces inside stay, those round it go';
+    is-deeply parse-frontmatter("---\n{%c<metadata-block>}\n---\n")[0]<metadata>, %( note => "a\nb\n", k => 'v' ), 'a block inside metadata stops at the next key';
+}
+
+subtest 'the problems are said in the reference validator\'s words' => {
+    is folder-problems(folder('upper'))[0], "Skill name 'S' must be lowercase";
+    is folder-problems(folder('long-desc'))[0], 'Description exceeds 1024 character limit (1025 chars)';
+    is folder-problems(folder('extra-field'))[0], "Unexpected fields in frontmatter: version. Only 'allowed-tools', 'compatibility', 'description', 'license', 'metadata', 'name' are allowed.";
+    my $d = $root.add('mismatch'); $d.mkdir; $d.add('SKILL.md').spurt("---\nname: other\ndescription: d\n---\n");
+    is folder-problems($d), ("Directory name 'mismatch' must match skill name 'other'",), 'the folder must be named as the skill';
+    is folder-problems($root.add('none')), ("Path does not exist: {$root.add('none')}",), 'no folder';
+    for 64, 65 -> $n {
+        my $long = 'a' x $n; my $l = $root.add($long); $l.mkdir; $l.add('SKILL.md').spurt("---\nname: $long\ndescription: d\n---\n");
+        is folder-problems($l), ($n == 64 ?? () !! ("Skill name '$long' exceeds 64 character limit (65 chars)",)), "a name of $n characters";
+    }
+    my $e = $root.add('empty'); $e.mkdir;
+    is folder-problems($e), ('Missing required file: SKILL.md',), 'no SKILL.md';
+}
+
+my $ref = (try { my $p = run 'skills-ref', '--help', :out, :err; $p.out.slurp(:close); $p.err.slurp(:close); $p.exitcode == 0 }) // False;
+if $ref {
+    subtest 'and the reference validator, run now, agrees on every case' => {
+        for %c.keys.sort -> $k {
+            my $s = $root.add($k).add('s');
+            my $p = run 'skills-ref', 'validate', $s.Str, :out, :err; $p.out.slurp(:close); $p.err.slurp(:close);
+            my $ours = !folder-problems($s);
+            is $ours, $p.exitcode == 0, "$k: the same verdict";
+            if $ours && $p.exitcode == 0 {
+                my $q = run 'skills-ref', 'read-properties', $s.Str, :out, :err;
+                my %r = parse-json($q.out.slurp(:close)); $q.err.slurp(:close);
+                my %h = parse-frontmatter($s.add('SKILL.md').slurp)[0];
+                is (%h<name>.trim, %h<description>.trim), (%r<name>, %r<description>), "$k: the same name and description";
+            }
+        }
+    }
+}
+else { skip 'skills-ref is not installed: the pinned verdicts stand alone', 1 }
+
+done-testing;

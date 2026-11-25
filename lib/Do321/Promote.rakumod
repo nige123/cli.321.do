@@ -4,6 +4,7 @@ use Do321::JSON;
 use Do321::RunDir;
 use Do321::Learn;
 use Do321::Registry;
+use Do321::SkillFormat;
 
 #| Lessons become a skill.  A lesson is one piece of advice the runs have
 #| tried; a skill is the advice that held, put together under a name, with
@@ -41,14 +42,21 @@ sub skill-frontmatter(Str $name, Str $description --> Str) is export {
     ('---', "name: $name", 'description: "' ~ $d.subst('\\', '\\\\', :g).subst('"', '\\"', :g) ~ '"', '---').join("\n") ~ "\n";
 }
 
-#| The name a SKILL.md's frontmatter gives, or '' when it has none.
+#| The name a SKILL.md's frontmatter gives, or '' when it has none: read
+#| by the format's grammar (Do321::SkillFormat), never by pattern-matching.
 sub frontmatter-name(Str $text --> Str) is export {
-    return '' unless $text.starts-with("---\n");
-    my $end = $text.index("\n---", 4) // return '';
-    for $text.substr(4, $end - 4).lines -> $l {
-        return ~$0 if $l ~~ / ^ 'name:' \s* '"'? (<-["\s]>+) '"'? \s* $ /;
-    }
-    '';
+    return '' unless $text.starts-with('---');
+    my ($h) = parse-frontmatter($text);
+    $h ~~ Associative && $h<name> ~~ Str ?? $h<name>.trim !! '';
+}
+
+#| What is wrong with a skill against the open format, as Do321::SkillFormat
+#| finds it: an installed skill by its id, or a folder.  Empty when valid.
+sub check-skill(IO::Path $home, Str $what --> List) is export {
+    return folder-problems($what.IO) if $what.IO.d || !skill-id-ok($what);
+    my $m = installed-skill($home, $what);
+    fail-with("$what is not a skill on this machine, nor a folder: 321 skills lists them") without $m;
+    skill-problems(skill-text($home, $what), folder => ($m<name> // $what.split('/')[1]).Str);
 }
 
 #| Write a skill out as an Agent Skills folder, DIR/NAME/SKILL.md, for any
@@ -72,6 +80,9 @@ sub export-skill(IO::Path $home, Str $id, IO::Path $to --> IO::Path) is export {
         $text = skill-frontmatter($name, $desc) ~ "\n" ~ $text;
     }
     elsif $have ne $name { fail-with("{$id}'s own frontmatter names it '$have', not '$name'") }
+    with skill-problems($text, folder => $name) -> @p {
+        fail-with("$id would not load in another harness: {@p.join('; ')}") if @p;
+    }
     fail-with("there is no folder at $to") unless $to.d;
     my $dir = $to.add($name);
     my $file = $dir.add('SKILL.md');
@@ -127,6 +138,7 @@ sub skill-from-lessons(IO::Path $home, Str $name, @ids, Str :$description = '', 
         !! "How $who works, from {@ls.elems} {@ls.elems == 1 ?? 'lesson' !! 'lessons'} kept by its runs. Use when giving $who work of this kind.").subst(/\s+/, ' ', :g).trim;
     fail-with('the description is longer than the 300 characters the registry takes') if $desc.chars > 300;
     my $text = skill-text-from($name, $desc, @ls);
+    with skill-problems($text, folder => $name) -> @p { fail-with("the skill made would not meet the open format: {@p.join('; ')}") if @p }
     my $id = LOCAL-PUBLISHER ~ "/$name";
     my $was = installed-skill($home, $id);
     my $digest = text-digest($text);

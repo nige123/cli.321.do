@@ -63,6 +63,7 @@
     "Do321::Registry": "lib/Do321/Registry.rakumod",
     "Do321::Resources": "lib/Do321/Resources.rakumod",
     "Do321::Promote": "lib/Do321/Promote.rakumod",
+    "Do321::SkillFormat": "lib/Do321/SkillFormat.rakumod",
     "Do321::Result": "lib/Do321/Result.rakumod",
     "Do321::Run": "lib/Do321/Run.rakumod",
     "Do321::RunDir": "lib/Do321/RunDir.rakumod",

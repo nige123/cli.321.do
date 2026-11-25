@@ -47,6 +47,7 @@ use Do321::Choose;
 use Do321::Versions;
 use Do321::Resources;
 use Do321::Promote;
+use Do321::SkillFormat;
 
 #| Stamped at build time in the release workflow.
 constant VERSION is export = '0.7.1';
@@ -1976,6 +1977,23 @@ sub cmd-skills(Env $env, Global $g, @args --> Int) {
                 next-text('decide who may use it', $p<url> ne '' ?? $p<url> !! '321 registry')]);
             return 0;
         }
+        when 'check' {
+            # the open Agent Skills format, checked here by a grammar: no other program
+            return usage-error($env, 'skills', 'say which skill or folder: 321 skills check PUBLISHER/NAME|FOLDER') unless @a;
+            my @p = try check-skill($home, @a[0]);
+            return fail-line($!.message, 'see the skills here', '321 skills') if $!;
+            if $json { $w.say(encode-json(%( skill => @a[0], valid => !@p, problems => [ |@p ] ))); return @p ?? 1 !! 0 }
+            if $g.brief { $w.say(brief-line(@a[0], (@p ?? 'invalid' !! 'valid'), |@p)); return @p ?? 1 !! 0 }
+            if @p {
+                learn-say($env, [header('skills check', "{@a[0]} does not meet the open skill format"), '',
+                    |@p.map({ |row-lines('✗', $_) }), '', next-text('the format', 'agentskills.io/specification')]);
+                return 1;
+            }
+            learn-say($env, [header('skills check', "{@a[0]} meets the open skill format"), '',
+                |row-lines('✓', 'frontmatter, name, description and fields as agentskills.io/specification asks'), '',
+                next-text('put it where other harnesses load skills', skill-id-ok(@a[0]) ?? "321 skills export {@a[0]} ~/.claude/skills" !! 'copy the folder into a harness\'s skills folder')]);
+            return 0;
+        }
         when 'export' {
             # the open Agent Skills folder, for any harness that reads it
             return usage-error($env, 'skills', 'say which skill and where: 321 skills export PUBLISHER/NAME FOLDER') if @a < 2;
@@ -1989,7 +2007,7 @@ sub cmd-skills(Env $env, Global $g, @args --> Int) {
                 next-text('a harness that reads skills loads it from its skills folder, e.g. Claude Code', '321 skills export ' ~ @a[0] ~ ' ~/.claude/skills')]);
             return 0;
         }
-        default { return usage-error($env, 'skills', "it is available, install, show, rollback, remove, make, publish or export, not '$sub'") }
+        default { return usage-error($env, 'skills', "it is available, install, show, rollback, remove, make, publish, export or check, not '$sub'") }
     }
 }
 

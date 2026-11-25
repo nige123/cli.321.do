@@ -148,6 +148,10 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
     is frontmatter-name($f.slurp), 'label-printing', 'and its frontmatter names the folder';
     is yaml-ok($f), 'label-printing|' ~ installed-skill($home, 'mine/label-printing')<description>, 'a YAML parser reads the same name and description';
     ok cli('skills', 'export', 'mine/label-printing', $to.Str)[0] == 0, 'writing it again over itself is fine';
+    my ($crc, $cout) = cli('skills', 'check', $to.add('label-printing').Str);
+    ok $crc == 0 && $cout.contains('meets the open skill format'), '321 skills check, the grammar, accepts the folder' or diag $cout;
+    ($crc, $cout) = cli('--brief', 'skills', 'check', 'mine/label-printing');
+    ok $crc == 0 && $cout.contains("\tvalid"), 'and the skill by its id' or diag $cout;
     if $validator { ok validates($to.add('label-printing')), 'the format\'s own validator accepts it' }
     else { skip 'skills-ref is not installed', 1 }
 
@@ -173,6 +177,14 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
         instructions => $odd, description => 'x', harnesses => [], requires => [] ), source => 'registry');
     ($rc, $out, $err) = cli('skills', 'export', 'acme/odd', $to.Str);
     ok $rc != 0 && $err.contains("names it 'something-else'"), 'frontmatter naming it otherwise is refused: a harness matches name to folder' or diag $err;
+    my $bad = "---\nname: bad\ndescription: d\nversion: 2\n---\nbody\n";
+    install-skill-doc($home, %( id => 'acme/bad', name => 'bad', publisher => 'acme', version => 1, digest => text-digest($bad),
+        instructions => $bad, description => 'd', harnesses => [], requires => [] ), source => 'registry');
+    ($rc, $out, $err) = cli('skills', 'export', 'acme/bad', $to.Str);
+    ok $rc != 0 && $err.contains('would not load in another harness') && $err.contains('Unexpected fields in frontmatter: version'), 'one the format refuses is not exported, saying why' or diag $err;
+    nok $to.add('bad').e, 'and nothing was written';
+    ($rc, $out, $err) = cli('skills', 'check', 'acme/bad');
+    ok $rc == 1 && flat($out).contains('does not meet the open skill format') && flat($out).contains('version'), 'check says so too, and exits 1' or diag "$out$err";
 }
 
 done-testing;
