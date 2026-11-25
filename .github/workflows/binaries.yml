@@ -31,7 +31,7 @@ jobs:
           - { os: ubuntu-24.04,     target: linux-x86_64,    archive: rakupp-linux-x86_64.tar.gz,    exe: 321-linux-x86_64,      cxx: 'c++ -static-libstdc++ -static-libgcc' }
           - { os: ubuntu-24.04-arm, target: linux-aarch64,   archive: rakupp-linux-aarch64.tar.gz,   exe: 321-linux-aarch64,     cxx: 'c++ -static-libstdc++ -static-libgcc' }
           - { os: macos-latest,     target: macos-universal, archive: rakupp-macos-universal.tar.gz, exe: 321-macos-universal,   cxx: 'c++ -arch arm64 -arch x86_64 -mmacosx-version-min=11.0' }
-          - { os: windows-latest,   target: windows-x64,     archive: rakupp-windows-x64.zip,        exe: 321-windows-x64.exe,   cxx: '' }
+          - { os: windows-2022,     target: windows-x64,     archive: rakupp-windows-x64.zip,        exe: 321-windows-x64.exe,   cxx: '' }
     runs-on: ${{ matrix.os }}
     defaults:
       run:

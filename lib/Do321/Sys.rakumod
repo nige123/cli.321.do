@@ -273,6 +273,9 @@ sub runtime-argv(--> List) is export {
     if $exe.basename ne 'rakupp' && $exe.basename ne 'raku' && $exe.basename ne 'rakudo' {
         my $sib = $exe.parent.add('321');
         return ($sib.Str,) if $sib.x;
+        # a downloaded file keeps the name it was published under
+        # (321-linux-x86_64): it is 321, wherever it is and whatever it is called
+        return ($exe.absolute,) if $exe.basename.starts-with('321') && $exe.absolute.IO.x;
         return ('321',);
     }
     my $root = $prog.parent.parent;

@@ -141,12 +141,14 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
         my $p = run 'python3', '-I', '-c', 'import sys,yaml; t=open(sys.argv[1]).read(); d=yaml.safe_load(t.split("---\n")[1]); print(d["name"] + "|" + d["description"])', $f.Str, :out, :err;
         my $o = $p.out.slurp(:close).trim; $p.err.slurp(:close); $o;
     }
+    # a second opinion from a YAML parser, where this machine has one
+    my $has-yaml = (try { my $p = run 'python3', '-I', '-c', 'import yaml', :out, :err; $p.out.slurp(:close); $p.err.slurp(:close); $p.exitcode == 0 }) // False;
     my ($rc, $out, $err) = cli('skills', 'export', 'mine/label-printing', $to.Str);
     my $f = $to.add('label-printing').add('SKILL.md');
     ok $rc == 0 && $f.e, 'written to FOLDER/NAME/SKILL.md, the folder named as the skill' or diag "$out$err";
     is $f.slurp, skill-text($home, 'mine/label-printing'), 'a skill made here goes as it is: it already has its frontmatter';
     is frontmatter-name($f.slurp), 'label-printing', 'and its frontmatter names the folder';
-    is yaml-ok($f), 'label-printing|' ~ installed-skill($home, 'mine/label-printing')<description>, 'a YAML parser reads the same name and description';
+    if $has-yaml { is yaml-ok($f), 'label-printing|' ~ installed-skill($home, 'mine/label-printing')<description>, 'a YAML parser reads the same name and description'; } else { skip 'no YAML parser on this machine', 1 }
     ok cli('skills', 'export', 'mine/label-printing', $to.Str)[0] == 0, 'writing it again over itself is fine';
     my ($crc, $cout) = cli('skills', 'check', $to.add('label-printing').Str);
     ok $crc == 0 && $cout.contains('meets the open skill format'), '321 skills check, the grammar, accepts the folder' or diag $cout;
@@ -163,7 +165,7 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
     my $r = $to.add('review').add('SKILL.md').slurp;
     ok $rc == 0 && $r.starts-with("---\nname: review\ndescription: \"Read a change before it lands. Use when reviewing a \\\"diff\\\".\"\n---\n"), 'one without frontmatter is given it from its name and description' or diag "$r$err";
     ok $r.ends-with($plain), 'and its words follow unchanged';
-    is yaml-ok($to.add('review').add('SKILL.md')), 'review|Read a change before it lands. Use when reviewing a "diff".', 'quotes in a description survive a YAML parser';
+    if $has-yaml { is yaml-ok($to.add('review').add('SKILL.md')), 'review|Read a change before it lands. Use when reviewing a "diff".', 'quotes in a description survive a YAML parser'; } else { skip 'no YAML parser on this machine', 1 }
     if $validator { ok validates($to.add('review')), 'and the validator accepts the frontmatter given to it' }
     else { skip 'skills-ref is not installed', 1 }
 

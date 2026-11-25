@@ -108,6 +108,8 @@ subtest 'work in more than one repository, each to read or to change' => {
 }
 
 subtest 'two runs change the same repositories at once, each in a worktree of its own' => {
+    # runs that outlive the terminal are hosted, and hosts run on Linux for now
+    if $*KERNEL.name eq 'darwin' { skip 'Mission Control runs on Linux for now', 1; return }
     $app.add('person.txt').spurt("mine, uncommitted\n");
     .unlink for $app.add('calc.go'), $lib.add('changed.txt');
     $home.add('runs').chmod(0o700);
