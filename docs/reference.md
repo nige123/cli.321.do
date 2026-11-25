@@ -1196,9 +1196,8 @@ is given in `~/.321/registry/harness-lessons.json`; without a token it
 asks for none and keeps the copy there was. A run placed on that harness
 is told those that hold for its version, after this machine's own and
 never a reverted one, within the same twelve. They are read only here.
-The registry's side of this was built to the same interface and was not
-yet released when this was written: until it is, teach is refused by the
-registry and sync says the lessons were not given.
+Both need an account's token (`321 registry token`): without one, teach
+is refused by the registry and sync asks for no harness lessons.
 
 `321 lessons share ID` copies a lesson into the repository of the
 current workspace. Nothing else writes there, and 321 commits nothing:
