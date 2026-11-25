@@ -129,6 +129,14 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
     is skill-text($home, 'mine/label-printing'), skill-text-from('label-printing', installed-skill($home, 'mine/label-printing')<description>, ($a, $b, $c).map({ lesson($home, $_) })),
         'and its words are the lessons\' again';
     my $to = temp-dir();
+    # the format's own reference validator (github.com/agentskills/agentskills skills-ref), where installed
+    my $validator = (try { my $p = run 'skills-ref', '--help', :out, :err; $p.out.slurp(:close); $p.err.slurp(:close); $p.exitcode == 0 }) // False;
+    sub validates(IO::Path $d --> Bool) {
+        my $p = run 'skills-ref', 'validate', $d.Str, :out, :err;
+        my $o = $p.out.slurp(:close) ~ $p.err.slurp(:close);
+        diag $o unless $p.exitcode == 0;
+        $p.exitcode == 0;
+    }
     sub yaml-ok(IO::Path $f --> Str) {
         my $p = run 'python3', '-I', '-c', 'import sys,yaml; t=open(sys.argv[1]).read(); d=yaml.safe_load(t.split("---\n")[1]); print(d["name"] + "|" + d["description"])', $f.Str, :out, :err;
         my $o = $p.out.slurp(:close).trim; $p.err.slurp(:close); $o;
@@ -140,6 +148,8 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
     is frontmatter-name($f.slurp), 'label-printing', 'and its frontmatter names the folder';
     is yaml-ok($f), 'label-printing|' ~ installed-skill($home, 'mine/label-printing')<description>, 'a YAML parser reads the same name and description';
     ok cli('skills', 'export', 'mine/label-printing', $to.Str)[0] == 0, 'writing it again over itself is fine';
+    if $validator { ok validates($to.add('label-printing')), 'the format\'s own validator accepts it' }
+    else { skip 'skills-ref is not installed', 1 }
 
     # a skill from the registry with no frontmatter of its own
     my $plain = "Read the diff twice.\n";
@@ -150,6 +160,8 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
     ok $rc == 0 && $r.starts-with("---\nname: review\ndescription: \"Read a change before it lands. Use when reviewing a \\\"diff\\\".\"\n---\n"), 'one without frontmatter is given it from its name and description' or diag "$r$err";
     ok $r.ends-with($plain), 'and its words follow unchanged';
     is yaml-ok($to.add('review').add('SKILL.md')), 'review|Read a change before it lands. Use when reviewing a "diff".', 'quotes in a description survive a YAML parser';
+    if $validator { ok validates($to.add('review')), 'and the validator accepts the frontmatter given to it' }
+    else { skip 'skills-ref is not installed', 1 }
 
     $to.add('review').add('.321-skill').unlink;
     $to.add('review').add('SKILL.md').spurt("---\nname: review\ndescription: someone else's\n---\nother\n");

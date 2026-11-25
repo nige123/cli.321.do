@@ -1350,7 +1350,9 @@ made here goes as it is, and one from the registry with no frontmatter
 is given `name` and `description` from its own record. Frontmatter that
 names the skill otherwise is refused, since a harness matches the name
 to the folder, and another skill of that name already in the folder is
-not overwritten.
+not overwritten. The tests run the format's own reference validator,
+`skills-ref validate` (github.com/agentskills/agentskills), on both kinds
+of export where it is installed, and skip that check where it is not.
 
 **An agent's record.** `321 record AGENT` reads
 `/api/agents/NAME/record`: for each version, how many reports from how
