@@ -31,7 +31,7 @@ jobs:
           - { os: ubuntu-24.04,     target: linux-x86_64,    archive: rakupp-linux-x86_64.tar.gz,    exe: 321-linux-x86_64,      cxx: 'c++ -static-libstdc++ -static-libgcc' }
           - { os: ubuntu-24.04-arm, target: linux-aarch64,   archive: rakupp-linux-aarch64.tar.gz,   exe: 321-linux-aarch64,     cxx: 'c++ -static-libstdc++ -static-libgcc' }
           - { os: macos-latest,     target: macos-universal, archive: rakupp-macos-universal.tar.gz, exe: 321-macos-universal,   cxx: 'c++ -arch arm64 -arch x86_64 -mmacosx-version-min=11.0' }
-          - { os: windows-2022,     target: windows-x64,     archive: rakupp-windows-x64.zip,        exe: 321-windows-x64.exe,   cxx: '' }
+          - { os: windows-latest,   target: windows-x64,     archive: rakupp-windows-x64.zip,        exe: 321-windows-x64.exe,   cxx: '' }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -58,6 +58,16 @@ jobs:
           [ -n "$RAKUPP" ] || { echo "rakupp not found in the archive"; find tool -maxdepth 3; exit 1; }
           echo "RAKUPP=$RAKUPP" >> "$GITHUB_ENV"
           "$RAKUPP" -e 'say "Raku++ ", $*RAKU.compiler.version'
+
+      # The Raku++ libraries are built with the current MSVC standard library,
+      # which refuses a clang older than it was written for (STL1000), and an
+      # older library lacks symbols they need (LNK2001). So: the current image,
+      # and the current LLVM on it.
+      - name: the current clang, which the MSVC standard library asks for
+        if: runner.os == 'Windows'
+        run: |
+          choco upgrade llvm -y --no-progress
+          "/c/Program Files/LLVM/bin/clang-cl.exe" --version
 
       - name: compile 321 into one file
         run: |

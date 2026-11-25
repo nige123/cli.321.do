@@ -107,7 +107,7 @@ subtest 'work in more than one repository, each to read or to change' => {
     ok $rc != 0 && $err.contains('granted nothing that changes files'), 'and one cannot be changed by a run granted nothing that changes files' or diag "$out\n$err";
 }
 
-subtest 'two runs change the same repositories at once, each in a worktree of its own' => {
+subtest 'two runs change the same repositories at once, each in a worktree of its own' => sub {
     # runs that outlive the terminal are hosted, and hosts run on Linux for now
     if $*KERNEL.name eq 'darwin' { skip 'Mission Control runs on Linux for now', 1; return }
     $app.add('person.txt').spurt("mine, uncommitted\n");
@@ -174,7 +174,7 @@ subtest 'what one run taught about a harness, another agent on it is told' => {
     is harness-lines($home, 'claude_code', 'fake-claude 0.0.1', agent => 'local/scribe')[0], (), 'and then no run is told it';
 }
 
-subtest 'a harness lesson kept by the account at a registry reaches this machine, and one is taught there only by a person' => {
+subtest 'a harness lesson kept by the account at a registry reaches this machine, and one is taught there only by a person' => sub {
     my $curl = (try { my $p = run 'curl', '--version', :out, :err; $p.out.slurp(:close); $p.err.slurp(:close); $p.exitcode == 0 }) // False;
     unless $curl { skip 'curl is not installed', 1; return }
     my $reg = temp-dir();
