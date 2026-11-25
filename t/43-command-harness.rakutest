@@ -121,7 +121,7 @@ subtest 'it is placed only where its claims cover the package' => {
     ok !$got.defined && @no[0].Str.contains('cannot enforce tool_allowlist'), 'work that needs more is refused, and told why' or diag @no.raku;
 }
 
-subtest 'the template an author starts from passes its own tests' => {
+subtest 'the template an author starts from passes its own tests' => sub {
     my $tool = repo-root().add('tools/new-harness');
     unless $tool.f { skip 'the template generator is kept in the repository, not the package', 3; return }
     my $root = temp-dir();
