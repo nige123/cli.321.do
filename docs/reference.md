@@ -1350,6 +1350,16 @@ the registry keeps it PRIVATE to the token's account, as a new version
 only when it changed, and making it public is a person's act on the
 registry's site. What the registry answered is kept on the skill.
 
+`321 skills draft AGENT [--json]` shows the skill that agent's kept
+lessons would make, writing nothing (`skill-draft.v1`: `ready`, `name`
+`AGENT-ways`, `description`, `instructions`, `lessons`, `digest`, and
+how many were `left-out` for showing a path, an address, a secret or a
+private context). Every kept lesson for the agent goes in, so a later
+draft is the next version of the same skill. It is what the 123 worker
+offers a Track after a run is judged: 123.do puts the offer to the
+person whose computer the lessons came from, and only if they share it
+is the same agent told it when run from a teammate's computer.
+
 **Skills in the open format, for any harness.** Skill names follow the
 open Agent Skills rule (agentskills.io/specification: lowercase letters,
 digits and single hyphens, not at either end). `321 skills export

@@ -172,6 +172,27 @@ sub skill-ready(IO::Path $home, Str :$project = '' --> Hash) is export {
     %( %by.grep({ .value.elems >= SKILL-SUGGEST-AT }) );
 }
 
+#| A draft of the skill an agent's kept lessons make, to offer elsewhere
+#| (123.do offers it to a Track, where a person decides): every lesson
+#| kept for that agent, not only those in no skill yet, so a later draft
+#| is the next version of the same skill.  Nothing is installed or
+#| written.  A lesson whose words carry a path, an address, a secret or a
+#| private context's name is left out, never sent.  `ready` is false while
+#| fewer than SKILL-SUGGEST-AT lessons qualify.
+sub skill-draft(IO::Path $home, Str $agent, Str :$project = '' --> Hash) is export {
+    my @kept = lessons($home, :$project).grep({ (.<state> // '') eq 'kept' && (.<kept-in> // '') ne 'project'
+        && ((.<scope> // {})<agent> // '').Str eq $agent });
+    my @ls = @kept.grep({ !private-in(.<text>.Str, $home) }).sort(*<id>.Str).map(*.Hash);
+    my $name = $agent.lc ~ '-ways';
+    my %d = schema => 'skill-draft.v1', agent => $agent, name => $name, kept => @kept.elems, left-out => @kept.elems - @ls.elems;
+    return %( |%d, ready => False ) if @ls < SKILL-SUGGEST-AT || !skill-name-ok($name);
+    my $who  = $agent.uc;
+    my $desc = "How $who works, from {@ls.elems} lessons kept by its runs. Use when giving $who work of this kind.";
+    my $text = skill-text-from($name, $desc, @ls);
+    return %( |%d, ready => False ) if skill-problems($text, folder => $name);
+    %( |%d, ready => True, description => $desc, instructions => $text, lessons => @ls.map(*<id>.Str).Array, digest => text-digest($text) );
+}
+
 #| Send a skill made here to the registry, under the account the token
 #| speaks for.  The registry keeps it private and makes a new version only
 #| when it changed.  What it answered is kept on the skill.

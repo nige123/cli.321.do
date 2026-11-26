@@ -10,6 +10,7 @@ use Do321::Wire;
 use Do321::Registry;
 use Do321::Learn;
 use Do321::Promote;
+use Do321::SkillFormat;
 
 # Lessons become a skill that can be shared.  Only KEPT lessons go in; a
 # lesson on trial or reverted is refused, and so are words that would show
@@ -187,6 +188,28 @@ subtest 'a skill is written out as an open-format folder any harness can load' =
     nok $to.add('bad').e, 'and nothing was written';
     ($rc, $out, $err) = cli('skills', 'check', 'acme/bad');
     ok $rc == 1 && flat($out).contains('does not meet the open skill format') && flat($out).contains('version'), 'check says so too, and exits 1' or diag "$out$err";
+}
+
+subtest 'a draft is what the kept lessons would make, for another program to offer' => {
+    my $before = $home.add('skills').dir.elems;
+    my ($rc, $out) = cli('--json', 'skills', 'draft', 'helper');
+    is $rc, 0, 'draft answers';
+    my %d = parse-json($out);
+    is %d<schema>, 'skill-draft.v1', 'in its own schema';
+    ok %d<ready>, 'three kept lessons can be shared';
+    is %d<name>, 'helper-ways', 'named for the agent';
+    is %d<lessons>.join(' '), ($a, $b, $c).sort.join(' '), 'every kept lesson, in id order, the one in a skill already included';
+    is %d<left-out>, 1, 'the lesson that would show a path is left out';
+    nok %d<instructions>.contains('/home/sam'), 'and none of its words go';
+    nok %d<instructions>.contains('still on trial'), 'nor a lesson on trial';
+    is skill-problems(%d<instructions>, folder => 'helper-ways').elems, 0, 'the open format, valid';
+    is %d<digest>, text-digest(%d<instructions>), 'with the digest of its words';
+    is $home.add('skills').dir.elems, $before, 'nothing installed';
+    my ($rc2, $out2) = cli('--json', 'skills', 'draft', 'helper');
+    is $out2, $out, 'the same lessons make the same draft';
+    my %n = parse-json(cli('--json', 'skills', 'draft', 'nobody')[1]);
+    nok %n<ready>, 'an agent with no kept lessons has none';
+    nok %n<instructions>:exists, 'and no words';
 }
 
 done-testing;

@@ -1965,6 +1965,21 @@ sub cmd-skills(Env $env, Global $g, @args --> Int) {
                 next-text('share it: the registry keeps it private to your account', "321 skills publish {%m<id>}")]);
             return 0;
         }
+        when 'draft' {
+            # what an agent's kept lessons would make, for another program to offer; nothing is written
+            return usage-error($env, 'skills', 'say which agent: 321 skills draft AGENT') unless @a;
+            my ($ws) = resolve-workspace($g.workspace);
+            my %d = skill-draft($home, @a[0].Str, project => project-root($ws));
+            if $json { $w.say(encode-json(%d)); return 0 }
+            unless %d<ready> {
+                learn-say($env, [header('skills draft', @a[0]), '',
+                    |row-lines('not yet:', "{many-of(%d<kept>, 'kept lesson')} for {@a[0]}; a skill takes {SKILL-SUGGEST-AT} that can be shared"), '',
+                    next-text('see the lessons and their states', '321 lessons')]);
+                return 0;
+            }
+            $w.print(%d<instructions>);
+            return 0;
+        }
         when 'publish' {
             return usage-error($env, 'skills', "say which skill: 321 skills publish {LOCAL-PUBLISHER}/NAME") unless @a;
             my $p = try publish-skill($home, @a[0]);

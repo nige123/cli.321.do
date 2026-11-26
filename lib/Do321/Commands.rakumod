@@ -150,6 +150,7 @@ sub commands(--> List) is export {
                  Word.new(name => 'rollback', what => 'put back the version that was here before'),
                  Word.new(name => 'remove', what => 'take one off this machine'),
                  Word.new(name => 'make', what => 'put lessons the runs kept together as a skill of yours'),
+                 Word.new(name => 'draft', what => 'show the skill an agent\'s kept lessons would make, writing nothing'),
                  Word.new(name => 'publish', what => 'send a skill made here to the registry, private to your account'),
                  Word.new(name => 'export', what => 'write one out as an open-format skill folder for any harness'),
                  Word.new(name => 'check', what => 'check a skill or folder against the open skill format')),
